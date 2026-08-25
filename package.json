@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "wb": "node src/cli/index.ts",
-    "serve": "yarn build && node src/cli/index.ts serve",
+    "serve": "npm run build && node src/cli/index.ts serve",
     "build": "vite build --config ui/vite.config.ts",
     "ui": "vite --config ui/vite.config.ts",
     "test": "node --test 'src/**/*.test.ts'",

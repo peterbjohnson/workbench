@@ -9,7 +9,7 @@ import type { Config } from '../config.ts';
 import { listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
 
-/** The built board. `yarn build` puts it here; `yarn ui` serves it itself instead. */
+/** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
 export const UI_DIST = fileURLToPath(new URL('../../ui/dist', import.meta.url));
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -306,8 +306,8 @@ async function serveBoard(res: http.ServerResponse, route: string): Promise<void
         '<body style="font:15px/1.6 system-ui;padding:3rem;max-width:34rem">' +
         '<h1>The board is not built yet</h1>' +
         '<p>Build it once, from <code>workbench/</code>:</p>' +
-        '<pre><code>yarn build</code></pre>' +
-        '<p>Then reload. To work on the board itself, <code>yarn ui</code> serves it ' +
+        '<pre><code>npm run build</code></pre>' +
+        '<p>Then reload. To work on the board itself, <code>npm run ui</code> serves it ' +
         'with reloading, and talks to this workbench.</p>',
     );
     return;

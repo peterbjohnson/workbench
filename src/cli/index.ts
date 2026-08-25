@@ -398,7 +398,7 @@ async function serve(config: Config): Promise<number> {
   }
 
   if (!fs.existsSync(UI_DIST)) {
-    console.warn('⚠️  the board is not built: run "yarn build". Everything else works.\n');
+    console.warn('⚠️  the board is not built: run "npm run build". Everything else works.\n');
   }
 
   if (config.checks.length === 0) {
