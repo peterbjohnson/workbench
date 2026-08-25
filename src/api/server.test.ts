@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -151,6 +153,41 @@ test('a client with nothing to talk to says where it tried', async () => {
   // the advice changed to a command that exists, which is the edit it should welcome.
   const wb = createClient('http://127.0.0.1:1');
   await assert.rejects(() => wb.tickets(), /127\.0\.0\.1:1/);
+});
+
+/**
+ * Something on the port that is not a workbench, answering every route the same
+ * way. A dev server's SPA fallback is the one that bites: it is the reason a route
+ * left out of the proxy list looks like a reply rather than a mistake.
+ */
+async function withPretender(status: number, fn: (wb: Client) => Promise<void>): Promise<void> {
+  const pretender = http.createServer((_req, res) => {
+    res.writeHead(status, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>Workbench</title>');
+  });
+  await new Promise<void>((ok) => pretender.listen(0, '127.0.0.1', ok));
+  try {
+    const { port } = pretender.address() as AddressInfo;
+    await fn(createClient(`http://127.0.0.1:${port}`));
+  } finally {
+    await new Promise<void>((ok) => pretender.close(() => ok()));
+  }
+}
+
+test('a page where an answer should be is refused, not read as an empty one', async () => {
+  // The failure this replaces was silent: 200 with an unparseable body became {},
+  // every field came back undefined, and the caller was told it had succeeded.
+  await withPretender(200, async (wb) => {
+    await assert.rejects(() => wb.docs('agent'), /text\/html/);
+  });
+});
+
+test('a failure that carries no reason is reported by its status', async () => {
+  // The other side of it: an error reply owes us nothing parseable, and falling
+  // back to the status is what keeps a crash behind a proxy legible.
+  await withPretender(503, async (wb) => {
+    await assert.rejects(() => wb.tickets(), /503/);
+  });
 });
 
 test('the event stream carries events as they are appended', async () => {

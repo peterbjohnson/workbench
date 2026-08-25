@@ -156,8 +156,8 @@ export function App() {
    */
   const counts: Record<Tab, number | null> = {
     Board: tickets.filter((t) => !ended(t)).length,
-    Agents: docs?.agent.length ?? null,
-    Skills: docs?.skill.length ?? null,
+    Agents: docs?.agent?.length ?? null,
+    Skills: docs?.skill?.length ?? null,
     Settings: null,
   };
 
