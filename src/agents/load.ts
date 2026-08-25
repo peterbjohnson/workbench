@@ -182,14 +182,13 @@ export function loadSkills(pluginRoot: string): SkillDef[] {
     throw new Error(`${manifest}: names no plugin, so no skill of it can be named either`);
   }
 
-  return found
-    .map((entry) => ({
-      name: `${plugin.name}:${entry.name}`,
-      description: parseSkill(
-        fs.readFileSync(path.join(dir, entry.name, 'SKILL.md'), 'utf8'),
-        entry.name,
-      ),
-    }));
+  return found.map((entry) => ({
+    name: `${plugin.name}:${entry.name}`,
+    description: parseSkill(
+      fs.readFileSync(path.join(dir, entry.name, 'SKILL.md'), 'utf8'),
+      entry.name,
+    ),
+  }));
 }
 
 /**

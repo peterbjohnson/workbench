@@ -13,7 +13,6 @@ import { UI_DIST } from '../api/server.ts';
 import { heldBy } from '../domain/rules.ts';
 import type { Ticket } from '../domain/ticket.ts';
 
-
 /**
  * A `.env` beside the workbench is loaded before anything reads the environment.
  * Putting a credential in a file and expecting it to work is the obvious thing to
