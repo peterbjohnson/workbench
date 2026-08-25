@@ -68,6 +68,9 @@ export function App() {
   // the tabs count them, so they are wanted whichever page you are on.
   const [docs, setDocs] = useState<Record<DocKind, Doc[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The repository this board is working in. A fact of the running process, so it
+  // is read once and never redrawn.
+  const [repo, setRepo] = useState<string | null>(null);
 
   /** Anything appended redraws the board. No polling, and no refresh button. */
   useEffect(() => {
@@ -102,6 +105,27 @@ export function App() {
       live = false;
     };
   }, []);
+
+  // Which repository this is. Two boards on two ports are otherwise identical down
+  // to the pixel, and the answer to "which one is this" should not be a page away.
+  useEffect(() => {
+    let live = true;
+    wb.settings()
+      .then((all) => {
+        const found = all.find((s) => s.key === 'repoRoot')?.value;
+        if (live && typeof found === 'string') setRepo(found);
+      })
+      .catch((e: unknown) => live && setError(describe(e)));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // The tab as well as the header: a window you are looking for is usually one you
+  // cannot see, and its title is all the switcher shows of it.
+  useEffect(() => {
+    document.title = repo === null ? 'Workbench' : `Workbench — ${folder(repo)}`;
+  }, [repo]);
 
   // The page, and the ticket on it, are both in the address — so a card can be
   // linked to and survives a reload, which is what "link to ticket" asks for.
@@ -182,6 +206,11 @@ export function App() {
     <>
       <header>
         <h1>Workbench</h1>
+        {repo !== null && (
+          <span className="repo mono" title={repo}>
+            {folder(repo)}
+          </span>
+        )}
         <nav className="tabs">
           {TABS.map((name) => (
             <a
@@ -359,6 +388,11 @@ function Column(props: {
       ))}
     </div>
   );
+}
+
+/** The folder a path ends in — what tells two boards apart where the whole path will not fit. */
+function folder(dir: string): string {
+  return dir.replace(/\/+$/, '').split('/').pop() || dir;
 }
 
 function idInHash(): string | null {

@@ -160,6 +160,16 @@ header h1 {
   font-weight: 600;
 }
 
+/* Which repository this board is working in. Quiet, because it is the answer to a
+   question you only ask when more than one of these is open. */
+header .repo {
+  color: var(--dim);
+  font-size: 0.75rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
 header form {
   display: flex;
   gap: 0.5rem;
