@@ -4,6 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Workbench</title>
+    <script>
+      // The mode, before the first paint. The stylesheet can read the stored
+      // choice by itself, but only after the module has loaded and run — which is
+      // long enough to show a white page to someone who asked for a dark one.
+      //
+      // The key is spelled out here because a script that has to run before the
+      // modules cannot import one. It is `KEY` in ui/src/theme.ts, which says so.
+      try {
+        var held = localStorage.getItem('workbench.theme');
+        if (held === 'light' || held === 'dark') {
+          document.documentElement.setAttribute('data-theme', held);
+        }
+      } catch (e) {
+        // Blocked storage. Fall through to the machine's own preference.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

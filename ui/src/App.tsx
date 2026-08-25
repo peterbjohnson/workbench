@@ -8,6 +8,7 @@ import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
 import { Settings } from './Settings.tsx';
+import { Theme } from './Theme.tsx';
 import { TicketForm } from './TicketForm.tsx';
 import { wb } from './wb.ts';
 
@@ -195,6 +196,7 @@ export function App() {
         </nav>
         {waiting > 0 && <span className="waiting">{waiting} waiting on you</span>}
         {policy !== null && <span className="quiet">{policy.wipLimit} at a time</span>}
+        <Theme />
       </header>
 
       {error !== null && <div className="error">{error}</div>}
