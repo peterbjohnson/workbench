@@ -22,6 +22,7 @@
     "ui": "vite --config ui/vite.config.ts",
     "test": "node --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit && tsc --noEmit -p ui",
+    "docs": "node src/docs/generate.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "npm run build && npm run build:code",
