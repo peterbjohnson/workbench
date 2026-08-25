@@ -26,6 +26,11 @@ The only card you move between columns by hand is one between **Backlog** and
 stays in the column of the stage it stopped in, marked as needing you. The header counts
 everything waiting on you.
 
+**Light or dark, at the end of the header.** *Auto* follows the machine and is what you
+get until you say otherwise; *Light* and *Dark* overrule it. The choice is the browser's,
+not the workbench's — it is kept locally rather than in Settings, so the same board read
+from a laptop at night and a desktop by a window can be set differently.
+
 **Order is the queue, so it is yours to set.** Work is taken from the top; dragging a card
 onto another puts it in front of that one, and onto the column behind them puts it last.
 The order a ticket was written in is a default, not a decision.

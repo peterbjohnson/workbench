@@ -1,4 +1,22 @@
+/* Two modes, and the choice between them -----------------------------------
+
+   The palette is the only thing that changes. Every rule below reads tokens and
+   never a literal colour, so a mode is a set of values rather than a second
+   stylesheet to keep in step with the first.
+
+   Three blocks, in this order, because the choice has three states. Light is the
+   bare :root, so it is what you get before anything has been decided. Then the
+   system's preference, which only applies when it has not been overruled. Then
+   the explicit choice, last, so it wins from either direction — a person who
+   picks dark on a light machine and one who picks light on a dark machine are
+   both asking the same thing of this file.
+
+   `color-scheme` is set alongside, so the scrollbars, the caret and the native
+   parts of form controls come out of the same decision as everything else. */
+
 :root {
+  color-scheme: light;
+
   --bg: #f6f6f4;
   --card: #fff;
   --line: #ddd9d2;
@@ -10,11 +28,24 @@
   /* Next, but not moving. Deliberately colder and duller than --accent: that one
      means "needs you", and it is the only thing on this board that must catch an
      eye crossing it. */
-  --wait: #8a7115;
+  --wait: #806a12;
+
+  /* Writing laid on --accent or --bad rather than beside it. Light on the dark
+     fills of this mode; in dark mode the fills are the lighter colour and this
+     flips, which is why it is a token and not #fff at each of the two places. */
+  --on-fill: #fff;
+
+  /* What lifts the panel and the dropdown off what they cover. A dark mode gets
+     no depth from a darker shadow — there is nothing left to darken — so it
+     takes a heavier one. */
+  --shadow: 0 6px 18px #0000004d;
+  --shadow-panel: -8px 0 24px #00000026;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
     --bg: #1a1815;
     --card: #232019;
     --line: #3a352d;
@@ -24,7 +55,31 @@
     --ok: #7fbf9a;
     --bad: #e08573;
     --wait: #c4ac57;
+
+    /* The fills are lighter than the page here, so what sits on them is the
+       page's own near-black. White on that orange is 2.8:1 — unreadable. */
+    --on-fill: #1a1815;
+
+    --shadow: 0 6px 18px #00000080;
+    --shadow-panel: -8px 0 24px #00000073;
   }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #1a1815;
+  --card: #232019;
+  --line: #3a352d;
+  --ink: #ece7df;
+  --dim: #98918a;
+  --accent: #d08a5c;
+  --ok: #7fbf9a;
+  --bad: #e08573;
+  --wait: #c4ac57;
+  --on-fill: #1a1815;
+  --shadow: 0 6px 18px #00000080;
+  --shadow-panel: -8px 0 24px #00000073;
 }
 
 * {
@@ -73,7 +128,7 @@ button:hover {
 button.go {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-fill);
 }
 
 a {
@@ -124,7 +179,7 @@ header form {
 
 .error {
   background: var(--bad);
-  color: #fff;
+  color: var(--on-fill);
   padding: 0.5rem 1.2rem;
   font-size: 0.85rem;
 }
@@ -251,7 +306,7 @@ aside {
   border-left: 1px solid var(--line);
   padding: 1.2rem;
   overflow-y: auto;
-  box-shadow: -8px 0 24px #0002;
+  box-shadow: var(--shadow-panel);
   z-index: 3;
 }
 
@@ -447,7 +502,7 @@ section > h3 {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 6px;
-  box-shadow: 0 6px 18px #0003;
+  box-shadow: var(--shadow);
 }
 
 .options button {
@@ -1119,4 +1174,42 @@ ul.done-when {
   color: var(--dim);
   font-variant-numeric: tabular-nums;
   font-weight: 400;
+}
+
+/* Colour mode ------------------------------------------------------------ */
+
+/* Three segments in one outline, so they read as one setting with three answers
+   rather than as three things you could do. Last on the bar and quiet with it:
+   it is about the browser, not about the work. */
+
+.theme {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.theme button {
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+}
+
+/* Between the segments, not around the group — the outline is already there. */
+.theme button + button {
+  border-left: 1px solid var(--line);
+}
+
+.theme button:hover {
+  color: var(--ink);
+  background: var(--card);
+}
+
+.theme button.picked {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--card);
 }
