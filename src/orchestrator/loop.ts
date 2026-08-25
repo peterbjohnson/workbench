@@ -407,6 +407,9 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       });
     } catch (error) {
       // A crash is not a rejection: the ticket parks rather than looping back to plan.
+      // Nothing is charged for it, because a runner that gets here died rather than
+      // answered and there is no figure to charge: the real one reports its failures,
+      // with what they spent, rather than throwing them.
       result = { outcome: 'failed', summary: describe(error) };
     } finally {
       aborts.delete(ticket.id);

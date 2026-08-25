@@ -627,6 +627,33 @@ test('a ticket that keeps coming back stops for the manager, work intact', async
   }
 });
 
+test('what a failed run spent is recorded, and counts against the ticket', async () => {
+  // A failure is often the expensive ending — a budget ceiling, a session limit —
+  // so a failure recorded as costing nothing under-counts exactly the runs that
+  // cost the most, and the ticket's total is short by the largest amounts.
+  const h = harness({
+    stages: {
+      implement: { outcome: 'failed', summary: 'the run stopped', costUsd: 3 },
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const finished = h.store
+      .eventsFor('t1')
+      .filter((e) => e.type === 'stage_finished')
+      .at(-1);
+    assert.equal(finished?.type === 'stage_finished' && finished.outcome, 'failed');
+    assert.equal(finished?.type === 'stage_finished' ? finished.costUsd : undefined, 3);
+    assert.equal(h.store.ticket('t1').costUsd, 3, 'and it is what the ticket has spent');
+  } finally {
+    await h.close();
+  }
+});
+
 test('the loop stops a ticket that has spent its budget', async () => {
   const h = harness({
     stages: {

@@ -46,7 +46,20 @@ export type StageRunnerDeps = {
   diff: (ticket: Ticket, worktree: string) => Promise<string>;
   /** What became of the ticket this one carries on from, when it carries on from one. */
   continued: (ticketId: string) => string;
+  /**
+   * How a run reaches the model service. The SDK's own unless a test hands over one
+   * that answers without a network; there is no other reason to set it.
+   */
+  query?: typeof query;
 };
+
+/**
+ * How an attempt at a stage ended, and whether it ended by throwing. The result is
+ * all the orchestrator ever sees — a failure comes back like any other ending, with
+ * what it spent. `crashed` is for the resume fallback alone, which has to tell a
+ * session that was simply gone from a run that ran and went wrong.
+ */
+type Attempt = { result: RunResult; crashed: boolean };
 
 /**
  * The one place that talks to the model service. Everything above it deals in
@@ -105,24 +118,22 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     // lives in ~/.claude/projects on one machine and can simply be gone.
     if (resume !== undefined) {
       const before = spent;
-      try {
-        return await runOnce(carryOnFrom(ticket.answer ?? ''), resume);
-      } catch (error) {
-        // Only fall back if the attempt got nowhere. One that spent money before
-        // failing has done some of the work, and re-running it would pay twice —
-        // which is the very thing this whole feature exists to stop.
-        if (spent > before) throw error;
-        emit({
-          type: 'agent_said',
-          runId,
-          text: `could not pick the ${stage} run back up (${describe(error)}) — starting this stage again from the top`,
-        });
-      }
+      const resumed = await runOnce(carryOnFrom(ticket.answer ?? ''), resume);
+      // Only fall back if the attempt got nowhere. One that spent money before
+      // failing has done some of the work, and re-running it would pay twice —
+      // which is the very thing this whole feature exists to stop. Anything that
+      // ran and ended, however badly, is this stage's answer.
+      if (!resumed.crashed || spent > before) return resumed.result;
+      emit({
+        type: 'agent_said',
+        runId,
+        text: `could not pick the ${stage} run back up (${resumed.result.summary}) — starting this stage again from the top`,
+      });
     }
 
-    return runOnce(await fullBrief());
+    return (await runOnce(await fullBrief())).result;
 
-    async function runOnce(prompt: string, resumeFrom?: string): Promise<RunResult> {
+    async function runOnce(prompt: string, resumeFrom?: string): Promise<Attempt> {
       /** Set when the agent asks the manager something. Ends the run. */
       let asked: RunResult['question'];
       /** The conversation this run is, so answering a question can continue it. */
@@ -208,8 +219,10 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
 
       let finalText = '';
       let stopped: string | undefined;
+      /** How the run went wrong, when it went wrong by throwing. */
+      let threw: string | undefined;
 
-      session = query({ prompt, options });
+      session = (deps.query ?? query)({ prompt, options });
 
       try {
         for await (const message of session) {
@@ -240,32 +253,41 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         // escape loses `asked` — the question is captured, the run stops, and the
         // manager is never told, which is the whole mechanism failing at the last
         // inch. A throw only means something went wrong if nobody asked anything.
-        if (!asked) throw error;
+        if (!asked) threw = describe(error);
       }
 
       // Whatever happened, every attempt at this stage cost what it cost.
       const costUsd = spent;
+      const ended = (result: RunResult): Attempt => ({ result, crashed: false });
 
       // The session is kept only when there is something to come back to. Any other
       // ending is the end of the run, and a stale id would invite a resume of a
       // conversation that has nothing left to say.
       if (asked) {
-        return {
+        return ended({
           outcome: 'blocked',
           summary: 'waiting on the manager',
           question: asked,
           sessionId,
           costUsd,
-        };
+        });
       }
       if (signal.aborted) {
-        return { outcome: 'failed', summary: 'the manager stopped this run', costUsd };
+        return ended({ outcome: 'failed', summary: 'the manager stopped this run', costUsd });
+      }
+      // A throw is reported, not rethrown: the ticket's record needs what the run
+      // spent as much as any other ending needs it, and more, because the runs that
+      // throw are the expensive ones — a budget ceiling, a session limit. Letting it
+      // out of here means the orchestrator only has the error, and the money the run
+      // burned before hitting it is charged to nobody.
+      if (threw !== undefined) {
+        return { result: { outcome: 'failed', summary: threw, costUsd }, crashed: true };
       }
       if (stopped !== undefined) {
-        return { outcome: 'failed', summary: `the run stopped: ${stopped}`, costUsd };
+        return ended({ outcome: 'failed', summary: `the run stopped: ${stopped}`, costUsd });
       }
 
-      return {
+      return ended({
         outcome: 'completed',
         summary: finalText,
         ...readApproval(stage, finalText),
@@ -274,7 +296,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         ...readDoneWhen(stage, finalText),
         ...readLater(finalText),
         costUsd,
-      };
+      });
     }
   };
 }
