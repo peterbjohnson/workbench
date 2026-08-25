@@ -336,6 +336,93 @@ test('a ticket can carry on from another, with its work already in the worktree'
   }
 });
 
+// A ticket's diff is read by a model on a budget, and the size of a change and
+// the size of its diff are unrelated: t-mimi's was one function and two tests,
+// plus a generated 15,862-row CSV it had committed. Review spent its whole $3 on
+// the first request, before it had read anything.
+
+/** Lines that look like generated output: dense, numeric and endless. */
+function rows(tag: string, n: number): string {
+  const body = Array.from({ length: n }, (_, i) => `${i},${i * 1.5},${i * 2.5},${i * 3.5}`);
+  return [`# ${tag}`, ...body, ''].join('\n');
+}
+
+/** What git itself would have handed over, for comparison. */
+async function rawDiff(cwd: string): Promise<string> {
+  const { stdout } = await run('git', ['diff', 'main...HEAD'], {
+    cwd,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+test('a generated file is reduced to its stat line, and the real change is untouched', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.mkdir(path.join(wt.path, 'agent_made'));
+    await fs.writeFile(path.join(wt.path, 'agent_made', 'geometry.csv'), rows('geometry', 15862));
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the work, done properly\n');
+    await commitAll(wt, 'implement: the work, and the data it produced');
+
+    const shown = await diff(cfg, wt);
+
+    assert.match(shown, /^\+the work, done properly$/m, 'the change itself is all still there');
+    assert.doesNotMatch(shown, /^\+9000,/m, 'the generated rows are not');
+    assert.match(shown, /agent_made\/geometry\.csv/, 'but the file is still named');
+    assert.match(shown, /15863/, 'and how much of it was left out is said');
+
+    const raw = await rawDiff(wt.path);
+    assert.ok(
+      shown.length < raw.length / 10,
+      `the size is the cost: ${shown.length} of ${raw.length} characters`,
+    );
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('many files with nothing large in any one of them are cut down too', async () => {
+  // The other way to be too big, and it needed solving as well: a mechanical
+  // change across a few hundred files, no single one of them over the per-file
+  // cap. The largest go first, so the most files stay readable in full.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    const many = 80;
+    for (let i = 0; i < many; i++) {
+      await fs.writeFile(path.join(wt.path, 'project', `part${i}.csv`), rows(`part${i}`, i * 10));
+    }
+    await commitAll(wt, 'implement: a great many files');
+
+    const shown = await diff(cfg, wt);
+    const raw = await rawDiff(wt.path);
+
+    assert.ok(shown.length < raw.length / 2, `${shown.length} of ${raw.length} characters`);
+    for (let i = 0; i < many; i++) {
+      assert.match(shown, new RegExp(`project/part${i}\\.csv`), `part${i} is still named`);
+    }
+    assert.match(shown, /^\+# part0$/m, 'and the smallest are still there to be read');
+    assert.doesNotMatch(shown, /^\+# part79$/m, 'while the largest gave up its body');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('an ordinary change is passed through exactly as git wrote it', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the work, improved\n');
+    await fs.writeFile(path.join(wt.path, 'project', 'new.py'), 'and something new\n');
+    await commitAll(wt, 'implement: the work');
+
+    assert.equal(await diff(cfg, wt), await rawDiff(wt.path), 'nothing to save, nothing done');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
 /** A commit landing on the base while a ticket is busy — another ticket merging. */
 async function landOnBase(cfg: GitConfig, file: string, content: string): Promise<void> {
   await fs.writeFile(path.join(cfg.repoRoot, file), content);
