@@ -1,0 +1,13 @@
+node_modules/
+data/
+.worktrees/
+
+# the built board — made by "yarn build", never edited
+ui/dist/
+
+# credentials, never committed
+.env
+.env.*
+
+# compiled for packaging — made by "yarn build:code", never edited
+dist/

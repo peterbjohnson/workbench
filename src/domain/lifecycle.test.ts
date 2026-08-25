@@ -1,0 +1,769 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import type { Event, EventBody } from './events.ts';
+import { needsYou } from './board.ts';
+import { deriveTicket, type Ticket } from './ticket.ts';
+import { DEFAULT_POLICY, nextAction, type Action } from './rules.ts';
+
+/** Accumulates events for one ticket and re-derives it, the way the store will. */
+class Journal {
+  events: Event[] = [];
+  ticketId = 't1';
+
+  add(body: EventBody): Ticket {
+    this.events.push({
+      ...body,
+      id: this.events.length + 1,
+      ticketId: this.ticketId,
+      at: '2026-08-03T00:00:00Z',
+    });
+    return this.ticket();
+  }
+
+  ticket(): Ticket {
+    return deriveTicket(this.events);
+  }
+
+  /** What the orchestrator would do next, with no other tickets running. */
+  next(running = 0): Action {
+    return nextAction(this.ticket(), running, DEFAULT_POLICY);
+  }
+}
+
+/** Written down and committed to, which is where every test below starts. */
+function newTicket(): Journal {
+  const j = new Journal();
+  j.add({ type: 'ticket_created', title: 'do a thing', body: 'details' });
+  j.add({ type: 'queued' });
+  return j;
+}
+
+/** Run a stage to completion. `rejected` is how review and verify say no. */
+function runStage(
+  j: Journal,
+  stage: 'plan' | 'implement' | 'review' | 'verify',
+  opts: { summary?: string; rejected?: string; costUsd?: number } = {},
+): Ticket {
+  j.add({ type: 'stage_started', stage, runId: `r-${stage}` });
+  return j.add({
+    type: 'stage_finished',
+    runId: `r-${stage}`,
+    outcome: 'completed',
+    summary: opts.summary ?? `${stage} done`,
+    rejected: opts.rejected,
+    costUsd: opts.costUsd,
+  });
+}
+
+/** One full trip: plan, approve, implement, then a review that says no. */
+function rejectedCycle(j: Journal, why: string): Ticket {
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  runStage(j, 'implement');
+  return runStage(j, 'review', { rejected: why });
+}
+
+test('a new ticket waits in the backlog until the manager commits to it', () => {
+  const j = new Journal();
+  j.add({ type: 'ticket_created', title: 'an idea', body: '' });
+
+  assert.equal(j.ticket().status, 'backlog');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'the workbench never touches the backlog');
+
+  j.add({ type: 'queued' });
+  assert.equal(j.ticket().status, 'queued');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'plan' });
+});
+
+test('a ticket can be rewritten, one field at a time, wherever it has got to', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+
+  const retitled = j.add({ type: 'ticket_edited', title: 'do a better thing' });
+  assert.equal(retitled.title, 'do a better thing');
+  assert.equal(retitled.body, 'details', 'what was not edited is left alone');
+  assert.equal(retitled.status, 'plan_gate', 'rewriting it does not move it');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'and does not restart anything');
+
+  const rewritten = j.add({ type: 'ticket_edited', body: 'much better details' });
+  assert.equal(rewritten.title, 'do a better thing');
+  assert.equal(rewritten.body, 'much better details');
+});
+
+test('comments send the work back to implement, not back to the drawing board', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  runStage(j, 'implement');
+
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r-review' });
+  const commented = j.add({
+    type: 'stage_finished',
+    runId: 'r-review',
+    outcome: 'completed',
+    summary: 'three things are wrong',
+    changes: '- the headline claim contradicts table 2',
+  });
+
+  assert.equal(commented.status, 'implementing', 'the draft survives');
+  assert.equal(commented.changes, '- the headline claim contradicts table 2');
+  assert.equal(commented.revisions, 1);
+  assert.equal(commented.rejection, null, 'this is not a rejection');
+  assert.equal(commented.cycles, 1, 'and it costs no cycle');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+
+  // Read into the brief once, by the stage that has to act on it.
+  assert.equal(j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' }).changes, null);
+});
+
+test('an objection that survives being addressed twice is about the approach', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  const comment = (n: number) => {
+    runStage(j, 'implement');
+    j.add({ type: 'stage_started', stage: 'review', runId: `r${n}` });
+    return j.add({
+      type: 'stage_finished',
+      runId: `r${n}`,
+      outcome: 'completed',
+      summary: 'still wrong',
+      changes: 'the units are still wrong',
+    });
+  };
+
+  assert.equal(comment(1).status, 'implementing');
+  assert.equal(comment(2).status, 'implementing');
+
+  const third = comment(3);
+  assert.equal(third.status, 'planning', 'the third time, it is the approach');
+  assert.match(third.rejection ?? '', /after 2 attempts to address it/);
+  assert.equal(third.changes, null, 'nothing left for implement to act on');
+
+  // A new plan is a new approach, so the count starts again.
+  assert.equal(j.add({ type: 'stage_started', stage: 'plan', runId: 'r4' }).revisions, 0);
+});
+
+test('the manager can ship what a ticket has, whatever the agents made of it', () => {
+  const j = newTicket();
+  assert.equal(j.add({ type: 'shipped' }).status, 'queued', 'nothing to offer yet');
+
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'abc1234',
+  });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r2' });
+  const rejected = j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'completed',
+    summary: 'not good enough',
+    rejected: 'it could be better',
+  });
+  assert.equal(rejected.status, 'planning', 'the loop would go round again');
+
+  const shipped = j.add({ type: 'shipped' });
+  assert.equal(shipped.status, 'ready_for_pr', 'the manager settles it instead');
+  assert.deepEqual(j.next(), { kind: 'open_pr' });
+});
+
+test('shipping waits for a running stage rather than racing it', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'abc1234',
+  });
+
+  // A stage in flight still reports back, and that report decides where the
+  // ticket goes next — so it would undo the shipping.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r2' });
+  assert.equal(j.add({ type: 'shipped' }).status, 'reviewing', 'left alone while it runs');
+});
+
+test('the cycle cap hands the ticket over rather than binning it', () => {
+  const j = newTicket();
+  for (let i = 0; i < DEFAULT_POLICY.maxCycles; i++) {
+    runStage(j, 'plan');
+    j.add({ type: 'plan_approved' });
+    runStage(j, 'implement');
+    runStage(j, 'review', { rejected: 'still not good enough' });
+  }
+
+  const action = j.next();
+  assert.equal(action.kind, 'hand_over', 'the agents cannot agree; the manager decides');
+  assert.match(action.kind === 'hand_over' ? action.reason : '', /ship what is there/);
+  assert.match(action.kind === 'hand_over' ? action.reason : '', /still not good enough/);
+});
+
+test('a stage that failed can be restarted, carrying nothing over', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  const crashed = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'failed',
+    summary: 'the model service hung up',
+    sessionId: 'abc',
+  });
+
+  assert.equal(crashed.status, 'blocked', 'a crash parks the ticket');
+  assert.deepEqual(j.next(), { kind: 'wait' });
+
+  const restarted = j.add({ type: 'stage_restarted' });
+  assert.equal(restarted.status, 'implementing', 'back into the stage it died in');
+  assert.equal(restarted.session, null, 'a conversation that died is not resumed');
+  assert.equal(restarted.answer, null, 'and nothing is put in front of the agent');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+
+  // Only a stuck ticket. A restart cannot reach into work that is going.
+  assert.equal(j.add({ type: 'stage_restarted' }).status, 'implementing');
+});
+
+test('the plan carries the steps, and a new plan drops the old ones', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  const planned = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'the plan',
+    steps: ['Read the code', 'Change it', 'Test it'],
+  });
+  assert.deepEqual(planned.steps, ['Read the code', 'Change it', 'Test it']);
+
+  j.add({ type: 'plan_approved' });
+  const working = j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' });
+  assert.deepEqual(working.steps, ['Read the code', 'Change it', 'Test it'], 'the plan stands');
+  assert.equal(working.step, null, 'a stage that has just started has made no progress');
+
+  assert.equal(j.add({ type: 'step_reached', runId: 'r2', index: 2 }).step, 2);
+
+  // A new plan re-decides the work, so the old steps go with the old plan.
+  assert.deepEqual(j.add({ type: 'stage_started', stage: 'plan', runId: 'r3' }).steps, []);
+});
+
+test('a ticket can go back to the backlog, but only before it starts', () => {
+  const j = newTicket();
+
+  assert.equal(j.add({ type: 'backlogged' }).status, 'backlog');
+  j.add({ type: 'queued' });
+
+  runStage(j, 'plan');
+  assert.equal(j.add({ type: 'backlogged' }).status, 'plan_gate', 'work already done stays');
+});
+
+test('happy path: created to merged', () => {
+  const j = newTicket();
+
+  const planned = runStage(j, 'plan', { summary: 'the plan' });
+  assert.equal(planned.status, 'plan_gate');
+  assert.equal(planned.plan, 'the plan', 'the gate shows the plan run summary');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'the gate waits for the manager');
+
+  j.add({ type: 'plan_approved' });
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+
+  runStage(j, 'implement');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'review' });
+
+  runStage(j, 'review');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'verify' });
+
+  const verified = runStage(j, 'verify');
+  assert.equal(verified.status, 'ready_for_pr');
+  assert.deepEqual(j.next(), { kind: 'open_pr' });
+
+  j.add({ type: 'pr_opened', url: 'https://example/pr/1' });
+  assert.deepEqual(j.next(), { kind: 'poll_verdict' });
+
+  const done = j.add({ type: 'verdict', verdict: 'accepted' });
+  assert.equal(done.status, 'done');
+  assert.equal(done.prUrl, 'https://example/pr/1', 'the record of where the work went');
+  assert.deepEqual(j.next(), { kind: 'wait' });
+});
+
+test('restarting a ticket whose pull request is open resumes the verdict, not the stages', () => {
+  // t32: the poll failed while the work sat in a pull request, and the restart put
+  // the ticket back into verify. It came round to `ready_for_pr` a second time and
+  // blocked on `gh pr create` for a branch GitHub already had a pull request for —
+  // twice, with the work complete and correct throughout.
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  runStage(j, 'implement');
+  runStage(j, 'review');
+  runStage(j, 'verify');
+  j.add({ type: 'pr_opened', url: 'https://example/pr/46' });
+
+  const stuck = j.add({ type: 'blocked', reason: 'could not reach github' });
+  assert.equal(stuck.status, 'blocked');
+
+  const restarted = j.add({ type: 'stage_restarted' });
+  assert.equal(restarted.status, 'awaiting_verdict', 'there is no stage left to restart');
+  assert.equal(restarted.question, null, 'and nothing is still waiting on the manager');
+  assert.equal(restarted.prUrl, 'https://example/pr/46');
+  assert.deepEqual(j.next(), { kind: 'poll_verdict' }, 'it asks again rather than rebuilding');
+});
+
+test('answering a ticket whose pull request is open resumes the verdict, not the stages', () => {
+  // t61, and the same mistake as t32 by the other door: the poll failed, the board
+  // offered "try gh again", and answering it re-ran a verify stage that had already
+  // passed and cost a dollar to pass. The wait it came back to afterwards was the
+  // one it had never actually left.
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  runStage(j, 'implement');
+  runStage(j, 'review');
+  runStage(j, 'verify');
+  j.add({ type: 'pr_opened', url: 'https://example/pr/92' });
+  j.add({ type: 'blocked', reason: 'could not reach github' });
+
+  const answered = j.add({ type: 'question_answered', answer: 'try gh again' });
+
+  assert.equal(answered.status, 'awaiting_verdict', 'there is no stage left to resume');
+  assert.equal(answered.answer, null, 'and nothing to carry into one');
+  assert.deepEqual(j.next(), { kind: 'poll_verdict' }, 'it asks again rather than rebuilding');
+});
+
+test('the manager can send offered work back, or keep it and ask for changes', () => {
+  const offered = (): Journal => {
+    const j = newTicket();
+    runStage(j, 'plan');
+    j.add({ type: 'plan_approved' });
+    j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+    j.add({
+      type: 'stage_finished',
+      runId: 'r1',
+      outcome: 'completed',
+      summary: 'wrote it',
+      commit: 'abc1234',
+    });
+    j.add({ type: 'pr_opened', url: 'https://example/pr/9' });
+    return j;
+  };
+
+  // The expensive no: the approach is wrong, so it buys a whole new plan.
+  const replanned = offered().add({ type: 'plan_rejected', reason: 'wrong approach' });
+  assert.equal(replanned.status, 'planning');
+  assert.equal(replanned.rejection, 'wrong approach');
+
+  // The cheap one: the approach is right and the details are not, so the work
+  // stands and goes back to be finished.
+  const fixing = offered().add({ type: 'changes_requested', changes: '- the units are wrong' });
+  assert.equal(fixing.status, 'implementing');
+  assert.equal(fixing.changes, '- the units are wrong');
+
+  // Both keep the pull request and both end the offer — which is what makes the
+  // ticket shippable and restartable again while it is being put right.
+  for (const t of [replanned, fixing]) {
+    assert.equal(t.prUrl, 'https://example/pr/9');
+    assert.equal(t.offered, false);
+    assert.equal(t.running, false);
+  }
+});
+
+test('the manager asking for changes is not rationed the way an agent is', () => {
+  // MAX_REVISIONS exists because two agents repeating an objection is evidence
+  // about the approach. A manager repeating one is just the manager, and turning
+  // their third request into a re-plan would be the workbench overruling them.
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  for (let i = 0; i < 5; i++) {
+    const asked = j.add({ type: 'changes_requested', changes: `round ${i}` });
+    assert.equal(asked.status, 'implementing', `request ${i} still goes to implement`);
+    assert.equal(asked.revisions, 0, 'and counts no revision against the plan');
+  }
+});
+
+test('a stage that fails during a rework restarts as a stage, not as a wait', () => {
+  // The ticket still has its pull request, so a restart that read `prUrl` would
+  // drop it back into a verdict it is no longer waiting for.
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({ type: 'stage_finished', runId: 'r1', outcome: 'completed', summary: 'x', commit: 'a1' });
+  j.add({ type: 'pr_opened', url: 'https://example/pr/9' });
+  j.add({ type: 'changes_requested', changes: 'fix the units' });
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' });
+  const died = j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'failed',
+    summary: 'crashed',
+  });
+  assert.equal(died.status, 'blocked');
+
+  assert.equal(j.add({ type: 'stage_restarted' }).status, 'implementing');
+});
+
+test('a rejected pull request stops being the offer, so the rework can be offered again', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'abc1234',
+  });
+  j.add({ type: 'pr_opened', url: 'https://example/pr/2' });
+
+  const sentBack = j.add({ type: 'verdict', verdict: 'rejected', reason: 'use the helper' });
+  assert.equal(sentBack.status, 'planning');
+  assert.equal(sentBack.offered, false, 'the offer no longer stands');
+
+  // The pull request itself does stay: the branch keeps it, the rework is pushed
+  // to that same one, and it is where the objection being answered was written —
+  // so the link is worth most exactly while the ticket is being put right.
+  assert.equal(sentBack.prUrl, 'https://example/pr/2');
+
+  // With the offer still standing, neither of the two ways back to a pull request
+  // would work: the manager could not ship the ticket and could not restart it.
+  assert.equal(j.add({ type: 'shipped' }).status, 'ready_for_pr');
+  assert.deepEqual(j.next(), { kind: 'open_pr' }, 'offered again, on the same branch');
+});
+
+test('every rejection goes back to planning, carrying its reason', () => {
+  // 1. the manager rejects the plan at the gate
+  const gate = newTicket();
+  runStage(gate, 'plan');
+  const sentBack = gate.add({ type: 'plan_rejected', reason: 'wrong problem' });
+  assert.equal(sentBack.status, 'planning');
+  assert.equal(sentBack.rejection, 'wrong problem');
+  assert.deepEqual(gate.next(), { kind: 'run_stage', stage: 'plan' });
+
+  // 2. the review does not approve
+  const review = newTicket();
+  runStage(review, 'plan');
+  review.add({ type: 'plan_approved' });
+  runStage(review, 'implement');
+  const reviewed = runStage(review, 'review', { rejected: 'races on retry' });
+  assert.equal(reviewed.status, 'planning');
+  assert.equal(reviewed.rejection, 'races on retry');
+
+  // 3. the checks fail
+  const verify = newTicket();
+  runStage(verify, 'plan');
+  verify.add({ type: 'plan_approved' });
+  runStage(verify, 'implement');
+  runStage(verify, 'review');
+  const failed = runStage(verify, 'verify', { rejected: '2 tests failing' });
+  assert.equal(failed.status, 'planning');
+  assert.equal(failed.rejection, '2 tests failing');
+
+  // 4. the manager requests changes on the pull request
+  const pr = newTicket();
+  runStage(pr, 'plan');
+  pr.add({ type: 'plan_approved' });
+  runStage(pr, 'implement');
+  runStage(pr, 'review');
+  runStage(pr, 'verify');
+  pr.add({ type: 'pr_opened', url: 'https://example/pr/2' });
+  const changes = pr.add({
+    type: 'verdict',
+    verdict: 'rejected',
+    reason: 'use the existing helper',
+  });
+  assert.equal(changes.status, 'planning');
+  assert.equal(changes.rejection, 'use the existing helper');
+});
+
+test('a question blocks the ticket and resumes the stage it left', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'question_asked',
+    runId: 'r1',
+    question: 'which of the two config files is live?',
+    reasoning: 'both are referenced and they disagree',
+  });
+  const blocked = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+  });
+
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.question?.question, 'which of the two config files is live?');
+  assert.deepEqual(j.next(), { kind: 'wait' });
+
+  const answered = j.add({ type: 'question_answered', answer: 'the one in etc/' });
+  assert.equal(answered.status, 'implementing', 'resumes the stage it left');
+  assert.equal(answered.question, null);
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+});
+
+test('a failed run parks the ticket, it does not count as a rejection', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  const dead = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'failed',
+    summary: 'the process died',
+  });
+
+  assert.equal(dead.status, 'blocked');
+  assert.equal(dead.rejection, null, 'a crash sets no rejection reason');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'it waits rather than retrying itself');
+});
+
+test('the work-in-progress limit holds a ticket back', () => {
+  const j = newTicket();
+  assert.deepEqual(j.next(2), { kind: 'wait' }, 'at the limit');
+  assert.deepEqual(j.next(1), { kind: 'run_stage', stage: 'plan' }, 'below it');
+});
+
+test('a ticket with a run in flight is never started twice', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  assert.equal(j.ticket().running, true);
+  assert.deepEqual(j.next(), { kind: 'wait' });
+});
+
+test('a ticket that keeps coming back is eventually handed to the manager', () => {
+  const j = newTicket();
+
+  for (let cycle = 1; cycle < DEFAULT_POLICY.maxCycles; cycle++) {
+    const back = rejectedCycle(j, `attempt ${cycle} was wrong`);
+    assert.equal(back.status, 'planning');
+    assert.equal(back.cycles, cycle);
+    assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'plan' }, 'still worth another go');
+  }
+
+  const last = rejectedCycle(j, 'and again');
+  assert.equal(last.cycles, DEFAULT_POLICY.maxCycles);
+
+  const action = j.next();
+  assert.equal(action.kind, 'hand_over', 'not the bin: the agents cannot agree');
+  assert.match(action.kind === 'hand_over' ? action.reason : '', /planned 3 times/);
+
+  const waiting = j.add({ type: 'blocked', reason: 'planned 3 times' });
+  assert.equal(waiting.status, 'blocked');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'and it waits for the manager');
+});
+
+test('a ticket on its last cycle may still finish that cycle', () => {
+  const j = newTicket();
+  for (let cycle = 1; cycle < DEFAULT_POLICY.maxCycles; cycle++) {
+    rejectedCycle(j, 'no');
+  }
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  assert.equal(j.ticket().cycles, DEFAULT_POLICY.maxCycles);
+  assert.deepEqual(
+    j.next(),
+    { kind: 'run_stage', stage: 'implement' },
+    'the cap is on planning again, not on finishing what was planned',
+  );
+});
+
+test('spending adds up across stages, and stops the ticket when it runs out', () => {
+  const j = newTicket();
+
+  runStage(j, 'plan', { costUsd: 1.5 });
+  assert.equal(j.ticket().costUsd, 1.5);
+  j.add({ type: 'plan_approved' });
+
+  runStage(j, 'implement', { costUsd: DEFAULT_POLICY.maxTicketUsd });
+  assert.equal(j.ticket().costUsd, DEFAULT_POLICY.maxTicketUsd + 1.5);
+
+  const action = j.next();
+  assert.equal(action.kind, 'give_up', 'the next stage never starts');
+  assert.match(action.kind === 'give_up' ? action.reason : '', /\$51\.50/);
+});
+
+test('a run that reports no cost is free rather than unpriced', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  assert.equal(j.ticket().costUsd, 0, 'a missing cost must not make the total NaN');
+});
+
+test('a cancelled ticket stops, whatever it was doing', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+
+  const stopped = j.add({ type: 'cancelled', reason: 'no longer wanted' });
+  assert.equal(stopped.status, 'cancelled');
+  assert.equal(stopped.running, false, 'it no longer holds a work-in-progress slot');
+  assert.deepEqual(j.next(), { kind: 'wait' });
+});
+
+test('deriveTicket refuses an event list that does not start with creation', () => {
+  assert.throws(
+    () => deriveTicket([{ type: 'plan_approved', id: 1, ticketId: 't1', at: 'now' }]),
+    /ticket_created/,
+  );
+});
+
+test('the scale the plan declared reaches every later stage, and no stage is skipped', () => {
+  const j = newTicket();
+  assert.equal(j.ticket().scale, 'standard', 'a ticket starts at standard');
+
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  const planned = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'a two-line change',
+    scale: 'small',
+  });
+  assert.equal(planned.scale, 'small', 'the gate shows what the plan judged');
+
+  // The whole point: small changes the depth asked of each stage, never the sequence.
+  j.add({ type: 'plan_approved' });
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+  runStage(j, 'implement');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'review' }, 'review still runs');
+  runStage(j, 'review');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'verify' }, 'verify still runs');
+  assert.equal(j.ticket().scale, 'small', 'and they are all told the same thing');
+});
+
+test('a re-plan judges the size again rather than inheriting the last answer', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'small at first glance',
+    scale: 'small',
+  });
+  assert.equal(j.ticket().scale, 'small');
+
+  // Round again. A stale "small" must not outlive the plan that justified it.
+  j.add({ type: 'plan_rejected', reason: 'this is bigger than you think' });
+  assert.equal(j.add({ type: 'stage_started', stage: 'plan', runId: 'r2' }).scale, 'standard');
+});
+
+test('a stage that stops to ask keeps its conversation, so the answer can carry on', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  j.add({
+    type: 'question_asked',
+    runId: 'r1',
+    question: 'which config is live?',
+    reasoning: 'two disagree',
+  });
+  const blocked = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+    sessionId: 'sess-abc',
+  });
+
+  assert.equal(blocked.session, 'sess-abc', 'there is something to come back to');
+
+  const answered = j.add({ type: 'question_answered', answer: 'the one in etc/' });
+  assert.equal(answered.session, 'sess-abc', 'and the answer does not throw it away');
+  assert.equal(answered.answer, 'the one in etc/');
+});
+
+test('a run that ends with nothing left to say leaves no conversation to resume', () => {
+  // A stale id would invite resuming a conversation that has already finished,
+  // and the manager would be answering a question nobody is waiting on.
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'blocked',
+    summary: 'waiting',
+    sessionId: 'sess-abc',
+  });
+  assert.equal(j.ticket().session, 'sess-abc');
+
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r2' });
+  const finished = j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'completed',
+    summary: 'the plan',
+  });
+  assert.equal(finished.session, null, 'the stage finished; there is nothing to resume');
+});
+
+test('a ticket keeps its own git record: branch, base, commits, pull request', () => {
+  const j = newTicket();
+  j.add({ type: 'branched', branch: 'wb/t1', base: 'base1234' });
+
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  // Planning changes nothing on disk, so it commits nothing.
+  j.add({ type: 'stage_finished', runId: 'r1', outcome: 'completed', summary: 'the plan' });
+  j.add({ type: 'plan_approved' });
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'c0ffee12',
+  });
+
+  const t = j.add({ type: 'pr_opened', url: 'https://example/pr/1' });
+
+  assert.equal(t.branch, 'wb/t1');
+  assert.equal(t.base, 'base1234', 'where the work started, so it can be placed later');
+  assert.deepEqual(t.commits, ['c0ffee12'], 'only stages that changed something');
+  assert.equal(t.prUrl, 'https://example/pr/1');
+});
+
+test('a ticket written without a gate builds what it plans', () => {
+  const j = new Journal();
+  j.add({ type: 'ticket_created', title: 'do a thing', body: 'details', requiresApproval: false });
+  j.add({ type: 'queued' });
+
+  const planned = runStage(j, 'plan', { summary: 'the plan' });
+
+  assert.equal(planned.status, 'implementing', 'it does not stop to be approved');
+  assert.equal(planned.plan, 'the plan', 'and the plan is still recorded');
+  assert.equal(needsYou(planned), false, 'nothing is waiting on the manager');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+
+  // Only the gate moves. Everything after it is the same ticket it always was.
+  runStage(j, 'implement');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'review' });
+});
+
+test('the gate is what a ticket was written with, and the default is to have one', () => {
+  const gated = newTicket();
+  assert.equal(gated.ticket().requiresApproval, true, 'saying nothing means the gate stays');
+  assert.equal(runStage(gated, 'plan').status, 'plan_gate');
+
+  // A re-plan does not lose it: the gate belongs to the ticket, not to the run.
+  gated.add({ type: 'plan_rejected', reason: 'wrong problem' });
+  assert.equal(runStage(gated, 'plan').status, 'plan_gate');
+
+  // Nor does rewriting the ticket, which says nothing about how it is worked.
+  gated.add({ type: 'ticket_edited', title: 'do a better thing' });
+  assert.equal(gated.ticket().requiresApproval, true);
+});

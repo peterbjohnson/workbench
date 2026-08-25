@@ -1,0 +1,1122 @@
+:root {
+  --bg: #f6f6f4;
+  --card: #fff;
+  --line: #ddd9d2;
+  --ink: #23201c;
+  --dim: #6d675e;
+  --accent: #9a5b33;
+  --ok: #2f6b46;
+  --bad: #a33a2a;
+  /* Next, but not moving. Deliberately colder and duller than --accent: that one
+     means "needs you", and it is the only thing on this board that must catch an
+     eye crossing it. */
+  --wait: #8a7115;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1815;
+    --card: #232019;
+    --line: #3a352d;
+    --ink: #ece7df;
+    --dim: #98918a;
+    --accent: #d08a5c;
+    --ok: #7fbf9a;
+    --bad: #e08573;
+    --wait: #c4ac57;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    15px/1.5 ui-sans-serif,
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+input,
+button,
+textarea {
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  background: var(--card);
+}
+
+button {
+  cursor: pointer;
+}
+
+button[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button[disabled]:hover {
+  border-color: var(--line);
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.go {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Header ------------------------------------------------------------------ */
+
+header {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.8rem 1.2rem;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 2;
+}
+
+header h1 {
+  font-size: 1rem;
+  margin: 0;
+  font-weight: 600;
+}
+
+header form {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.waiting {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.quiet {
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+.error {
+  background: var(--bad);
+  color: #fff;
+  padding: 0.5rem 1.2rem;
+  font-size: 0.85rem;
+}
+
+/* Board ------------------------------------------------------------------- */
+
+.board {
+  display: flex;
+  gap: 1rem;
+  padding: 1.2rem;
+  overflow-x: auto;
+  align-items: start;
+}
+
+.col {
+  flex: 0 0 15rem;
+  border-radius: 8px;
+  padding: 0.35rem;
+  border: 1px dashed transparent;
+}
+
+.col.drop {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.col h2 {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+  margin: 0 0 0.5rem 0.2rem;
+  font-weight: 600;
+}
+
+.col h2 span {
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.5rem;
+  user-select: none;
+}
+
+.card.needs {
+  border-left-color: var(--accent);
+}
+
+.card.busy {
+  border-left-color: var(--ok);
+}
+
+.card.queued {
+  border-left-color: var(--wait);
+}
+
+.card.over {
+  opacity: 0.55;
+}
+
+/* Where the dragged card would land: in front of this one. */
+.card.before {
+  box-shadow: 0 -3px 0 var(--accent);
+}
+
+.card .top {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-size: 0.7rem;
+  color: var(--dim);
+  /* Marks wrap as whole marks. "2 commits to salvage" broken across three lines
+     reads as three marks and pushes the title out of the card. */
+  flex-wrap: wrap;
+}
+
+.card .top > span {
+  white-space: nowrap;
+}
+
+.card .id {
+  font-variant-numeric: tabular-nums;
+}
+
+.card .title {
+  margin-top: 0.15rem;
+}
+
+.card .title.stopped {
+  text-decoration: line-through;
+  color: var(--dim);
+}
+
+.card .flag {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.card .running {
+  color: var(--ok);
+}
+
+.card .queued {
+  color: var(--wait);
+}
+
+/* Panel ------------------------------------------------------------------- */
+
+aside {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(38rem, 94vw);
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  padding: 1.2rem;
+  overflow-y: auto;
+  box-shadow: -8px 0 24px #0002;
+  z-index: 3;
+}
+
+aside .close {
+  float: right;
+}
+
+aside h2 {
+  margin: 0.2rem 0 0.1rem;
+  font-size: 1.05rem;
+}
+
+/* Where the ticket has got to, above everything else in the panel. One line of
+   stages, so the answer to "what is happening" costs no scrolling and no clicks. */
+.pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.9rem;
+  font-size: 0.8rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.pipeline .stage {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.pipeline .status.ok {
+  color: var(--ok);
+}
+
+.pipeline .status.bad {
+  color: var(--bad);
+}
+
+.pipeline .status.going {
+  color: var(--accent);
+}
+
+/* Asked for changes: neither good news nor bad, so it takes no colour. */
+.pipeline .status.note,
+.run .status.note {
+  color: var(--ink);
+}
+
+/* Why the agent stopped, under what it asked. */
+.box .meta.why {
+  margin: 0.4rem 0 0;
+}
+
+aside .meta {
+  color: var(--dim);
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.box {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem;
+  margin: 0.8rem 0;
+  white-space: pre-wrap;
+  font-size: 0.88rem;
+}
+
+.box.ask {
+  border-color: var(--accent);
+}
+
+.box h3,
+section > h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+
+.row input,
+.row textarea {
+  flex: 1;
+}
+
+/* Everything you do to a ticket that needs something typed or picked: what it is,
+   what you say, and the button. Three columns down the whole block, so the buttons
+   are the same width and in the same place rather than reading as a row of
+   differently-sized decisions. */
+.acts {
+  display: grid;
+  grid-template-columns: auto 1fr 5rem;
+  gap: 0.5rem;
+  align-items: start;
+  margin: 0.8rem 0;
+}
+
+/* The rows are forms, so each submits on its own — and `contents` puts their three
+   children in the grid above rather than in a box of their own. */
+.act {
+  display: contents;
+}
+
+.act > label {
+  text-align: right;
+  color: var(--dim);
+  font-size: 0.8rem;
+  padding-top: 0.45rem;
+  white-space: nowrap;
+}
+
+.act > button {
+  width: 100%;
+}
+
+/* The box is sized by what is in it (Act sets the height), so it neither scrolls
+   the start of a paragraph out of sight nor takes a drag handle to read. */
+.act > textarea {
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  line-height: 1.5;
+}
+
+/* Picking tickets to wait for: chosen ones as chips, and one box to filter in. */
+.pick {
+  position: relative;
+}
+
+.chosen {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  padding: 0.2rem 0.35rem;
+}
+
+.chosen input {
+  flex: 1;
+  min-width: 8rem;
+  border: none;
+  background: none;
+  padding: 0.15rem;
+  outline: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.05rem 0.15rem 0.05rem 0.45rem;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip button {
+  border: none;
+  background: none;
+  color: var(--dim);
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.chip button:hover {
+  color: var(--bad);
+}
+
+.options {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 0.2rem);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 12rem;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px #0003;
+}
+
+.options button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+  background: none;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.options button:hover {
+  background: var(--bg);
+}
+
+/* Why there is nothing to pick. An empty list that draws nothing at all is
+   indistinguishable from a control that does not work. */
+.options .none {
+  color: var(--dim);
+  font-size: 0.8rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.row .quiet {
+  align-self: center;
+}
+
+/* Writing a ticket, and rewriting one. */
+
+.form {
+  margin: 0.8rem 0;
+}
+
+.form label {
+  display: block;
+  margin-bottom: 0.8rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+
+.form input,
+.form textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.3rem;
+  color: var(--ink);
+  font-size: 0.9rem;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
+.form textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* A note under a field is prose, not another field name — the label's own casing
+   and tracking would otherwise shout a whole sentence at you. */
+.form label > .quiet {
+  display: block;
+  margin-top: 0.3rem;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+  font-size: 0.78rem;
+}
+
+/* A choice about how the ticket is worked, rather than a field of it: the label
+   reads across, not down, and says what the current setting will do. */
+.form label.switch {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.5rem;
+  align-items: center;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.form label.switch input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+.form label.switch .quiet {
+  grid-column: 2;
+  font-size: 0.78rem;
+}
+
+details {
+  margin: 0.8rem 0;
+  font-size: 0.85rem;
+}
+
+summary {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+
+dl.git {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.8rem;
+  margin: 0.6rem 0 0;
+}
+
+dl.git dt {
+  color: var(--dim);
+}
+
+dl.git dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.run {
+  border-left: 2px solid var(--line);
+  padding: 0 0 0.1rem 0.7rem;
+  margin: 0.7rem 0;
+}
+
+.run.running {
+  border-left-color: var(--ok);
+}
+
+.run.bad {
+  border-left-color: var(--bad);
+}
+
+.run .head {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.run .stage {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* What happened, in a word, on every stage. */
+.run .status {
+  font-weight: 600;
+}
+
+.run .status.ok {
+  color: var(--ok);
+}
+
+.run .status.bad {
+  color: var(--bad);
+}
+
+.run .status.going {
+  color: var(--accent);
+}
+
+.run details {
+  margin: 0;
+}
+
+.run summary {
+  font: inherit;
+  color: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* The finish line, agreed at the gate. */
+
+.run h4 {
+  margin: 0.6rem 0 0.3rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+ul.done-when {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+}
+
+/* Improvements that are not this ticket's job, one click from being one. Folded,
+   and counted on the fold: six suggestions are longer than the run that made them. */
+
+.run .later {
+  margin-top: 0.6rem;
+}
+
+/* A heading rather than a line of the run, which is what `.run summary` makes of
+   every fold inside a stage block. */
+.run .later > summary {
+  font-size: 0.72rem;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+
+/* The buttons sit against the top of the idea, not halfway down it: a two-line
+   suggestion had them floating in the middle of the sentence. */
+.later .row {
+  align-items: flex-start;
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+
+.later .idea {
+  flex: 1;
+}
+
+/* Stacked, so the pair reads as one decision with two answers rather than as two
+   buttons competing for the width the idea needs. */
+.later .pair {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 7rem;
+}
+
+.later button {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
+  width: 100%;
+}
+
+/* An idea that is already a ticket. It sits where its buttons were, so the row
+   reads as settled rather than as an offer nobody took up. */
+.later .made {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
+  color: var(--dim);
+}
+
+/* The approved steps, and how far the stage says it has got. */
+.steps {
+  margin: 0.4rem 0 0;
+  padding-left: 1.3rem;
+  font-size: 0.85rem;
+  color: var(--dim);
+}
+
+.steps li {
+  margin: 0.1rem 0;
+}
+
+.steps li.past {
+  text-decoration: line-through;
+}
+
+.steps li.now {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The second fold: everything the stage wrote, which runs to pages. A control
+   rather than a line of prose, so it reads as the way in to the rest. */
+.run .prose {
+  margin: 0.6rem 0 0;
+}
+
+.run .prose > summary {
+  font-size: 0.72rem;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+
+.run p {
+  margin: 0.25rem 0 0;
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+}
+
+.run ul {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+.log {
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: var(--dim);
+  white-space: pre-wrap;
+  margin-top: 0.6rem;
+}
+
+.log b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* A log line is a line, not a section heading like Git and Progress above. */
+.log details {
+  margin: 0;
+  font-size: inherit;
+}
+
+.log summary {
+  font: inherit;
+  color: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.log .field {
+  margin: 0.4rem 0 0.6rem 1.2rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--line);
+}
+
+.log .field > span {
+  color: var(--accent);
+}
+
+.log .field > div {
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  color: var(--dim);
+  padding: 2rem 1.2rem;
+}
+
+/* Tabs ------------------------------------------------------------------- */
+
+/* The board, and the three pages that are the workbench itself. Beside the title,
+   because they are what you are looking at rather than something you do to it. */
+
+.tabs {
+  display: flex;
+  gap: 0.15rem;
+  margin-right: auto;
+}
+
+.tabs a {
+  color: var(--dim);
+  text-decoration: none;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.tabs a:hover {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.tabs a.picked {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--card);
+  border-color: var(--line);
+}
+
+/* Writing a new ticket, at the top of the column it appears in. */
+.col .new {
+  width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+/* Pages ------------------------------------------------------------------ */
+
+.page {
+  padding: 1.2rem;
+}
+
+.page .error {
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  margin: 0.6rem 0;
+}
+
+/* Agents and skills: what there is down the side, the one you are reading beside it. */
+
+.docs {
+  display: flex;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.docs nav {
+  flex: 0 0 15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.docs nav button {
+  display: block;
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-left: 3px solid var(--line);
+}
+
+.docs nav button.picked {
+  border-left-color: var(--accent);
+  background: var(--card);
+}
+
+.docs nav .name {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+/* An unsaved change, on the file it is in — the list is where you find your way
+   back to one you started editing and left. */
+.docs nav .name b {
+  color: var(--accent);
+}
+
+.docs nav .quiet {
+  display: block;
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.docs article {
+  flex: 1;
+  min-width: 0;
+  max-width: 52rem;
+}
+
+.docs .head {
+  display: flex;
+  gap: 0.7rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.6rem;
+}
+
+.docs .head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.docs .head .row {
+  margin: 0 0 0 auto;
+}
+
+.docs .editor {
+  display: block;
+  width: 100%;
+  min-height: 60vh;
+  margin-top: 0.8rem;
+  font:
+    13px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  resize: vertical;
+}
+
+/* Markdown, as read ------------------------------------------------------ */
+
+.md {
+  font-size: 0.92rem;
+  overflow-wrap: break-word;
+}
+
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 1.4rem 0 0.4rem;
+  line-height: 1.3;
+}
+
+.md h2 {
+  font-size: 1.15rem;
+}
+
+.md h3 {
+  font-size: 1rem;
+}
+
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 0.88rem;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.md p {
+  margin: 0.6rem 0;
+}
+
+.md ul,
+.md ol {
+  margin: 0.6rem 0;
+  padding-left: 1.4rem;
+}
+
+.md li {
+  margin: 0.25rem 0;
+}
+
+.md code {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 0.25rem;
+  font-size: 0.86em;
+}
+
+.md pre,
+.md .front {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem;
+  overflow-x: auto;
+  font:
+    12.5px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+/* The frontmatter of an agent file is its whole configuration — the model, the
+   effort, the tools it may use. Set apart from the prose, not hidden. */
+.md .front {
+  border-left: 3px solid var(--accent);
+  margin: 0 0 1rem;
+}
+
+.md blockquote {
+  margin: 0.8rem 0;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--line);
+  color: var(--dim);
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.2rem 0;
+}
+
+.md table {
+  border-collapse: collapse;
+  margin: 0.8rem 0;
+  font-size: 0.88rem;
+}
+
+.md th,
+.md td {
+  border: 1px solid var(--line);
+  padding: 0.3rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md th {
+  background: var(--bg);
+}
+
+/* Settings --------------------------------------------------------------- */
+
+.settings {
+  max-width: 52rem;
+}
+
+.settings section {
+  margin-bottom: 1.6rem;
+}
+
+.settings h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+/* What it is, what it is set to, and what it does — three columns, so the values
+   line up down the page and the prose does not push them about. */
+.setting {
+  display: grid;
+  grid-template-columns: 12rem 14rem 1fr;
+  gap: 0.4rem 1rem;
+  align-items: start;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.setting label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding-top: 0.4rem;
+}
+
+.setting input,
+.setting select,
+.setting textarea {
+  width: 100%;
+  font-size: 0.88rem;
+}
+
+.setting textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* A fact about this installation rather than a decision: it reads as the value it
+   is, not as a box that would take a change and then refuse to save it. */
+.setting .fixed {
+  font-size: 0.82rem;
+  color: var(--dim);
+  padding-top: 0.45rem;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.setting .quiet {
+  padding-top: 0.45rem;
+}
+
+.settings .save {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  padding: 0.7rem 0;
+  align-items: center;
+  margin: 0;
+}
+
+/* How much is on a page, on its tab. Dimmer than the name: it is worth a glance,
+   not a read — and it must not compete with "waiting on you", which is the one
+   thing in this bar that has to catch an eye crossing it. */
+.tabs .count {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}

@@ -1,0 +1,50 @@
+{
+  "name": "workbench",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "bin": {
+    "wb": "bin/wb.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "agents",
+    "ui/dist"
+  ],
+  "scripts": {
+    "wb": "node src/cli/index.ts",
+    "serve": "yarn build && node src/cli/index.ts serve",
+    "build": "vite build --config ui/vite.config.ts",
+    "ui": "vite --config ui/vite.config.ts",
+    "test": "node --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ui",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "npm run build && npm run build:code",
+    "build:code": "tsc -p tsconfig.build.json && cp src/code/py_symbols.py dist/code/"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "printWidth": 100
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "prettier": "3.9.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vite": "^8.2.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "gray-matter": "^4.0.3",
+    "typescript": "^5.7.0",
+    "zod": "^4"
+  }
+}

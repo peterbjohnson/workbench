@@ -1,0 +1,515 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+import { CONFIG_FILE, findHome, loadConfig, PACKAGE_ROOT, type Config } from '../config.ts';
+import { reconcile } from '../orchestrator/loop.ts';
+import { checkCredentials, verifyCredentials } from '../run/credentials.ts';
+import { startWorkbench } from '../workbench.ts';
+import { createClient, type Client } from '../api/client.ts';
+import { UI_DIST } from '../api/server.ts';
+import { heldBy } from '../domain/rules.ts';
+import type { Ticket } from '../domain/ticket.ts';
+
+const USAGE = `
+workbench — a board of tickets that agents work through
+
+  wb init [dir]                start a workbench in a repository, in .workbench/
+  wb auth                      whether the workbench can reach the model service
+  wb serve                     run the workbench: the API and the orchestrator
+  wb new <title> [body]        write a ticket down, in the backlog
+  wb new --from <id> <title> [body]
+                               carry on from a ticket, starting on its branch
+  wb new --no-approval <title> [body]
+                               let its plan go straight on to being built
+  wb new --after <a,b> <title> [body]
+                               hold it until those tickets offer their work or end
+  wb edit <id> <title> [body]  rewrite it; the instructions are left alone if omitted
+  wb queue <id>                commit to it: the workbench may now start it
+  wb backlog <id>              take it back out of the queue, before it starts
+  wb move <id> [before]        put it in front of another ticket, or last
+  wb wait <id> <a,b|none>      hold it until those tickets offer their work or end
+  wb list                      show every ticket and where it is
+  wb show <id>                 one ticket, with everything that happened to it
+  wb approve <id>              approve a plan, letting implementation start
+  wb reject <id> <reason>      send it back to be planned again; the reason goes to the plan
+  wb changes <id> <text>       keep the work and put these right; back to implement
+  wb answer <id> <text>        answer a blocked ticket and let it carry on
+  wb restart <id>              run a failed stage again, from the top
+  wb ship <id>                 offer what it has as a pull request, and decide there
+  wb cancel <id> [why]         stop a ticket, including one that is running
+  wb wip <n>                   how many tickets may run at once
+
+Every command except "serve" talks to a running workbench over HTTP, so the
+board and this command line can do exactly the same things.
+
+"wb serve" calls real agents and spends real money.
+`.trim();
+
+/**
+ * A `.env` beside the workbench is loaded before anything reads the environment.
+ * Putting a credential in a file and expecting it to work is the obvious thing to
+ * do, and `export` in one terminal does not reach a workbench started in another.
+ * Node does this natively, so it costs a line and no dependency.
+ *
+ * It is not committed — see .gitignore — and a ticket's worktree is a fresh
+ * checkout of the branch, so it never appears in front of an agent.
+ *
+ * Read from the home, not from the workbench's own code: installed as a package that
+ * would be `node_modules`, which is nobody's idea of where a credential goes.
+ */
+function loadEnvFile(home: string): void {
+  // The repository root first, because that is where people put it.
+  for (const file of [path.join(home, '..', '.env'), path.join(home, '.env')]) {
+    if (fs.existsSync(file)) {
+      process.loadEnvFile(file);
+      return;
+    }
+  }
+}
+
+async function main(argv: string[]): Promise<number> {
+  const [command, ...args] = argv;
+
+  if (command === undefined || command === '--help' || command === 'help') {
+    console.log(USAGE);
+    return command === undefined ? 1 : 0;
+  }
+  if (command === 'init') return init(args[0]);
+
+  const home = findHome();
+  loadEnvFile(home ?? process.cwd());
+
+  // Answered without a running workbench — and without a workbench at all — because it
+  // is what you ask when nothing works. Requiring setup to diagnose setup is backwards.
+  // It really uses the credential: "there is one" and "it is accepted" are different
+  // answers, and this command is asked precisely when that difference matters.
+  if (command === 'auth') {
+    const credentials = await verifyCredentials();
+    if (credentials.ok) {
+      console.log(`Ready, using ${credentials.how}.`);
+      return 0;
+    }
+    console.error(`Not set up: ${credentials.why}.\n\n${credentials.fix}`);
+    return 1;
+  }
+  if (home === undefined) {
+    console.error(
+      `No workbench here. Run "wb init" in the repository you want one for.\n\n` +
+        `Looked for ${CONFIG_FILE} in this directory and in .workbench/, and in every\n` +
+        `directory above. WB_HOME overrides the search.`,
+    );
+    return 1;
+  }
+
+  const config = loadConfig(home);
+  if (command === 'serve') return serve(config);
+
+  const wb = createClient(`http://127.0.0.1:${config.port}`);
+
+  switch (command) {
+    case 'new': {
+      // Flags first, in any order, and what is left is the title and the body.
+      // Reading `--from` by position alone worked until there were two flags.
+      const rest = [...args];
+      const takeFlag = (name: string): boolean => {
+        const at = rest.indexOf(name);
+        if (at === -1) return false;
+        rest.splice(at, 1);
+        return true;
+      };
+      const takeValue = (name: string): string | undefined => {
+        const at = rest.indexOf(name);
+        return at === -1 ? undefined : rest.splice(at, 2)[1];
+      };
+
+      const noGate = takeFlag('--no-approval');
+      const from = takeValue('--from');
+      const after = takeValue('--after');
+      const [title, body = ''] = rest;
+
+      const unknown = rest.find((arg) => arg.startsWith('--'));
+      if (unknown !== undefined) return fail(`unknown option ${unknown}`);
+      if (args.includes('--from') && from === undefined) return fail('carry on from which ticket?');
+      if (args.includes('--after') && after === undefined)
+        return fail('start after which tickets?');
+      if (!title) return fail('a ticket needs a title');
+
+      const ticket = await wb.create(title, body, {
+        from,
+        ...(noGate ? { requiresApproval: false } : {}),
+        ...(after === undefined ? {} : { waitsFor: after.split(',').map((o) => o.trim()) }),
+      });
+      console.log(`${ticket.id}  ${ticket.title}`);
+      if (from !== undefined) console.log(`starting from ${from}'s work, on ${ticket.branch}`);
+      if (noGate) console.log('it will build its own plan without stopping to be approved');
+      if (ticket.waitsFor.length > 0) {
+        console.log(
+          `it starts after ${ticket.waitsFor.join(', ')} have offered their work or ended`,
+        );
+      }
+      console.log(`in the backlog — nothing starts until: wb queue ${ticket.id}`);
+      return 0;
+    }
+
+    case 'list': {
+      const tickets = await wb.tickets();
+      if (tickets.length === 0) {
+        console.log('No tickets. Add one with: wb new "<title>"');
+        return 0;
+      }
+      for (const t of tickets) {
+        const held = heldBy(t, tickets);
+        const waiting =
+          held.length === 0 ? '' : `  (waits for ${held.map((h) => h.id).join(', ')})`;
+        console.log(`${t.id.padEnd(6)} ${label(t)}  ${t.title}${waiting}`);
+      }
+      return 0;
+    }
+
+    case 'edit': {
+      const [id, title, body] = args;
+      if (!id) return fail('which ticket?');
+      if (!title) return fail('a ticket needs a title');
+      // Omitting the instructions leaves them alone rather than wiping them: losing
+      // what you wrote by forgetting an argument is not a thing this should do.
+      const ticket = await wb.edit(id, body === undefined ? { title } : { title, body });
+      console.log(`${ticket.id}  ${ticket.title}`);
+      return 0;
+    }
+
+    case 'queue': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.queue(args[0]);
+      console.log(`${args[0]} queued`);
+      return 0;
+    }
+
+    case 'backlog': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.backlog(args[0]);
+      console.log(`${args[0]} back in the backlog`);
+      return 0;
+    }
+
+    case 'move': {
+      const [id, before] = args;
+      if (!id) return fail('which ticket?');
+      const order = await wb.move(id, before ?? null);
+      console.log(order.map((t) => `${t.id.padEnd(6)} ${t.title}`).join('\n'));
+      return 0;
+    }
+
+    case 'wait': {
+      const [id, others] = args;
+      if (!id) return fail('which ticket?');
+      if (!others) return fail('wait for which tickets? "none" takes them off again');
+      const ticket = await wb.wait(
+        id,
+        others === 'none' ? [] : others.split(',').map((o) => o.trim()),
+      );
+      console.log(
+        ticket.waitsFor.length === 0
+          ? `${id} waits for nothing`
+          : `${id} waits for ${ticket.waitsFor.join(', ')} — it starts once they have all ` +
+              'offered their work or ended',
+      );
+      return 0;
+    }
+
+    case 'show':
+      return show(wb, config, args[0]);
+
+    case 'approve': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.approve(args[0]);
+      console.log(`${args[0]} approved`);
+      return 0;
+    }
+
+    case 'reject': {
+      const [id, reason] = args;
+      if (!id) return fail('which ticket?');
+      if (!reason) return fail('say why, so the next plan knows');
+      await wb.reject(id, reason);
+      console.log(`${id} sent back`);
+      return 0;
+    }
+
+    case 'changes': {
+      const [id, changes] = args;
+      if (!id) return fail('which ticket?');
+      if (!changes) return fail('say what to put right');
+      await wb.changes(id, changes);
+      console.log(`${id} back to implement, keeping its work`);
+      return 0;
+    }
+
+    case 'answer': {
+      const [id, answer] = args;
+      if (!id) return fail('which ticket?');
+      if (!answer) return fail('an answer is needed');
+      await wb.answer(id, answer);
+      console.log(`${id} answered`);
+      return 0;
+    }
+
+    case 'ship': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.ship(args[0]);
+      console.log(`${args[0]} offered as a pull request`);
+      return 0;
+    }
+
+    case 'restart': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.restart(args[0]);
+      console.log(`${args[0]} restarted`);
+      return 0;
+    }
+
+    case 'cancel': {
+      const [id, reason] = args;
+      if (!id) return fail('which ticket?');
+      await wb.cancel(id, reason ?? '');
+      console.log(`${id} cancelled`);
+      return 0;
+    }
+
+    case 'wip': {
+      const n = Number(args[0]);
+      if (!Number.isInteger(n)) return fail('how many tickets at once?');
+      const policy = await wb.setPolicy({ wipLimit: n });
+      console.log(`at most ${policy.wipLimit} ticket(s) will run at once`);
+      return 0;
+    }
+
+    default:
+      return fail(`no such command: ${command}`);
+  }
+}
+
+/**
+ * Starts a workbench in a repository: the one command that runs before there is
+ * anything to configure.
+ *
+ * It writes only what a project has to own — where its branch is, what its checks
+ * are, and the skills saying how work of a kind is done here. No agents: the four
+ * that ship are used until a project puts its own `<stage>.md` alongside, and only
+ * that stage is then the project's to keep up to date. Scaffolding all four would
+ * fork all four, for a change nobody made.
+ */
+async function init(where: string | undefined): Promise<number> {
+  const target = path.resolve(where ?? process.cwd());
+
+  // A workbench runs tickets in git worktrees cut from this repository. Started
+  // anywhere else it would install cleanly and then fail on the first ticket.
+  if (!fs.existsSync(path.join(target, '.git'))) {
+    console.error(`${target} is not a git repository. Run this at the root of one.`);
+    return 1;
+  }
+
+  const existing = findHome(target);
+  if (existing !== undefined) {
+    console.error(`There is already a workbench for this repository, in ${existing}.`);
+    return 1;
+  }
+
+  const home = path.join(target, '.workbench');
+  const write = (relative: string, body: string): void => {
+    const file = path.join(home, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+
+  write(
+    CONFIG_FILE,
+    `${JSON.stringify({ base: await currentBranch(target), checks: [] }, null, 2)}\n`,
+  );
+
+  // The database and the worktrees are this machine's, not the project's history.
+  write('.gitignore', ['data/', '.worktrees/', '.env', '.env.*', ''].join('\n'));
+
+  // Skills reach an agent as a local plugin, and a plugin is its manifest. Written
+  // now, empty of skills, so the first one anyone adds simply works.
+  write(
+    '.claude-plugin/plugin.json',
+    `${JSON.stringify(
+      {
+        name: 'workbench',
+        version: '0.0.0',
+        description: "This repository's own skills, loaded into the agents the workbench runs.",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  write('skills/.gitkeep', '');
+
+  const shown = path.relative(target, home) || home;
+  console.log(
+    [
+      `Workbench started in ${shown}/`,
+      '',
+      `  ${CONFIG_FILE.padEnd(22)}the branch to work from, and the checks every ticket must pass`,
+      `  ${'skills/'.padEnd(22)}how work of a kind is done here — one directory each`,
+      '',
+      'Next:',
+      '  wb auth               prove the workbench can reach the model service',
+      '  wb serve              run the board',
+      '',
+      `The four agents come from ${path.join(PACKAGE_ROOT, 'agents')}.`,
+      `Copy one into ${shown}/agents/ to change how that stage works; the rest keep`,
+      'coming from the workbench.',
+    ].join('\n'),
+  );
+  return 0;
+}
+
+/**
+ * The branch this repository is on, which is the one new work should start from.
+ *
+ * Asked rather than assumed. Writing `main` into a repository whose branch is
+ * `master` produces a workbench that installs cleanly and then blocks the first
+ * ticket on `git rev-parse main` — which is how this was found.
+ *
+ * `symbolic-ref` rather than `rev-parse`, because it answers before the first commit,
+ * which is exactly when someone is most likely to be setting this up.
+ */
+async function currentBranch(repo: string): Promise<string> {
+  try {
+    const { stdout } = await promisify(execFile)('git', ['symbolic-ref', '--short', 'HEAD'], {
+      cwd: repo,
+    });
+    return stdout.trim() || 'main';
+  } catch {
+    return 'main';
+  }
+}
+
+async function show(wb: Client, config: Config, id: string | undefined): Promise<number> {
+  if (!id) return fail('which ticket?');
+  const { ticket: t, events } = await wb.ticket(id);
+
+  console.log(`${t.id}  ${t.title}`);
+  if (t.body) console.log(t.body);
+  console.log(`\nstatus   ${label(t).trim()}`);
+  if (t.waitsFor.length > 0) {
+    console.log(`waits    ${t.waitsFor.join(', ')}, until each offers its work or ends`);
+  }
+  console.log(`branch   ${t.branch}`);
+  // Only when it is not the default: otherwise every ticket carries a line saying
+  // it does the ordinary thing.
+  if (!t.requiresApproval) console.log(`gate     none — it builds its plan unapproved`);
+  if (t.base) console.log(`base     ${t.base.slice(0, 8)}`);
+  if (t.commits.length > 0)
+    console.log(`commits  ${t.commits.map((c) => c.slice(0, 8)).join(' ')}`);
+  if (t.prUrl) console.log(`pr       ${t.prUrl}`);
+  const stale = await unpushedBase(config);
+  if (stale) console.log(stale);
+  if (t.rejection) console.log(`sent back  ${t.rejection}`);
+  if (t.question) console.log(`\nwaiting on you:\n  ${t.question.question}`);
+  if (t.plan) console.log(`\n--- plan (${t.scale}) ---\n${t.plan}`);
+
+  console.log(`\n--- history ---`);
+  for (const e of events) console.log(`${e.at}  ${e.type}${describe(e)}`);
+  return 0;
+}
+
+/** Runs the workbench in this process, and says what it is doing as it goes. */
+async function serve(config: Config): Promise<number> {
+  const wb = await startWorkbench(config, (message) => console.log(`\n${message}\n`));
+
+  for (const id of reconcile(wb.store)) console.log(`${id}  picked up mid-stage; it needs you`);
+
+  // Only the good news: the orchestrator announces the bad news itself, on its first
+  // tick and on every change after it, and saying it twice reads like two problems.
+  if (config.runner !== 'fake') {
+    const credentials = await checkCredentials();
+    if (credentials.ok) console.log(`credentials: ${credentials.how}\n`);
+  }
+
+  if (!fs.existsSync(UI_DIST)) {
+    console.warn('⚠️  the board is not built: run "yarn build". Everything else works.\n');
+  }
+
+  if (config.checks.length === 0) {
+    console.warn(
+      '⚠️  no checks configured: verify can only report that it could not break something,\n' +
+        '    not that anything passes. Set "checks" in workbench.config.json.\n',
+    );
+  }
+
+  wb.store.subscribe((e) => console.log(`${e.ticketId}  ${e.type}${describe(e)}`));
+  wb.orchestrator.start();
+  const how = config.runner === 'fake' ? 'fake agents, nothing is charged' : 'real agents';
+  console.log(`workbench on http://127.0.0.1:${wb.port}  (${how})  —  Ctrl-C to stop\n`);
+
+  await new Promise<void>((resolve) => {
+    process.once('SIGINT', () => resolve());
+    process.once('SIGTERM', () => resolve());
+  });
+
+  console.log('\nfinishing what is in flight...');
+  await wb.close();
+  return 0;
+}
+
+/**
+ * Warns when the manager's own base branch holds commits the remote does not, and
+ * which are therefore in no ticket. A ticket branches from the base as the remote
+ * has it, so work sitting only on this machine is invisible to it — worth knowing
+ * before approving a plan written against code you may be looking at and it is not.
+ */
+async function unpushedBase(config: Config): Promise<string | undefined> {
+  try {
+    const { stdout } = await promisify(execFile)(
+      'git',
+      ['rev-list', '--count', `origin/${config.base}..${config.base}`],
+      { cwd: config.repoRoot },
+    );
+    const ahead = stdout.trim();
+    if (ahead === '0') return undefined;
+    return (
+      `⚠️  your local ${config.base} is ${ahead} commit(s) ahead of the remote,\n` +
+      `    and none of them are in this ticket.`
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function fail(message: string): number {
+  console.error(`${message}\n\n${USAGE}`);
+  return 1;
+}
+
+function label(t: Ticket): string {
+  return (t.running ? `${t.status}*` : t.status).padEnd(17);
+}
+
+function describe(e: { type: string } & Record<string, unknown>): string {
+  if (e.type === 'stage_started') return `  ${String(e['stage'])}`;
+  if (e.type === 'stage_finished') return `  ${String(e['outcome'])}`;
+  if (e.type === 'tool_requested') {
+    return `  ${String(e['tool'])}${e['allowed'] === false ? ' — REFUSED' : ''}`;
+  }
+  if (e.type === 'checks_run') {
+    const results = Array.isArray(e['results']) ? (e['results'] as { ok?: unknown }[]) : [];
+    const failed = results.filter((r) => r.ok === false).length;
+    return `  ${results.length} check(s), ${failed === 0 ? 'all passed' : `${failed} FAILED`}`;
+  }
+  if (e.type === 'question_asked') return `  ${String(e['question'])}`;
+  if (e.type === 'blocked') return `  ${String(e['reason'])}`;
+  if (e.type === 'pr_opened') return `  ${String(e['url'])}`;
+  if (e.type === 'refreshed') return `  merged the base at ${String(e['base']).slice(0, 8)}`;
+  return '';
+}
+
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}

@@ -1,0 +1,206 @@
+export type Stage = 'plan' | 'implement' | 'review' | 'verify';
+
+/**
+ * How much the work warrants, as the plan judged it. Every stage runs at every
+ * scale — this changes how deep each one goes, never whether it happens. Four
+ * agent runs to delete two files was the right process at the wrong depth.
+ */
+export type Scale = 'small' | 'standard' | 'large';
+
+export type RunOutcome = 'completed' | 'blocked' | 'failed';
+
+/**
+ * One standing check, run by the workbench itself rather than by an agent. That is
+ * the point of it: whether the tests pass is the most important fact about a ticket,
+ * and it should be observed and recorded, not reported by something with an opinion.
+ */
+export type CheckRun = { command: string; ok: boolean; output: string };
+
+/** What bringing the base into a ticket's branch did. */
+export type Refreshed =
+  /** The branch already had the base. Nothing happened, and nothing is recorded. */
+  | { kind: 'up-to-date' }
+  | { kind: 'merged'; base: string; commit: string }
+  /** Left un-merged, and the branch is exactly as it was. */
+  | { kind: 'conflicted'; base: string; paths: string[] };
+
+/**
+ * Everything else in the system is derived from this list.
+ * Events are appended and never updated or deleted.
+ *
+ * `runId` means one thing wherever it appears: the stage run this belongs to, as
+ * the orchestrator made it for `stage_started`. Grouping by it gives you a stage.
+ * The runners are told theirs rather than inventing one — they used to put a
+ * per-message id here, which meant a run's own events all claimed to be different
+ * runs. The one exception is deliberate and reads as itself: a `stage_finished`
+ * written by `reconcile` says `interrupted`, because no run is answering it.
+ */
+export type EventBody =
+  | {
+      type: 'ticket_created';
+      title: string;
+      body: string;
+      /**
+       * The ticket this one carries on from, when it does. Its branch is where
+       * this one starts, so whatever it left behind is here to be worked on —
+       * the only way work survives a ticket that was not accepted.
+       */
+      continues?: string;
+      /**
+       * Whether the plan waits for the manager. Absent means it does, so every
+       * ticket written before this existed keeps the gate it was created under.
+       * Written only when it is `false`, because that is the half worth saying.
+       */
+      requiresApproval?: boolean;
+    }
+  /**
+   * The manager rewrote the ticket. Whichever field is here replaces what was
+   * there; the other is left alone. Both are what the ticket *is*, so a stage
+   * that has not started yet is briefed from the new words — and one already
+   * running keeps the brief it was given, because it has already read it.
+   */
+  | { type: 'ticket_edited'; title?: string; body?: string }
+  /** The manager committed to the work. Until this, the workbench leaves it alone. */
+  | { type: 'queued' }
+  /** Taken back out of the queue, before anything started on it. */
+  | { type: 'backlogged' }
+  /**
+   * The manager put this ticket somewhere else in the board's order — `before` is
+   * the ticket it now sits in front of, or null for the end.
+   *
+   * Order is not decoration: the workbench takes work from the top, so this is how
+   * the manager says which of several committed tickets goes first. Written as a
+   * neighbour rather than as a position, because a position means something
+   * different the moment anything else moves.
+   */
+  | { type: 'moved'; before: string | null }
+  /**
+   * This ticket must not start a stage until every one of `tickets` has offered
+   * its work or ended. The whole set each time, not a difference: the manager
+   * picks what it waits for and this is what they picked. Empty is no condition.
+   */
+  | { type: 'waits_for'; tickets: string[] }
+  /**
+   * Start the stage again, from the top. For a stage that failed rather than one
+   * that asked something: there is nothing to answer and nothing worth resuming.
+   */
+  | { type: 'stage_restarted' }
+  /**
+   * The manager says this will do: offer it as a pull request from wherever it
+   * has got to. Not a bypass of review — the pull request is still a review, and
+   * merging is still a deliberate act — but it means two agents disagreeing can
+   * no longer be the end of a ticket. Somebody has to be able to say when the
+   * work is good enough, and it is not the reviewer.
+   */
+  | { type: 'shipped' }
+  | { type: 'stage_started'; stage: Stage; runId: string }
+  /**
+   * The stage says it has started step `index` of the approved plan. Announced by
+   * the agent as it works, so a long run says where it has got to rather than only
+   * that it is running.
+   */
+  | { type: 'step_reached'; runId: string; index: number }
+  | { type: 'agent_said'; runId: string; text: string }
+  | {
+      type: 'tool_requested';
+      runId: string;
+      tool: string;
+      input: unknown;
+      allowed: boolean;
+      reason?: string;
+    }
+  /** The standing checks, as the workbench ran them at the start of the verify stage. */
+  | { type: 'checks_run'; runId: string; results: CheckRun[] }
+  | { type: 'question_asked'; runId: string; question: string; reasoning: string }
+  | { type: 'question_answered'; answer: string }
+  | {
+      type: 'stage_finished';
+      runId: string;
+      outcome: RunOutcome;
+      summary: string;
+      /**
+       * Set by review and verify when the approach itself is wrong. The reason
+       * goes to the next plan.
+       */
+      rejected?: string;
+      /**
+       * Set by review and verify when the approach is right and specific things
+       * are not. The ticket goes back to implement carrying these, rather than
+       * throwing the work away and planning it again.
+       */
+      changes?: string;
+      /** What this run cost, as the model service reported it. */
+      costUsd?: number;
+      /** The commit this stage left behind, when it changed anything. */
+      commit?: string;
+      /** Set by the plan stage: how much it judged the work to warrant. */
+      scale?: Scale;
+      /** Set by the plan stage: the steps the work breaks into, in order. */
+      steps?: string[];
+      /**
+       * Set by the plan stage: what would make this ticket finished. Agreed at
+       * the gate, and the only thing review is entitled to judge against.
+       */
+      doneWhen?: string[];
+      /**
+       * Improvements this stage noticed that are not this ticket's job. Kept so
+       * the manager can make tickets of them, rather than lost or, worse, made
+       * into reasons to reject work that was asked for.
+       */
+      later?: string[];
+      /**
+       * The conversation this run was, set only when it stopped with something left
+       * to say. Answering the question picks it back up instead of starting again.
+       */
+      sessionId?: string;
+    }
+  /** The ticket's branch exists, cut from this commit of the base. */
+  | { type: 'branched'; branch: string; base: string }
+  /**
+   * The base had moved on, and the branch merged the new one in. Recorded because
+   * it puts a commit on the branch that no stage made, and because it moves what
+   * the ticket's change is measured against: from here the diff a reviewer reads
+   * is the ticket's own work, not everything the base gained while it was busy.
+   *
+   * Only written when something actually merged. A branch that already had the
+   * base is the ordinary case and says nothing.
+   */
+  | { type: 'refreshed'; base: string; commit: string }
+  | { type: 'plan_approved' }
+  /**
+   * The manager says the approach is wrong: back to planning, and the reason is
+   * what the next plan is written against. The expensive "no" — it buys a whole
+   * new plan — and the counterpart of `changes_requested`, which does not.
+   *
+   * Named for the gate it was written for, and kept that way because renaming an
+   * event rewrites history that is already in the database. It has never been
+   * limited to the gate: a ticket is sent back the same way wherever it has got to.
+   */
+  | { type: 'plan_rejected'; reason: string }
+  /**
+   * The manager says the approach is right and specific things are not: back to
+   * implement, keeping the work. The same thing review and verify say with
+   * `changes`, said by the one person nothing overrules — so, unlike theirs, it is
+   * not capped and does not count a revision. `MAX_REVISIONS` exists because two
+   * agents repeating an objection is evidence about the approach; a manager
+   * repeating one is just the manager, and cutting them off after twice would turn
+   * a third request into a re-plan nobody asked for.
+   */
+  | { type: 'changes_requested'; changes: string }
+  | { type: 'pr_opened'; url: string }
+  /** The workbench itself could not carry on — a worktree or a pull request failed. */
+  | { type: 'blocked'; reason: string }
+  /** The manager stopped it. */
+  | { type: 'cancelled'; reason: string }
+  /**
+   * The workbench stopped it on policy — too many cycles, or too much money.
+   * Distinct from `blocked`: nothing is stuck and no answer would help.
+   */
+  | { type: 'gave_up'; reason: string }
+  | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string };
+
+export type Event = EventBody & {
+  id: number;
+  ticketId: string;
+  at: string;
+};

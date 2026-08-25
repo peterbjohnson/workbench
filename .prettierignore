@@ -1,0 +1,11 @@
+# built, never edited by hand
+dist/
+ui/dist/
+
+# this workbench's own state, not source
+data/
+.worktrees/
+
+# Hand-written prose, and the product. Prettier rewrites *only* as _only_ and
+# reflows the tables in README.md and NOTES.md, which buys nothing.
+*.md

@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": true,
+    // Node refuses to strip types under `node_modules`, so an installed workbench has
+    // to be JavaScript. The source keeps its `.ts` import specifiers — they are what
+    // Node wants when running the source directly — and this rewrites them on the way
+    // out, which is the whole reason both can be true at once.
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}
