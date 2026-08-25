@@ -11,30 +11,61 @@ Commands, configuration, limits, the HTTP API and the tools agents are given.
 `wb --help` is the authority. Every command except `serve` talks to a running workbench
 over HTTP, so the board and the command line can do exactly the same things.
 
-| | |
-|---|---|
-| `wb init [dir]` | start a workbench in a repository, in `.workbench/` |
-| `wb auth` | whether the workbench can reach the model service |
-| `wb serve` | run the workbench: the API and the orchestrator |
-| `wb new <title> [body]` | write a ticket down, in the backlog |
-| `wb new --from <id> …` | carry on from a ticket, starting on its branch |
-| `wb new --no-approval …` | let its plan go straight on to being built |
-| `wb new --after <a,b> …` | hold it until those tickets offer their work or end |
-| `wb edit <id> <title> [body]` | rewrite it; the instructions are left alone if omitted |
-| `wb queue <id>` | commit to it: the workbench may now start it |
-| `wb backlog <id>` | take it back out of the queue, before it starts |
-| `wb move <id> [before]` | put it in front of another ticket, or last |
-| `wb wait <id> <a,b\|none>` | hold it until those tickets offer their work or end |
-| `wb list` | show every ticket and where it is |
-| `wb show <id>` | one ticket, with everything that happened to it |
-| `wb approve <id>` | approve a plan, letting implementation start |
-| `wb reject <id> <reason>` | send it back to be planned again |
-| `wb changes <id> <text>` | keep the work and put these right; back to implement |
-| `wb answer <id> <text>` | answer a blocked ticket and let it carry on |
-| `wb restart <id>` | run a failed stage again, from the top |
-| `wb ship <id>` | offer what it has as a pull request, and decide there |
-| `wb cancel <id> [why]` | stop a ticket, including one that is running |
-| `wb wip <n>` | how many tickets may run at once |
+<!-- generated:commands -->
+
+```
+workbench — a board of tickets that agents work through
+
+  wb init [dir]                start a workbench in a repository, in .workbench/
+  wb auth                      whether the workbench can reach the model service
+  wb serve                     run the workbench: the API and the orchestrator
+  wb new <title> [body]        write a ticket down, in the backlog
+  wb new --from <id> <title> [body]
+                               carry on from a ticket, starting on its branch
+  wb new --no-approval <title> [body]
+                               let its plan go straight on to being built
+  wb new --after <a,b> <title> [body]
+                               hold it until those tickets offer their work or end
+  wb edit <id> <title> [body]  rewrite it; the instructions are left alone if omitted
+  wb queue <id>                commit to it: the workbench may now start it
+  wb backlog <id>              take it back out of the queue, before it starts
+  wb move <id> [before]        put it in front of another ticket, or last
+  wb wait <id> <a,b|none>      hold it until those tickets offer their work or end
+  wb list                      show every ticket and where it is
+  wb show <id>                 one ticket, with everything that happened to it
+  wb approve <id>              approve a plan, letting implementation start
+  wb reject <id> <reason>      send it back to be planned again; the reason goes to the plan
+  wb changes <id> <text>       keep the work and put these right; back to implement
+  wb answer <id> <text>        answer a blocked ticket and let it carry on
+  wb restart <id>              run a failed stage again, from the top
+  wb ship <id>                 offer what it has as a pull request, and decide there
+  wb cancel <id> [why]         stop a ticket, including one that is running
+  wb wip <n>                   how many tickets may run at once
+
+Every command except "serve" talks to a running workbench over HTTP, so the
+board and this command line can do exactly the same things.
+
+"wb serve" calls real agents and spends real money.
+```
+
+<!-- /generated:commands -->
+
+## What each stage may do
+
+Read from `agents/*.md`. A struck-through tool is refused outright rather than merely
+not offered — leaving one out of `allowedTools` only stops it being auto-approved, and
+the agent still calls it and still loses the turn.
+
+<!-- generated:stages -->
+
+| stage | model | effort | turns | budget | tools |
+|---|---|---|---|---|---|
+| **plan** | claude-opus-5 | high | 40 | $5 | `Read`, `Grep`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Write`~~, ~~`Edit`~~, ~~`Bash`~~, ~~`Glob`~~ |
+| **implement** | claude-opus-5 | xhigh | 200 | $20 | `Read`, `Write`, `Edit`, `Grep`, `Bash`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Glob`~~ |
+| **review** | claude-opus-5 | xhigh | 60 | $10 | `Read`, `Grep`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Write`~~, ~~`Edit`~~, ~~`Bash`~~, ~~`Glob`~~ |
+| **verify** | claude-opus-5 | high | 80 | $10 | `Read`, `Write`, `Grep`, `Bash`, `AskUserQuestion`, ~~`Edit`~~, ~~`Glob`~~ |
+
+<!-- /generated:stages -->
 
 ## Where the workbench keeps things
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { CONFIG_FILE, findHome, loadConfig, PACKAGE_ROOT, type Config } from '../config.ts';
+import { USAGE } from './usage.ts';
 import { reconcile } from '../orchestrator/loop.ts';
 import { checkCredentials, verifyCredentials } from '../run/credentials.ts';
 import { startWorkbench } from '../workbench.ts';
@@ -12,40 +13,6 @@ import { UI_DIST } from '../api/server.ts';
 import { heldBy } from '../domain/rules.ts';
 import type { Ticket } from '../domain/ticket.ts';
 
-const USAGE = `
-workbench — a board of tickets that agents work through
-
-  wb init [dir]                start a workbench in a repository, in .workbench/
-  wb auth                      whether the workbench can reach the model service
-  wb serve                     run the workbench: the API and the orchestrator
-  wb new <title> [body]        write a ticket down, in the backlog
-  wb new --from <id> <title> [body]
-                               carry on from a ticket, starting on its branch
-  wb new --no-approval <title> [body]
-                               let its plan go straight on to being built
-  wb new --after <a,b> <title> [body]
-                               hold it until those tickets offer their work or end
-  wb edit <id> <title> [body]  rewrite it; the instructions are left alone if omitted
-  wb queue <id>                commit to it: the workbench may now start it
-  wb backlog <id>              take it back out of the queue, before it starts
-  wb move <id> [before]        put it in front of another ticket, or last
-  wb wait <id> <a,b|none>      hold it until those tickets offer their work or end
-  wb list                      show every ticket and where it is
-  wb show <id>                 one ticket, with everything that happened to it
-  wb approve <id>              approve a plan, letting implementation start
-  wb reject <id> <reason>      send it back to be planned again; the reason goes to the plan
-  wb changes <id> <text>       keep the work and put these right; back to implement
-  wb answer <id> <text>        answer a blocked ticket and let it carry on
-  wb restart <id>              run a failed stage again, from the top
-  wb ship <id>                 offer what it has as a pull request, and decide there
-  wb cancel <id> [why]         stop a ticket, including one that is running
-  wb wip <n>                   how many tickets may run at once
-
-Every command except "serve" talks to a running workbench over HTTP, so the
-board and this command line can do exactly the same things.
-
-"wb serve" calls real agents and spends real money.
-`.trim();
 
 /**
  * A `.env` beside the workbench is loaded before anything reads the environment.
