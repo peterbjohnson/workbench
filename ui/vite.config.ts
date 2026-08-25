@@ -6,8 +6,14 @@ import { defineConfig } from 'vite';
 const UI = fileURLToPath(new URL('.', import.meta.url));
 const WORKBENCH = fileURLToPath(new URL('..', import.meta.url));
 
-/** Everything the API answers. In development these go to a running `wb serve`. */
-const API = ['/tickets', '/policy', '/events', '/health'];
+/**
+ * Everything the API answers. In development these go to a running `wb serve`.
+ *
+ * A route missing from this list does not fail loudly: it falls through to the
+ * SPA fallback, which hands back index.html with a 200. Keep it level with the
+ * routes in src/api/server.ts.
+ */
+const API = ['/tickets', '/policy', '/events', '/health', '/agents', '/skills', '/settings'];
 
 export default defineConfig({
   root: UI,

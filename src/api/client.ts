@@ -4,6 +4,21 @@ import type { Policy } from '../domain/rules.ts';
 import type { Doc, DocKind } from './documents.ts';
 import type { Setting } from './settings.ts';
 
+/**
+ * The reply as an object, or null if it was not one. Null is the honest answer for
+ * a body that did not parse *and* for one that parsed to something else — `null`
+ * and `"ok"` are both valid JSON and neither is a reply this API ever sends.
+ */
+function asObject(text: string): Record<string, unknown> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
 /** The CLI and the board both reach the workbench through this. Nothing else does. */
 export function createClient(baseUrl: string) {
   async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -17,8 +32,21 @@ export function createClient(baseUrl: string) {
       throw new Error(`no workbench at ${baseUrl} — start one with: wb serve`);
     }
 
-    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok) throw new Error(String(body['error'] ?? `HTTP ${response.status}`));
+    const body = asObject(await response.text());
+
+    // A reply that failed is allowed to carry no JSON. The workbench always sends
+    // a reason, but a proxy in front of it or a crash underneath it writes
+    // whatever it likes, and the status is still worth reporting.
+    if (!response.ok) throw new Error(String(body?.['error'] ?? `HTTP ${response.status}`));
+
+    // A reply that succeeded is not. Every route answers with a JSON object, so
+    // anything else means whatever is on that port is not the workbench — which
+    // has to be said rather than read as an answer with every field missing.
+    if (body === null) {
+      const kind = response.headers.get('content-type')?.split(';')[0] ?? 'nothing';
+      throw new Error(`${baseUrl}${path} answered with ${kind}, not JSON — is that a workbench?`);
+    }
+
     return body as T;
   }
 
