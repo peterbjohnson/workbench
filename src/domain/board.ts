@@ -288,15 +288,6 @@ export function withoutProposals(text: string): string {
 }
 
 /**
- * The proposals made on this ticket, in the order they were made — so the `at` a
- * pane sends back names the same one the server acts on. One list, read the same
- * way at both ends, rather than a position that means something different here.
- */
-export function proposalsMade(events: readonly Event[]): Proposal[] {
-  return events.flatMap((e) => (e.type === 'chat_said' ? (e.proposals ?? []) : []));
-}
-
-/**
  * Fields already on the line an event is drawn as, or the same for every event in
  * a stage. Everything else is what opening that line is for.
  */

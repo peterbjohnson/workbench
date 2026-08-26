@@ -10,7 +10,6 @@ import {
   madeInto,
   needsYou,
   ordered,
-  proposalsMade,
   runs,
   sendableBack,
   statusOf,
@@ -488,18 +487,22 @@ test('what the chat said is shown without the blocks that became buttons', () =>
   assert.equal(withoutProposals('  I would leave it as it is.  '), 'I would leave it as it is.');
 });
 
-test('proposals are numbered the same way at both ends', () => {
+test('proposals are numbered across the whole conversation, not within a turn', () => {
+  // This numbering is the only name a proposal has: the pane sends a position back
+  // and the route acts on what is at it, so both read this one list.
   const events = log(
     { type: 'chat_said', role: 'agent', text: 'a', proposals: [{ action: 'queue', why: 'one' }] },
     { type: 'chat_said', role: 'manager', text: 'go on' },
     { type: 'chat_said', role: 'agent', text: 'b', proposals: [{ action: 'approve', why: 'two' }] },
   );
 
-  const made = proposalsMade(events);
-  for (const turn of chatTurns(events).turns) {
-    for (const offered of turn.proposals) assert.deepEqual(made[offered.at]?.why, offered.why);
-  }
-  assert.equal(made.length, 2);
+  assert.deepEqual(
+    chatTurns(events).turns.flatMap((t) => t.proposals.map((p) => [p.at, p.why])),
+    [
+      [0, 'one'],
+      [1, 'two'],
+    ],
+  );
 });
 
 test('anything that has not ended can be stopped, including an idea in the backlog', () => {

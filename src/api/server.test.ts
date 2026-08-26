@@ -532,6 +532,68 @@ test('a proposal that breaks the rule of the action it names is refused, and app
   );
 });
 
+test('only a number names a proposal, so a request naming none accepts nothing', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'anything to do?');
+      const before = store.eventsFor('t1').length;
+
+      // Every one of these used to be `Number`ed into 0 — which is a real proposal,
+      // so a request that named nothing took the first offer up.
+      const accept = wb.acceptProposal as unknown as (id: string, at: unknown) => Promise<unknown>;
+      for (const at of [null, '', ' ', false, [], '0', undefined]) {
+        await assert.rejects(() => accept('t1', at), /has no proposal/, JSON.stringify(at ?? null));
+      }
+
+      assert.equal(store.eventsFor('t1').length, before);
+    },
+    { chat: stubChat([{ action: 'queue', why: 'it is ready' }]) },
+  );
+});
+
+test('a proposal accepted twice is performed once, and the second says why not', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'ready?');
+      await wb.acceptProposal('t1', 0);
+      const after = store.eventsFor('t1').map((e) => e.type);
+      assert.deepEqual(after.slice(-2), ['queued', 'chat_accepted']);
+
+      await assert.rejects(() => wb.acceptProposal('t1', 0), /already been accepted/);
+      assert.deepEqual(
+        store.eventsFor('t1').map((e) => e.type),
+        after,
+        'the second accept appends nothing at all',
+      );
+    },
+    { chat: stubChat([{ action: 'queue', why: 'it is ready' }]) },
+  );
+});
+
+test('two accepts of one proposal at once leave one event, not two', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'is the plan right?');
+
+      const both = await Promise.allSettled([
+        wb.acceptProposal('t1', 0),
+        wb.acceptProposal('t1', 0),
+      ]);
+      assert.equal(both.filter((r) => r.status === 'fulfilled').length, 1);
+
+      assert.equal(
+        store.eventsFor('t1').filter((e) => e.type === 'plan_rejected').length,
+        1,
+        'the rejection is appended once however the two requests were interleaved',
+      );
+    },
+    { chat: stubChat([{ action: 'reject', why: 'wrong shape', text: 'start from the store' }]) },
+  );
+});
+
 test('the agents are readable, and what each declares is said with it', async () => {
   await withApi(async (wb) => {
     const agents = await wb.docs('agent');

@@ -107,6 +107,11 @@ export function Chat({
  * breaks that action's own rule is refused and says why.
  */
 function Offer({ proposal, onAccept }: { proposal: Offered; onAccept: () => Promise<void> }) {
+  /**
+   * Whether this offer's own accept is in flight. The server refuses a second one
+   * anyway; this is so a double-click is nothing rather than an error to read.
+   */
+  const [accepting, setAccepting] = useState(false);
   const what = [proposal.title, proposal.body, proposal.text]
     .filter((part) => part !== undefined && part.trim() !== '')
     .join('\n\n');
@@ -120,7 +125,15 @@ function Offer({ proposal, onAccept }: { proposal: Offered; onAccept: () => Prom
       {proposal.accepted ? (
         <span className="quiet">accepted</span>
       ) : (
-        <button type="button" className="go" onClick={() => void onAccept()}>
+        <button
+          type="button"
+          className="go"
+          disabled={accepting}
+          onClick={() => {
+            setAccepting(true);
+            void onAccept().finally(() => setAccepting(false));
+          }}
+        >
           Accept
         </button>
       )}

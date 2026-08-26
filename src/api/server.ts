@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
 import type { Config } from '../config.ts';
-import { chatTurns, proposalsMade } from '../domain/board.ts';
+import { chatTurns } from '../domain/board.ts';
 import { proposalEvent } from '../domain/proposals.ts';
 import type { ChatRunner } from '../run/chat.ts';
 import { listDocs, writeDoc, type DocKind } from './documents.ts';
@@ -341,17 +341,30 @@ async function handle(
          * of reaching those actions, never a way around them.
          */
         case 'chat-accept': {
-          const at = Number(payload['at']);
-          const proposal = Number.isInteger(at)
-            ? proposalsMade(store.eventsFor(id))[at]
-            : undefined;
-          if (proposal === undefined) {
-            return send(res, 400, { error: `${id} has no proposal ${String(payload['at'])}` });
+          // A number, and nothing that merely looks like one: `Number(null)`,
+          // `Number('')` and `Number([])` are all 0, so a request naming no
+          // proposal at all used to take up the first one.
+          const at = payload['at'];
+          // The list the pane offered from, so the position it sends back and the
+          // fate of what is at that position are read the same way at both ends.
+          const offered =
+            typeof at === 'number' && Number.isInteger(at)
+              ? chatTurns(store.eventsFor(id)).turns.flatMap((t) => t.proposals)[at]
+              : undefined;
+          if (offered === undefined) {
+            return send(res, 400, { error: `${id} has no proposal ${String(at)}` });
+          }
+          if (offered.accepted) {
+            return send(res, 400, { error: 'that proposal has already been accepted' });
           }
 
+          const { at: _at, accepted: _accepted, ...proposal } = offered;
           const taken = proposalEvent(store.ticket(id), proposal);
           if ('refused' in taken) return send(res, 400, { error: taken.refused });
 
+          // Nothing is awaited between reading `accepted` above and these appends,
+          // so two accepts arriving together run one after the other rather than
+          // interleaving — the second reads the first's `chat_accepted` and stops.
           store.append(id, taken.event);
           store.append(id, { type: 'chat_accepted', proposal });
           return send(res, 200, { ticket: store.ticket(id) });
