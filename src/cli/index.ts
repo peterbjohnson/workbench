@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline/promises';
 import { promisify } from 'node:util';
 
 import { CONFIG_FILE, findHome, loadConfig, PACKAGE_ROOT, type Config } from '../config.ts';
@@ -10,6 +11,8 @@ import { checkCredentials, verifyCredentials } from '../run/credentials.ts';
 import { startWorkbench } from '../workbench.ts';
 import { createClient, type Client } from '../api/client.ts';
 import { UI_DIST } from '../api/server.ts';
+import { nextFree, occupantOf } from '../api/port.ts';
+import { writeConfigFile } from '../api/settings.ts';
 import { heldBy } from '../domain/rules.ts';
 import type { Ticket } from '../domain/ticket.ts';
 
@@ -383,9 +386,78 @@ async function show(wb: Client, config: Config, id: string | undefined): Promise
   return 0;
 }
 
+/**
+ * The port to serve on, having found out who is on the configured one.
+ *
+ * A workbench per repository is how this is meant to be run, and the only thing in
+ * the way is that they all default to the same port. A second one for the *same*
+ * repository is a different matter: it would open the same database as the first
+ * and the two would disagree about it, so that is refused rather than moved.
+ *
+ * Moving is offered rather than assumed, and written down when taken. The port is
+ * how every other `wb` command finds the board, so one that moved quietly is one
+ * every command in the other terminal is now wrong about.
+ */
+async function choosePort(config: Config): Promise<number | undefined> {
+  const occupant = await occupantOf(config.port);
+  if (occupant.kind === 'free') return config.port;
+
+  if (occupant.kind === 'workbench' && occupant.home === config.home) {
+    console.error(
+      `a workbench for this repository is already running on port ${config.port}.\n` +
+        'Use it, or stop it first — every other command talks to it over HTTP.',
+    );
+    return undefined;
+  }
+
+  const whose =
+    occupant.kind === 'workbench' ? `the workbench in ${occupant.home}` : 'something else';
+  const free = await nextFree(config.port + 1);
+  if (free === undefined) {
+    console.error(`port ${config.port} is taken by ${whose}, and so is every port after it.`);
+    return undefined;
+  }
+
+  if (!process.stdin.isTTY) {
+    console.error(
+      `port ${config.port} is taken by ${whose}.\n` +
+        `Set "port" in ${CONFIG_FILE} — ${free} is free — or stop what is there.`,
+    );
+    return undefined;
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let yes = false;
+  try {
+    const answer = await rl.question(
+      `Port ${config.port} is taken by ${whose}.\n` +
+        `Start this workbench on ${free}, and write that to ${CONFIG_FILE}? [Y/n] `,
+    );
+    yes = ['', 'y', 'yes'].includes(answer.trim().toLowerCase());
+  } catch {
+    // Ctrl-C or Ctrl-D at the question. Nothing was answered, so nothing moves —
+    // the same as saying no, and said the same way.
+  } finally {
+    rl.close();
+  }
+
+  if (!yes) {
+    console.error(`nothing started. Set "port" in ${CONFIG_FILE} to choose one yourself.`);
+    return undefined;
+  }
+
+  writeConfigFile(config, { port: free });
+  console.log(`port ${free} written to ${CONFIG_FILE}\n`);
+  return free;
+}
+
 /** Runs the workbench in this process, and says what it is doing as it goes. */
 async function serve(config: Config): Promise<number> {
-  const wb = await startWorkbench(config, (message) => console.log(`\n${message}\n`));
+  const port = await choosePort(config);
+  if (port === undefined) return 1;
+  const running = port === config.port ? config : { ...config, port };
+
+  const wb = await startWorkbench(running, (message) => console.log(`\n${message}\n`));
 
   for (const id of reconcile(wb.store)) console.log(`${id}  picked up mid-stage; it needs you`);
 

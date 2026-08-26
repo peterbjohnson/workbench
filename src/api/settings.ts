@@ -264,7 +264,7 @@ function readConfigFile(config: Config): Record<string, string | number | string
  * than written: the file says what this project decided, and one that lists every
  * default is one nobody can read for what is unusual about it.
  */
-function writeConfigFile(
+export function writeConfigFile(
   config: Config,
   changes: Record<string, string | number | string[]>,
 ): void {
