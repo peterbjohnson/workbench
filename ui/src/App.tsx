@@ -12,6 +12,7 @@ import {
 } from '../../src/domain/board.ts';
 import { heldBy, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
+import { applyBrand, isColour } from './brand.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
@@ -84,7 +85,8 @@ export function App() {
   const [docs, setDocs] = useState<Record<DocKind, Doc[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The repository this board is working in. A fact of the running process, so it
-  // is read once and never redrawn.
+  // never changes — but it comes from the settings, which is also where the colour
+  // of this instance is, and that does.
   const [repo, setRepo] = useState<string | null>(null);
   // Which end of Done to read from. The browser's choice, not the workbench's.
   const [order, chooseOrder] = useOrder();
@@ -123,14 +125,21 @@ export function App() {
     };
   }, []);
 
-  // Which repository this is. Two boards on two ports are otherwise identical down
-  // to the pixel, and the answer to "which one is this" should not be a page away.
+  // Which repository this is, and what colour it was given. Two boards on two ports
+  // are otherwise identical down to the pixel, and the answer to "which one is this"
+  // should not be a page away. Read once: the settings page is the only thing that
+  // changes a colour, and it puts its own — draft or saved — on the header while it
+  // is open. Reading again on every event would overwrite an unsaved draft with the
+  // saved colour each time a running ticket said anything.
   useEffect(() => {
     let live = true;
     wb.settings()
       .then((all) => {
+        if (!live) return;
         const found = all.find((s) => s.key === 'repoRoot')?.value;
-        if (live && typeof found === 'string') setRepo(found);
+        if (typeof found === 'string') setRepo(found);
+        const colour = all.find((s) => s.key === 'colour')?.value;
+        applyBrand(isColour(colour) ? colour : null);
       })
       .catch((e: unknown) => live && setError(describe(e)));
     return () => {

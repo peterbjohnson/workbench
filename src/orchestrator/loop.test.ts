@@ -21,6 +21,8 @@ type Harness = {
   /** Every stage run that happened, in order. */
   ran: Stage[];
   prsOpened: string[];
+  /** The pull requests the loop merged, in order. */
+  prsMerged: string[];
   /** Tickets whose worktree was cleaned up. */
   tidied: string[];
   /** What the loop told whoever is watching. */
@@ -45,6 +47,7 @@ function harness(
     /** The manager's answer. A function when it differs by ticket. */
     verdict?: Verdict | ((ticketId: string) => Verdict);
     openPr?: () => Promise<string>;
+    merge?: () => Promise<void>;
     credentials?: () => Credentials;
     /** What the standing checks say. None configured is the default. */
     checks?: CheckRun[] | (() => CheckRun[]);
@@ -58,6 +61,7 @@ function harness(
   const branched = new Set<string>();
   const ran: Stage[] = [];
   const prsOpened: string[] = [];
+  const prsMerged: string[] = [];
   const tidied: string[] = [];
   const announced: string[] = [];
   const attempts = new Map<Stage, number>();
@@ -90,6 +94,10 @@ function harness(
         const configured = opts.verdict ?? { kind: 'pending' };
         return typeof configured === 'function' ? configured(t.id) : configured;
       },
+      merge: async (t) => {
+        await opts.merge?.();
+        prsMerged.push(t.prUrl ?? '');
+      },
     },
     runStage: async (args) => {
       ran.push(args.stage);
@@ -110,6 +118,7 @@ function harness(
     orch,
     ran,
     prsOpened,
+    prsMerged,
     tidied,
     announced,
     close: async () => {
@@ -963,6 +972,66 @@ test('a pull request the manager has already answered is left alone', async () =
     const refreshed = h.store.eventsFor('t2').filter((e) => e.type === 'refreshed');
     assert.deepEqual(refreshed, [], 'the answer is what it hears, not a merge');
     assert.equal(h.store.ticket('t2').rejection, 'not like that');
+  } finally {
+    await h.close();
+  }
+});
+
+test('the manager can merge the offer here, and the ticket is done', async () => {
+  const h = harness();
+  try {
+    standing(h.store, 't2');
+    standing(h.store, 't1');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsMerged, ['https://example/pr/t1']);
+    assert.equal(h.store.ticket('t1').status, 'done', 'the verdict is recorded here, not polled');
+    assert.deepEqual(h.tidied, ['t1'], 'and the workspace goes with it');
+    // The base has moved under everything else that is standing, exactly as it
+    // would have if the merge had been done on GitHub.
+    const refreshed = h.store.eventsFor('t2').filter((e) => e.type === 'refreshed');
+    assert.equal(refreshed.length, 0, 'up to date here, but it was asked');
+    assert.equal(h.store.ticket('t2').status, 'awaiting_verdict');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a merge onto a base that will not merge names the files and merges nothing', async () => {
+  const h = harness({
+    refresh: () => ({ kind: 'conflicted', base: 'newbase', paths: ['src/api/server.ts'] }),
+  });
+  try {
+    standing(h.store, 't1');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsMerged, [], 'nothing is merged over a clash');
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.status, 'blocked');
+    assert.deepEqual(ticket.conflicts, ['src/api/server.ts'], 'the panel can list them');
+    assert.equal(ticket.mergeRequested, false, 'and it does not keep trying');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a merge the code host refuses parks the ticket rather than finishing it', async () => {
+  const h = harness({
+    merge: async () => {
+      throw new Error('the base branch requires a review');
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.status, 'blocked');
+    assert.match(ticket.question?.question ?? '', /requires a review/);
+    assert.deepEqual(h.tidied, [], 'nothing was accepted, so nothing is thrown away');
   } finally {
     await h.close();
   }

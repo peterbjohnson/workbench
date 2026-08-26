@@ -14,6 +14,7 @@ import { deleteDoc } from './documents.ts';
 import { openStore, type Store } from '../store/store.ts';
 import { loadSkills, parseSkill } from '../agents/load.ts';
 import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
+import type { Setting } from './settings.ts';
 
 /**
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
@@ -129,6 +130,23 @@ test('answering a blocked ticket resumes it', async () => {
     const resumed = (await wb.ticket('t1')).ticket;
     assert.equal(resumed.status, 'planning');
     assert.equal(resumed.question, null);
+  });
+});
+
+test('asking for the merge records it, and only where there is an offer to merge', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('a thing', '');
+    await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
+
+    store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
+    const asked = await wb.merge('t1');
+    assert.equal(asked.mergeRequested, true, 'the orchestrator picks it up from here');
+    assert.equal(asked.status, 'awaiting_verdict', 'the API merges nothing itself');
+
+    // A ticket sent back keeps its `prUrl` and is being worked on again: merging
+    // it would land whatever the rework has got to so far.
+    store.append('t1', { type: 'changes_requested', changes: 'rename it' });
+    await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
   });
 });
 
@@ -306,6 +324,12 @@ test('offered work can be sent back, or kept and put right', async () => {
     assert.equal(fixing.prUrl, 'https://example/pr/1', 'still headed for the same pull request');
 
     await assert.rejects(() => wb.changes('t1', '  '), /say what to put right/);
+
+    // And not once it is over. This is what the conflicts box presses, and the
+    // paths outlive the clash by a moment: a merged ticket would go back to
+    // implement to resolve conflicts that the merge settled.
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    await assert.rejects(() => wb.changes('t1', 'one more thing'), /this ticket is over/);
   });
 });
 
@@ -623,5 +647,40 @@ test('a configured setting is written to the config file, and a default is taken
     // what this project decided, not a copy of every default.
     await wb.setSettings({ base: 'main' });
     assert.equal('base' in file(), false);
+  });
+});
+
+test('the instance colour is kept in the config file, and clearing it takes the key out', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    const colour = (all: Setting[]) => all.find((s) => s.key === 'colour');
+    assert.equal(colour(await wb.settings())?.value, '', 'no colour until one is chosen');
+
+    const after = await wb.setSettings({ colour: '#3A7D6F' });
+    assert.equal(colour(after)?.value, '#3a7d6f', 'and it is written the one way');
+    // The board reads it every time it loads, so saying "next start" would be a lie.
+    assert.equal(colour(after)?.restart, false);
+    assert.equal(file()['colour'], '#3a7d6f');
+
+    // No colour is the default, so the file stops mentioning it rather than holding
+    // an empty string nobody can read a decision out of.
+    const cleared = await wb.setSettings({ colour: '' });
+    assert.equal(colour(cleared)?.value, '');
+    assert.equal('colour' in file(), false);
+  });
+});
+
+test('something that is not a colour is refused, and nothing is written', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), /Instance colour must be a/);
+    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), /Instance colour must be a/);
+    assert.equal('colour' in file(), false);
   });
 });

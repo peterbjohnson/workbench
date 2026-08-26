@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { readVerdict } from './pr.ts';
+import { mergeArgs, readVerdict } from './pr.ts';
 
 test('a merged pull request is an acceptance', () => {
   assert.deepEqual(readVerdict({ state: 'MERGED' }), { kind: 'accepted' });
@@ -72,6 +72,15 @@ test('closing a pull request without merging rejects it', () => {
     kind: 'rejected',
     reason: 'the pull request was closed without merging',
   });
+});
+
+test('merging squashes the ticket into one commit on the base', () => {
+  assert.deepEqual(mergeArgs('https://example/pr/7'), [
+    'pr',
+    'merge',
+    'https://example/pr/7',
+    '--squash',
+  ]);
 });
 
 test('an approving review alone does not accept — only merging does', () => {
