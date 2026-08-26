@@ -21,7 +21,10 @@ export type Refreshed =
   /** The branch already had the base. Nothing happened, and nothing is recorded. */
   | { kind: 'up-to-date' }
   | { kind: 'merged'; base: string; commit: string }
-  /** Left un-merged, and the branch is exactly as it was. */
+  /**
+   * Left un-merged. The branch is exactly as it was, unless the caller asked to
+   * keep the merge — then it is still going, on disk, for a stage to finish.
+   */
   | { kind: 'conflicted'; base: string; paths: string[] };
 
 /**
@@ -166,6 +169,13 @@ export type EventBody =
    * base is the ordinary case and says nothing.
    */
   | { type: 'refreshed'; base: string; commit: string }
+  /**
+   * The base had moved on and the branch could not take it cleanly, so the merge
+   * was left in the worktree and given to the stage that was about to run. Not a
+   * `refreshed`: nothing is committed yet, and until this stage resolves it the
+   * ticket's branch is mid-merge.
+   */
+  | { type: 'conflicted'; runId: string; base: string; paths: string[] }
   | { type: 'plan_approved' }
   /**
    * The manager says the approach is wrong: back to planning, and the reason is

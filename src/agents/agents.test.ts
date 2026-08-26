@@ -251,6 +251,32 @@ test('verify is told which checks must pass', () => {
   assert.match(brief, /131 passing/, 'and what they said, so it need not run them again');
 });
 
+test('a stage handed a merge is told what clashed and that it must finish it', () => {
+  const brief = buildBrief({
+    ticket: ticketFrom([CREATED]),
+    agent: agents.implement,
+    worktree: '/tmp/wb/t1',
+    conflict: { base: 'abc1234def', paths: ['src/rules.ts', 'src/rules.test.ts'] },
+  });
+
+  assert.match(brief, /A merge to finish first/);
+  assert.match(brief, /`src\/rules\.ts`[\s\S]*`src\/rules\.test\.ts`/, 'both of them, by name');
+  assert.match(brief, /abc1234d/, 'and what it is merging in');
+  assert.match(brief, /blocked and commits nothing/, 'the stage cannot walk away from it');
+  // Before the ticket, because it is the first thing the stage does.
+  assert.ok(brief.indexOf('A merge to finish first') < brief.indexOf('## Ticket'));
+});
+
+test('a stage with no merge waiting is told nothing about one', () => {
+  const brief = buildBrief({
+    ticket: ticketFrom([CREATED]),
+    agent: agents.implement,
+    worktree: '/tmp/wb/t1',
+  });
+
+  assert.doesNotMatch(brief, /A merge to finish first/);
+});
+
 test('an answered question is handed back with the resumed stage', () => {
   const brief = buildBrief({
     ticket: ticketFrom([CREATED]),

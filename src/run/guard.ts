@@ -169,8 +169,11 @@ const BANNED_COMMANDS: { pattern: RegExp; reason: string }[] = [
   },
   {
     // The workbench owns the branch, the worktree and what is checked out in it.
-    // sparse-checkout and config in particular could undo the protections above.
-    pattern: /\bgit\s+(worktree|sparse-checkout|config|checkout|switch|reset|rebase)\b/,
+    // sparse-checkout and config in particular could undo the protections above,
+    // and `merge --abort` would throw away a merge the workbench handed this stage
+    // to resolve — which is how a stage could pass its end guard by discarding the
+    // very thing it was asked to do.
+    pattern: /\bgit\s+(worktree|sparse-checkout|config|checkout|switch|reset|rebase|merge)\b/,
     reason: "the workbench owns this ticket's branch and worktree; leave git state alone",
   },
   // A recursive delete is not banned outright — see badRecursiveDelete, which

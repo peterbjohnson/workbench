@@ -49,6 +49,11 @@ export type BriefInput = {
    * they all passed, because a failure sends the ticket back before any agent runs.
    */
   checks?: readonly CheckRun[];
+  /**
+   * A merge the workbench started before this stage and could not finish. It is in
+   * the worktree, and finishing it is the first thing this stage does.
+   */
+  conflict?: { base: string; paths: readonly string[] };
   /** The manager's answer, when this run is resuming a blocked ticket. */
   answer?: string;
   /**
@@ -73,6 +78,7 @@ export function buildBrief(input: BriefInput): string {
   const sections: [string, string | undefined][] = [
     ['About this project', nested(input.about)],
     ['Where you are working', whereYouAre(input)],
+    ['A merge to finish first', mergeToFinish(input.conflict)],
     ['What is in the worktree', worktreeMap(input.map)],
     ['What you know how to do', skillsHeld(input.skills)],
     ['Ticket', `${ticket.title}\n\n${ticket.body}`.trim()],
@@ -166,6 +172,36 @@ function whereYouAre({ worktree, scratch, absent, agent }: BriefInput): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * The merge the workbench started for this stage and could not finish.
+ *
+ * It is given to the agent about to work on those files because that is the one
+ * moment resolving it is cheap: two tickets cut from the same commit found their
+ * clash only when they were offered, after implement and verify had both run to
+ * completion, and a resolution that was minutes of work became a person's problem
+ * a day later in another repository.
+ */
+function mergeToFinish(conflict: BriefInput['conflict']): string | undefined {
+  if (conflict === undefined || conflict.paths.length === 0) return undefined;
+
+  return [
+    `The base moved on to ${conflict.base.slice(0, 8)} while this ticket was being worked`,
+    'on, and taking it in did not go cleanly. The merge is in your worktree right now,',
+    'with `MERGE_HEAD` set, and these files hold both sides:',
+    '',
+    ...conflict.paths.map((p) => `- \`${p}\``),
+    '',
+    'Resolve them before you do anything else, by editing the files: `git merge`,',
+    '`git checkout`, `git reset` and `git commit` are all refused here, so there is no',
+    'way to make this go away except to read both sides and decide. Usually both are',
+    'wanted and the answer is a union of the two. You are being asked because you have',
+    'the change in your head, which nobody looking at this tomorrow will.',
+    '',
+    'This stage cannot finish until they are resolved: a run that ends with any of them',
+    'still unmerged, or still holding conflict markers, is blocked and commits nothing.',
+  ].join('\n');
 }
 
 /**

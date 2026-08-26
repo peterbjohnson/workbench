@@ -16,7 +16,8 @@ const run = promisify(execFile);
 export function gitWorkspace(cfg: GitConfig): Workspace {
   return {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
-    refresh: (ticketId) => refresh(cfg, ticketId),
+    refresh: (ticketId, keepConflict) => refresh(cfg, ticketId, keepConflict),
+    unresolved: (ticketId, paths) => unresolved(cfg, ticketId, paths),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
   };
@@ -346,7 +347,16 @@ function pathOf(lines: readonly string[]): string {
  * already have a pull request on it, which rewrites every commit a standing review
  * was written against.
  */
-export async function refresh(cfg: GitConfig, ticketId: string): Promise<Refreshed> {
+export async function refresh(
+  cfg: GitConfig,
+  ticketId: string,
+  /**
+   * Leave a conflicted merge where it is rather than undoing it, so the stage
+   * about to run can finish it. Off by default, because at ship time there is
+   * nobody left to resolve it and an untouched branch is the kinder answer.
+   */
+  keepConflict = false,
+): Promise<Refreshed> {
   const wt = worktreeFor(cfg, ticketId);
   const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
 
@@ -364,7 +374,12 @@ export async function refresh(cfg: GitConfig, ticketId: string): Promise<Refresh
       (out) => out.split('\n').filter((line) => line !== ''),
       () => [],
     );
-    await git(wt.path, 'merge', '--abort').catch(() => {});
+    // Nothing unmerged means the merge failed rather than conflicted — an index
+    // that was busy, a checkout that could not be written. There is nothing for a
+    // stage to resolve, so it is undone whatever the caller asked for.
+    if (!keepConflict || paths.length === 0) {
+      await git(wt.path, 'merge', '--abort').catch(() => {});
+    }
     await hideProtectedPaths(cfg, wt);
     return { kind: 'conflicted', base, paths };
   }
@@ -374,4 +389,43 @@ export async function refresh(cfg: GitConfig, ticketId: string): Promise<Refresh
   // the workbench's own source cannot appear in a worktree by way of a merge.
   await hideProtectedPaths(cfg, wt);
   return { kind: 'merged', base, commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim() };
+}
+
+/**
+ * Of the paths a stage was handed to resolve, the ones it did not: still unmerged
+ * in the index, or still holding the markers git wrote into them.
+ *
+ * Both halves are needed. A stage that edits a file without staging it leaves the
+ * index unmerged; one that stages the file with the markers still in it leaves the
+ * index clean and the work unusable. Scoped to the paths that were handed over, so
+ * a marker that a test fixture has always contained cannot fail a stage.
+ */
+export async function unresolved(
+  cfg: GitConfig,
+  ticketId: string,
+  paths: readonly string[],
+): Promise<string[]> {
+  const wt = worktreeFor(cfg, ticketId);
+  const unmerged = new Set(
+    await git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
+      (out) => out.split('\n').filter((line) => line !== ''),
+      () => [],
+    ),
+  );
+
+  const left: string[] = [];
+  for (const p of paths) {
+    if (unmerged.has(p) || (await hasMarkers(path.join(wt.path, p)))) left.push(p);
+  }
+  return left;
+}
+
+/**
+ * Written as counts rather than as the markers themselves: a source file holding
+ * one would be a file git could not merge, and this one is merged like any other.
+ * A path that cannot be read was resolved by deleting it, which is a resolution.
+ */
+async function hasMarkers(file: string): Promise<boolean> {
+  const text = await fs.readFile(file, 'utf8').catch(() => '');
+  return /^<{7} /m.test(text) || /^>{7} /m.test(text);
 }

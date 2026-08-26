@@ -6,7 +6,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { commitAll, create, diff, refresh, remove, type GitConfig } from './worktree.ts';
+import {
+  commitAll,
+  create,
+  diff,
+  refresh,
+  remove,
+  unresolved,
+  type GitConfig,
+} from './worktree.ts';
 
 const run = promisify(execFile);
 
@@ -486,6 +494,80 @@ test('a conflict is reported, and the branch is left exactly as it was', async (
       'the ticket said this\n',
       'and no conflict markers left in the work',
     );
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a conflict a stage is going to resolve is left in the worktree', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+    await commitAll(wt, 'the ticket');
+
+    await landOnBase(cfg, 'project/model.py', 'the base says this\n');
+
+    const result = await refresh(cfg, 't1', true);
+
+    assert.equal(result.kind, 'conflicted');
+    const merging = await run('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: wt.path });
+    assert.match(merging.stdout.trim(), /^[0-9a-f]{40}$/, 'the merge is still going');
+
+    const model = await fs.readFile(path.join(wt.path, 'project', 'model.py'), 'utf8');
+    assert.match(model, /the ticket said this/, 'with the stage’s own side');
+    assert.match(model, /the base says this/, 'and the one it has to take in');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a merge handed to a stage is finished only when the markers are gone', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+    await commitAll(wt, 'the ticket');
+    await landOnBase(cfg, 'project/model.py', 'the base says this\n');
+    await refresh(cfg, 't1', true);
+
+    assert.deepEqual(
+      await unresolved(cfg, 't1', ['project/model.py']),
+      ['project/model.py'],
+      'unmerged, and full of markers',
+    );
+
+    // The union of both sides, which is what these resolutions almost always are.
+    await fs.writeFile(
+      path.join(wt.path, 'project', 'model.py'),
+      'the ticket said this\nthe base says this\n',
+    );
+    assert.deepEqual(
+      await unresolved(cfg, 't1', ['project/model.py']),
+      ['project/model.py'],
+      'edited but never staged is still unmerged',
+    );
+
+    await run('git', ['add', 'project/model.py'], { cwd: wt.path });
+    assert.deepEqual(await unresolved(cfg, 't1', ['project/model.py']), [], 'resolved');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a marker in a file nobody was asked about does not count', async () => {
+  // A fixture that has always held one is not this stage's business, and failing a
+  // run for it would be failing it for something it did not do.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(
+      path.join(wt.path, 'project', 'fixture.txt'),
+      `${'<'.repeat(7)} theirs\nsomething a test parses\n`,
+    );
+
+    assert.deepEqual(await unresolved(cfg, 't1', ['project/model.py']), []);
+    assert.deepEqual(await unresolved(cfg, 't1', ['project/fixture.txt']), ['project/fixture.txt']);
   } finally {
     await cleanUp(cfg);
   }

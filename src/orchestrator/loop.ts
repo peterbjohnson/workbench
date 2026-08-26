@@ -55,6 +55,12 @@ export type StageRunner = (args: {
    */
   checks?: CheckRun[];
   /**
+   * A merge the workbench started and could not finish, left in the worktree for
+   * this stage to resolve before it does anything else. The stage may not end with
+   * any of these paths still conflicted.
+   */
+  conflict?: { base: string; paths: string[] };
+  /**
    * The conversation to pick back up, when this run is answering a question that
    * stopped an earlier one. Best-effort: a runner that cannot resume must start
    * the stage afresh rather than fail.
@@ -87,7 +93,21 @@ export type Workspace = {
    * when it started. `up-to-date` is the ordinary answer and means nothing
    * happened at all.
    */
-  refresh: (ticketId: string) => Promise<Refreshed>;
+  refresh: (
+    ticketId: string,
+    /**
+     * Leave a conflict in the worktree rather than undoing it, because the caller
+     * is about to run a stage that can resolve it. At ship time there is nobody
+     * left to, so the default is to put the branch back as it was.
+     */
+    keepConflict?: boolean,
+  ) => Promise<Refreshed>;
+  /**
+   * Of the paths a stage was handed a merge for, which ones it has not finished:
+   * still unmerged, or still holding the markers. Asked at the end of that stage,
+   * because committing an unresolved merge would put the markers on the branch.
+   */
+  unresolved: (ticketId: string, paths: readonly string[]) => Promise<string[]>;
   /**
    * Records whatever a stage left behind, returning the commit or null when there
    * was nothing to record — normal for the stages that only read. The sha is kept:
@@ -364,14 +384,59 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     return null;
   }
 
+  /**
+   * Brings the base in before a stage runs, rather than only when the work is
+   * offered. A branch that goes stale for a whole implement and a whole verify
+   * discovers it at the end, when the agent that could have resolved the clash in
+   * minutes has finished and the ticket parks for a person to pick up a day later.
+   *
+   * Nothing blocks here, and the standing checks are not run: this is the start of
+   * a stage, and the stage is what puts things right. A clean merge is the ordinary
+   * answer and only records the commit it made. A conflict is left on disk and
+   * handed to the run, which cannot finish until it is resolved.
+   *
+   * @returns the merge the stage is being asked to finish, if there is one.
+   */
+  async function refreshForStage(
+    ticket: Ticket,
+    stage: Stage,
+    runId: string,
+  ): Promise<{ base: string; paths: string[] } | undefined> {
+    // Only the stages that can write. Plan and review are granted no editing tools
+    // at all, so a conflict handed to one of them could only sit there unresolved.
+    if (stage !== 'implement' && stage !== 'verify') return undefined;
+
+    const result = await deps.workspace.refresh(ticket.id, true);
+    if (result.kind === 'up-to-date') return undefined;
+
+    if (result.kind === 'merged') {
+      store.append(ticket.id, { type: 'refreshed', base: result.base, commit: result.commit });
+      return undefined;
+    }
+
+    // A merge that failed without leaving anything unmerged is not a conflict:
+    // `refresh` has already undone it, and there is nothing to hand over. The
+    // stage runs against the base it had, and the offer will find it again.
+    if (result.paths.length === 0) return undefined;
+
+    store.append(ticket.id, { type: 'conflicted', runId, base: result.base, paths: result.paths });
+    return { base: result.base, paths: result.paths };
+  }
+
   async function doStage(ticket: Ticket, stage: Stage): Promise<void> {
     const { path: worktree, scratch } = await prepare(ticket);
     const runId = randomUUID();
 
     store.append(ticket.id, { type: 'stage_started', stage, runId });
 
+    const conflict = await refreshForStage(ticket, stage, runId);
+
     let checks: CheckRun[] | undefined;
-    if (stage === 'verify') {
+    // Not while a merge is waiting: the checks would be run against a tree full of
+    // conflict markers, fail for that and nothing else, and send the ticket back to
+    // planning before the agent had so much as looked at it. Resolving the merge is
+    // the first thing this run does, and the checks are asked again next time round.
+    if (stage === 'verify' && conflict === undefined) {
       const passed = await standingChecks(ticket, runId, worktree);
       if (passed === null) return; // rejected, and no agent was asked
       checks = passed;
@@ -390,9 +455,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         worktree,
         scratch,
         checks,
+        conflict,
         // Only when there is an answer to carry in. A session with nothing new to
-        // say to it is not worth resuming.
-        resume: ticket.answer !== null ? (ticket.session ?? undefined) : undefined,
+        // say to it is not worth resuming — and never when a merge is waiting,
+        // because a resumed run is not given a brief and the merge is in the brief.
+        resume:
+          conflict === undefined && ticket.answer !== null
+            ? (ticket.session ?? undefined)
+            : undefined,
         // A stage announcing which step it has reached is recorded as a fact of its
         // own, so the board shows progress without anyone reading prose. Done here
         // rather than in a runner: it is what a stage *said* that counts, so every
@@ -413,6 +483,23 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       result = { outcome: 'failed', summary: describe(error) };
     } finally {
       aborts.delete(ticket.id);
+    }
+
+    // The far end of the merge handed over at the start. A run that finished with
+    // any of it still conflicted parks the ticket, and nothing is committed:
+    // `commit` stages everything it finds, so an unresolved merge would put
+    // conflict markers on the branch as though they were the stage's work.
+    if (conflict !== undefined && result.outcome === 'completed') {
+      const left = await deps.workspace.unresolved(ticket.id, conflict.paths);
+      if (left.length > 0) {
+        result = {
+          outcome: 'blocked',
+          // The run's own summary is kept: what it did is still what it did, and
+          // whoever answers this needs it as much as they need the unfinished merge.
+          summary: `${left.join(', ')} are still conflicted: ${result.summary}`,
+          costUsd: result.costUsd,
+        };
+      }
     }
 
     // Commit before announcing the stage finished: the next stage's diff is
@@ -531,8 +618,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * each takes the new base and re-runs its checks, and a clash surfaces on the
    * ticket that has it, while the ticket is still the thing being worked on.
    *
-   * Not the ones still being built. They refresh when they are offered, which is
-   * soon enough and costs nothing in the meantime.
+   * The ones still being built are told too, but not here and not the same way:
+   * they take the base at the start of their next stage, and a clash there is
+   * given to the agent that is about to work on the files rather than parking the
+   * ticket. Nothing is pushed for them, so there is nothing to do between stages.
    */
   async function refreshOffered(merged: Ticket): Promise<void> {
     const standing = store

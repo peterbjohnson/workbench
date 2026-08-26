@@ -337,6 +337,11 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         commits: [...t.commits, e.commit],
       };
 
+    // Record only, unlike `refreshed`: there is no commit and the base has not
+    // moved. The merge is on disk, and the stage now running is what finishes it.
+    case 'conflicted':
+      return t;
+
     case 'stage_finished': {
       // The spend counts whatever the outcome: a failed run still cost money, and
       // a commit it left behind is part of the ticket's record either way.
