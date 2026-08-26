@@ -203,6 +203,21 @@ function blank(id: string): Ticket {
   };
 }
 
+/**
+ * What a move that is not a resume drops. `session` and `interrupted` both
+ * describe one parked run, and only the two moves that go back to it — answering
+ * the question it asked, or carrying the stage on — may keep them.
+ *
+ * Every other way off a parked ticket goes somewhere that conversation has
+ * nothing to do with, and both fields have to go with it. A kept `session` is
+ * resumed by the next stage to run, so a manager asking for changes would have
+ * them delivered into the review's conversation instead, as a note that the
+ * workbench had stopped. A kept `interrupted` puts a ticket in the pick-up modal
+ * that `stage_continued` then declines to move, so the box comes back every load
+ * offering a button that does nothing.
+ */
+const movedOn = { session: null, interrupted: false };
+
 /** Pure. No I/O, no clock. */
 export function applyEvent(t: Ticket, e: Event): Ticket {
   switch (e.type) {
@@ -249,7 +264,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     case 'shipped':
       return t.running || t.commits.length === 0 || t.status === 'done' || t.offered
         ? t
-        : { ...t, status: 'ready_for_pr', question: null };
+        : { ...t, status: 'ready_for_pr', question: null, ...movedOn };
 
     // Put a stuck ticket back into the stage it stopped in, with nothing carried
     // over: a run that died has no conversation worth resuming and no answer to
@@ -331,7 +346,11 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       return { ...t, question: { question: e.question, reasoning: e.reasoning } };
 
     case 'question_answered': {
-      const answered = { ...t, question: null, running: false };
+      // `interrupted` goes and `session` stays: this is one of the two moves that
+      // does come back to the parked run, and it is no longer one waiting to be
+      // picked up either way — the offered branch below does not go back to it,
+      // but it does not leave the ticket where a stage will run, either.
+      const answered = { ...t, question: null, running: false, interrupted: false };
 
       // An offer standing means the stages are over: what stopped was the wait for
       // a verdict, and there is no stage to put the ticket back into. t61 paid for
@@ -389,18 +408,32 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     }
 
     case 'plan_approved':
-      return { ...t, status: 'implementing', running: false, rejection: null };
+      return { ...t, status: 'implementing', running: false, rejection: null, ...movedOn };
 
     // The manager's two ways of saying no, and the only difference between them is
     // what they cost: this one buys a new plan, the next one keeps the work.
     // Either ends the offer without touching `prUrl` — the branch keeps its pull
     // request, and the rework is pushed to that same one.
     case 'plan_rejected':
-      return { ...t, status: 'planning', running: false, offered: false, rejection: e.reason };
+      return {
+        ...t,
+        status: 'planning',
+        running: false,
+        offered: false,
+        rejection: e.reason,
+        ...movedOn,
+      };
 
     // Not capped, and no revision counted: see `changes_requested` in events.ts.
     case 'changes_requested':
-      return { ...t, status: 'implementing', running: false, offered: false, changes: e.changes };
+      return {
+        ...t,
+        status: 'implementing',
+        running: false,
+        offered: false,
+        changes: e.changes,
+        ...movedOn,
+      };
 
     case 'pr_opened':
       return { ...t, status: 'awaiting_verdict', prUrl: e.url, offered: true };
@@ -430,8 +463,8 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // and its stages restarted while it is being put right.
     case 'verdict':
       return e.verdict === 'accepted'
-        ? { ...t, status: 'done', offered: false }
-        : { ...t, status: 'planning', offered: false, rejection: e.reason ?? null };
+        ? { ...t, status: 'done', offered: false, ...movedOn }
+        : { ...t, status: 'planning', offered: false, rejection: e.reason ?? null, ...movedOn };
   }
 }
 

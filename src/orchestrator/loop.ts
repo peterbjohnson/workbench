@@ -399,10 +399,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         worktree,
         scratch,
         checks,
-        // Whatever conversation the ticket is holding. A session is only ever set
-        // on one that stopped with something to come back to — a question it
-        // asked, or a workbench that stopped underneath it — so the rule is that
-        // one fact, rather than a list of the reasons it might be true.
+        // Whatever conversation the ticket is holding. It is holding one only if it
+        // stopped with something to come back to — a question it asked, or a
+        // workbench that stopped underneath it — and only if what moved it here was
+        // one of the two moves that goes back to that run: `movedOn` in ticket.ts
+        // drops the session on every other one. So the rule can be that single
+        // fact, rather than a list of the reasons it might be true.
         resume: ticket.session ?? undefined,
         // A stage announcing which step it has reached is recorded as a fact of its
         // own, so the board shows progress without anyone reading prose. Done here
