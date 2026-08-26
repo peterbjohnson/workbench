@@ -123,6 +123,12 @@ export type Ticket = {
    * taken from.
    */
   base: string | null;
+  /**
+   * The branches this one has merged that the base has not got — the work it
+   * waited for, which was offered rather than merged. What keeps `base` from moving
+   * onto a commit that has not got it: see `carriedWork`, which decides this.
+   */
+  carrying: string[];
   /** Every commit this ticket has made, oldest first. */
   commits: string[];
   /** How many times this ticket has been planned. One per trip round the loop. */
@@ -185,6 +191,7 @@ function blank(id: string): Ticket {
     prUrl: null,
     offered: false,
     base: null,
+    carrying: [],
     commits: [],
     cycles: 0,
     costUsd: 0,
@@ -319,8 +326,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       };
     }
 
+    // A branch just cut carries nothing: it is the base and nothing else until the
+    // work this ticket waited for is merged onto it.
     case 'branched':
-      return { ...t, branch: e.branch, base: e.base };
+      return { ...t, branch: e.branch, base: e.base, carrying: [] };
 
     // The merge commit is the ticket's, and the new base is what its change is now
     // measured against — `diff` reads `base...HEAD`, so leaving the old one there
@@ -339,11 +348,19 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // the base plus the dependencies and nothing else, which is the commit this
     // ticket needs and the only one anywhere that is; after any stage has committed
     // there is no such commit, and the base stands where that merge put it.
+    //
+    // What the branch is standing on is asked of the branch, not of the refresh that
+    // last touched it: `carrying` is every merge in it the base has not got, and it
+    // stops naming one when that work lands rather than when its ticket stops
+    // offering it. Read from `took` when a refresh recorded before this existed says
+    // nothing else — those events then mean exactly what they always did.
     case 'refreshed': {
-      const held = t.continues !== null || ((e.took ?? []).length > 0 && t.commits.length > 0);
+      const carrying = e.carrying ?? e.took ?? [];
+      const held = t.continues !== null || (carrying.length > 0 && t.commits.length > 0);
       return {
         ...t,
         base: held ? t.base : e.base,
+        carrying,
         commits: [...t.commits, e.commit],
       };
     }

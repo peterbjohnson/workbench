@@ -346,6 +346,10 @@ function pathOf(lines: readonly string[]): string {
  * A merge rather than a rebase. Rebasing means force-pushing a branch that may
  * already have a pull request on it, which rewrites every commit a standing review
  * was written against.
+ *
+ * They are merged one at a time and one may fail, so this does not leave the branch
+ * either fully merged or as it was: everything before the failure stands. What it
+ * returns says which, so the caller can record where the branch has actually got to.
  */
 export async function refresh(
   cfg: GitConfig,
@@ -379,6 +383,7 @@ export async function refresh(
   }
   if (wanted.length === 0) return { kind: 'up-to-date' };
 
+  const merged: string[] = [];
   for (const ref of wanted) {
     try {
       await git(wt.path, 'merge', '--no-edit', ref);
@@ -390,13 +395,23 @@ export async function refresh(
       );
       await git(wt.path, 'merge', '--abort').catch(() => {});
       await hideProtectedPaths(cfg, wt);
-      return { kind: 'conflicted', base, paths, with: ref };
+      // The HEAD after the abort, which is the one the earlier merges left. Read
+      // here rather than assumed: what the caller records against the branch has to
+      // be a commit the branch is actually standing on.
+      const commit = (await git(wt.path, 'rev-parse', 'HEAD')).trim();
+      return { kind: 'conflicted', base, paths, with: ref, merged, commit };
     }
+    merged.push(ref);
   }
 
   // A merge writes out whatever it had to merge, which can put a protected path
   // back on disk that the sparse checkout was keeping off it. Re-applied here so
   // the workbench's own source cannot appear in a worktree by way of a merge.
   await hideProtectedPaths(cfg, wt);
-  return { kind: 'merged', base, commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim() };
+  return {
+    kind: 'merged',
+    base,
+    commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim(),
+    merged,
+  };
 }

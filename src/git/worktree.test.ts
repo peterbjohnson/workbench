@@ -515,6 +515,11 @@ test('the work a ticket waited for is merged in, and is then on disk to build on
     const result = await refresh(cfg, 't3', ['wb/t1', 'wb/t2']);
 
     assert.equal(result.kind, 'merged');
+    assert.deepEqual(
+      result.kind === 'merged' ? result.merged : [],
+      ['wb/t1', 'wb/t2'],
+      'and it says what it took, so the caller can record it',
+    );
     // Both of them: two dependencies offered at once is the ordinary case, and a
     // ticket that got only the first would be built on half of what it waited for.
     assert.equal(
@@ -572,6 +577,18 @@ test('a dependency that will not merge is named, and what merged before it stand
       run('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: wt.path }),
       'and no merge is left in progress',
     );
+
+    // Which is said in the result as well as left on disk: a caller told only that
+    // it conflicted would record the branch as being where it no longer is.
+    assert.deepEqual(result.kind === 'conflicted' ? result.merged : [], ['wb/t1']);
+    assert.equal(
+      result.kind === 'conflicted' ? result.commit : '',
+      after.stdout.trim(),
+      'and the commit it reports is the one the branch is standing on',
+    );
+    await run('git', ['merge-base', '--is-ancestor', 'wb/t1', after.stdout.trim()], {
+      cwd: wt.path,
+    });
   } finally {
     await cleanUp(cfg);
   }

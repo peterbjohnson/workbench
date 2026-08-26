@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, Scale, Stage } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
-import { awaitedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
+import { awaitedWork, carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
 import { readStep } from '../run/protocol.ts';
@@ -505,14 +505,35 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * a ticket against work that landed while it was busy, and running them here is
    * how that is found on the ticket rather than by a person at merge time.
    *
-   * A conflict and a failure both park the ticket rather than starting anything:
-   * nothing half-merged is left behind, the work stands, and what to do about it
-   * is a decision — ship it, put it right, or stop it — rather than a stage.
+   * A conflict and a failure both park the ticket rather than starting anything: the
+   * work stands, and what to do about it is a decision — ship it, put it right, or
+   * stop it — rather than a stage. What a conflict does leave behind is whatever
+   * merged before it, so that is recorded first: the branch has moved, and a record
+   * that says otherwise is what measures a dependency's change as this ticket's.
    */
   async function refresh(ticket: Ticket, worktree: string): Promise<boolean> {
-    const took = awaitedBranches(ticket);
-    const result = await deps.workspace.refresh(ticket.id, took);
+    const result = await deps.workspace.refresh(ticket.id, awaitedBranches(ticket));
     if (result.kind === 'up-to-date') return true;
+
+    // What came in with the base is recorded along with it, because a branch
+    // standing on work the base has not got cannot be measured from the base: see
+    // `refreshed` in events.ts. Written whichever way the merge went — a conflict
+    // leaves everything that merged before it standing, and the branch's record has
+    // to say where the branch is rather than where it was.
+    const took = result.merged.filter((ref) => ref !== result.base);
+    if (result.merged.length > 0) {
+      store.append(ticket.id, {
+        type: 'refreshed',
+        base: result.base,
+        commit: result.commit,
+        took,
+        // Everything the base still has not got, not only what came in now: a
+        // dependency sent back for changes stops being offered without its work
+        // reaching the base, and the reducer is what decides whether the base may
+        // move onto this one.
+        carrying: carriedWork(ticket, store.tickets(), took),
+      });
+    }
 
     if (result.kind === 'conflicted') {
       store.append(ticket.id, {
@@ -523,16 +544,6 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       });
       return false;
     }
-
-    // What came in with the base is recorded along with it, because a branch
-    // standing on work the base has not got cannot be measured from the base: see
-    // `refreshed` in events.ts.
-    store.append(ticket.id, {
-      type: 'refreshed',
-      base: result.base,
-      commit: result.commit,
-      took,
-    });
 
     const failed = (await deps.checks(worktree)).filter((r) => !r.ok);
     if (failed.length === 0) return true;
@@ -628,9 +639,11 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * checks are not run: they judge a ticket's own work against a base that moved,
    * and there is no work here yet.
    *
-   * A conflict throws rather than recording anything: `perform` turns that into
-   * `blocked`, and this is reached before `stage_started`, so two dependencies that
-   * will not sit in one tree stop the ticket at the cheapest moment there is.
+   * A conflict blocks the ticket — `perform` turns the throw into `blocked`, and
+   * this is reached before `stage_started`, so two dependencies that will not sit in
+   * one tree stop it at the cheapest moment there is. Whatever merged before the
+   * conflict is recorded first: it is on the branch, and the branch's record has to
+   * say what the branch is.
    */
   async function takeAwaitedWork(ticket: Ticket): Promise<void> {
     const branches = awaitedBranches(ticket);
@@ -638,23 +651,33 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
 
     const result = await deps.workspace.refresh(ticket.id, branches);
     if (result.kind === 'up-to-date') return;
+
+    // Recorded against the merge rather than the commit the branch was cut from,
+    // because that is what this ticket's own work is now measured from: `diff` reads
+    // `base...HEAD`, so leaving the base behind the dependencies hands every stage —
+    // and then the reviewer — their work as though this ticket had written it. The
+    // failure `refreshed` moves the base to prevent, arriving by the other door.
+    //
+    // What merged, not what was asked for: a conflict leaves the merges before it
+    // standing, and a blocked ticket whose base is still the commit it was cut from
+    // hands the stage that follows the manager's answer exactly that whole change.
+    const took = result.merged.filter((ref) => ref !== result.base);
+    if (result.merged.length > 0) {
+      store.append(ticket.id, {
+        type: 'refreshed',
+        base: result.commit,
+        commit: result.commit,
+        took,
+        carrying: carriedWork(ticket, store.tickets(), took),
+      });
+    }
+
     if (result.kind === 'conflicted') {
       throw new Error(
         `this branch cannot take ${describeRef(result.with, result.base)}:\n` +
           result.paths.map((p) => `  ${p}`).join('\n'),
       );
     }
-    // Recorded against the merge rather than the commit the branch was cut from,
-    // because that is what this ticket's own work is now measured from: `diff` reads
-    // `base...HEAD`, so leaving the base behind the dependencies hands every stage —
-    // and then the reviewer — their work as though this ticket had written it. The
-    // failure `refreshed` moves the base to prevent, arriving by the other door.
-    store.append(ticket.id, {
-      type: 'refreshed',
-      base: result.commit,
-      commit: result.commit,
-      took: branches,
-    });
   }
 
   /** Guards against a rule that keeps finding work forever. */

@@ -20,13 +20,25 @@ export type CheckRun = { command: string; ok: boolean; output: string };
 export type Refreshed =
   /** The branch already had all of it. Nothing happened, and nothing is recorded. */
   | { kind: 'up-to-date' }
-  | { kind: 'merged'; base: string; commit: string }
+  /** `merged` is every ref that landed, the base among them when it was one of them. */
+  | { kind: 'merged'; base: string; commit: string; merged: string[] }
   /**
    * One of them would not merge, and that one was left out. Anything merged before
    * it stands, so the branch is as far along as it got — `with` is the ref that
    * stopped it, which is what a person has to be told to do anything about it.
+   *
+   * Said in data as well as in prose: `merged` is what landed before the failure and
+   * `commit` is the HEAD they left, so a caller can record a branch that has moved
+   * rather than one it wrongly believes is where it was.
    */
-  | { kind: 'conflicted'; base: string; paths: string[]; with: string };
+  | {
+      kind: 'conflicted';
+      base: string;
+      paths: string[];
+      with: string;
+      merged: string[];
+      commit: string;
+    };
 
 /**
  * Everything else in the system is derived from this list.
@@ -171,12 +183,18 @@ export type EventBody =
    * Only written when something actually merged. A branch that already had the
    * base is the ordinary case and says nothing.
    *
-   * `took` is the offered work this ticket waited for that came in with the base —
-   * `awaitedWork`'s branches. Recorded because it decides where the base may move
-   * to: that work is in no commit of the base, so measuring from one would show
-   * the dependency's whole change as this ticket's.
+   * `took` is the work this ticket waited for that this refresh merged, the base
+   * aside. Recorded because that work is in no commit of the base, so measuring from
+   * one would show the dependency's whole change as this ticket's.
+   *
+   * `carrying` is the whole of that work as of this refresh — what the branch took
+   * now, and what it took before and the base still has not got. Written because
+   * `took` alone lasts one refresh: a dependency that is sent back for changes is
+   * no longer offered, so the next refresh takes nothing from it and the base would
+   * move onto a commit without its work in it, though the merge is still in the
+   * branch. Optional, so events written before this replay as they always did.
    */
-  | { type: 'refreshed'; base: string; commit: string; took?: string[] }
+  | { type: 'refreshed'; base: string; commit: string; took?: string[]; carrying?: string[] }
   | { type: 'plan_approved' }
   /**
    * The manager says the approach is wrong: back to planning, and the reason is

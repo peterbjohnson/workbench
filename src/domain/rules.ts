@@ -100,6 +100,31 @@ export function awaitedWork(t: Ticket, tickets: readonly Ticket[]): Ticket[] {
 }
 
 /**
+ * The work in this branch that the base has not got: what it was already carrying,
+ * plus whatever this refresh has just taken.
+ *
+ * A fact about the branch rather than about the dependency, and so a sticky one —
+ * once a merge is in the branch it is in it, whatever the board says afterwards.
+ * `awaitedWork` cannot answer this: it is the offered work, and only the merged
+ * `refreshed` that follows an offer being withdrawn would then record nothing and
+ * let the base move onto a commit that has not got the merge this branch is
+ * standing on.
+ *
+ * A ref drops off when its ticket is `done` — the pull request merged, so the work
+ * is in the base and the ordinary refresh brings it in with everything else. That,
+ * and nothing else: a dependency sent back for changes, rejected, cancelled or
+ * belonging to no ticket on the board is still work no commit of the base has.
+ */
+export function carriedWork(
+  t: Ticket,
+  tickets: readonly Ticket[],
+  taking: readonly string[],
+): string[] {
+  const landed = (ref: string) => tickets.some((o) => o.branch === ref && o.status === 'done');
+  return [...new Set([...t.carrying, ...taking])].filter((ref) => !landed(ref));
+}
+
+/**
  * The only policy in the system. Pure: no I/O, no clock, no agent.
  *
  * @param running how many tickets have a stage in flight right now

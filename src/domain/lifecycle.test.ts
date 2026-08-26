@@ -737,6 +737,80 @@ test('a ticket keeps its own git record: branch, base, commits, pull request', (
   assert.equal(t.prUrl, 'https://example/pr/1');
 });
 
+test('a branch keeps its base while it is carrying work the base has not got', () => {
+  const j = newTicket();
+  j.add({ type: 'branched', branch: 'wb/t1', base: 'base1234' });
+
+  // The merge made as the branch was cut: the base plus the work it waited for and
+  // nothing of its own, which is the only commit anywhere its own work can be
+  // measured from.
+  const took = j.add({
+    type: 'refreshed',
+    base: 'merge01',
+    commit: 'merge01',
+    took: ['wb/t2'],
+    carrying: ['wb/t2'],
+  });
+  assert.equal(took.base, 'merge01');
+  assert.deepEqual(took.carrying, ['wb/t2']);
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'c0ffee12',
+  });
+
+  // t2 has been sent back for changes, so it is not offered and this refresh takes
+  // nothing from it. Its merge is in the branch all the same — moving the base onto
+  // a commit without it would hand a reviewer t2's whole change as this ticket's.
+  const held = j.add({
+    type: 'refreshed',
+    base: 'newbase',
+    commit: 'merge02',
+    took: [],
+    carrying: ['wb/t2'],
+  });
+  assert.equal(held.base, 'merge01', 'the base stands where the merge that took t2 put it');
+  assert.deepEqual(
+    held.commits,
+    ['merge01', 'c0ffee12', 'merge02'],
+    'the new base is in the branch anyway',
+  );
+
+  // And once t2's pull request is merged its work is in the base, so this branch is
+  // carrying nothing the base has not got and its base moves again.
+  const landed = j.add({ type: 'refreshed', base: 'newer001', commit: 'merge03', carrying: [] });
+  assert.equal(landed.base, 'newer001');
+  assert.deepEqual(landed.carrying, []);
+});
+
+test('a refresh recorded before branches were carried means what it always did', () => {
+  const j = newTicket();
+  j.add({ type: 'branched', branch: 'wb/t1', base: 'base1234' });
+
+  const took = j.add({ type: 'refreshed', base: 'merge01', commit: 'merge01', took: ['wb/t2'] });
+  assert.equal(took.base, 'merge01');
+  assert.deepEqual(took.carrying, ['wb/t2'], 'what it took is what it was carrying');
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'c0ffee12',
+  });
+
+  const still = j.add({ type: 'refreshed', base: 'newbase', commit: 'merge02', took: ['wb/t2'] });
+  assert.equal(still.base, 'merge01', 'held by what it took, exactly as before');
+
+  const plain = j.add({ type: 'refreshed', base: 'newer001', commit: 'merge03' });
+  assert.equal(plain.base, 'newer001', 'and an ordinary refresh moves it, as it always did');
+});
+
 test('a ticket written without a gate builds what it plans', () => {
   const j = new Journal();
   j.add({ type: 'ticket_created', title: 'do a thing', body: 'details', requiresApproval: false });

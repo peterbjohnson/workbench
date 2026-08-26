@@ -17,7 +17,7 @@ import {
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
-import { awaitedWork, heldBy } from './rules.ts';
+import { awaitedWork, carriedWork, heldBy } from './rules.ts';
 import { deriveTicket, ended, type Status, type Ticket } from './ticket.ts';
 
 const EVERY_STATUS = [
@@ -361,6 +361,34 @@ test('what a released ticket must be standing on is the work that is offered', (
   // A ticket that is not on the board contributes nothing, as it holds nothing.
   assert.deepEqual(awaited(offering('t3')), ['t3']);
   assert.deepEqual(awaitedWork(at('queued'), [at('queued')]), []);
+});
+
+test('a branch carries what it merged until that work reaches the base', () => {
+  const offered = (id: string): EventBody => ({ type: 'pr_opened', url: `http://pr/${id}` });
+  const took = { ...at('implementing'), carrying: ['wb/t2'] };
+
+  // Taken once and taken again is one merge: a refresh that brings the base in
+  // while the same dependency is still offered must not name it twice.
+  assert.deepEqual(carriedWork(at('queued'), [], ['wb/t2']), ['wb/t2']);
+  assert.deepEqual(carriedWork(took, [], ['wb/t2']), ['wb/t2']);
+  assert.deepEqual(carriedWork(took, [], ['wb/t3']), ['wb/t2', 'wb/t3']);
+
+  // Merged: the base has it now, so the branch is no longer standing on anything
+  // the base has not got, and its own work can be measured from the base again.
+  const merged = dep('t2', offered('t2'), { type: 'verdict', verdict: 'accepted' });
+  assert.equal(merged.status, 'done');
+  assert.deepEqual(carriedWork(took, [merged], []), []);
+
+  // Everything else leaves the merge exactly where it is. Whatever the board says
+  // about the dependency, the commit is in this branch and in no commit of the base
+  // — this is a fact about the branch, and only a merge changes it.
+  const reworking = dep('t2', offered('t2'), { type: 'changes_requested', changes: 'the units' });
+  const rejected = dep('t2', offered('t2'), { type: 'verdict', verdict: 'rejected' });
+  const cancelled = dep('t2', offered('t2'), { type: 'cancelled', reason: 'not now' });
+  for (const other of [reworking, rejected, cancelled]) {
+    assert.deepEqual(carriedWork(took, [other], []), ['wb/t2'], other.status);
+  }
+  assert.deepEqual(carriedWork(took, [], []), ['wb/t2'], 'and one not on the board at all');
 });
 
 test('a ticket the limit is holding back says so; nothing else does', () => {
