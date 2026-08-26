@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 import type { Doc, DocKind } from '../../src/api/documents.ts';
-import { COLUMNS, columnFor, needsYou, waitingForSlot } from '../../src/domain/board.ts';
+import {
+  COLUMNS,
+  columnFor,
+  DONE,
+  inColumn,
+  needsYou,
+  waitingForSlot,
+  type Order,
+} from '../../src/domain/board.ts';
 import { heldBy, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
+import { useOrder } from './order.ts';
 import { Settings } from './Settings.tsx';
 import { Theme } from './Theme.tsx';
 import { TicketForm } from './TicketForm.tsx';
@@ -49,6 +58,12 @@ function tabInHash(hash: string): Tab {
   return TABS.find((tab) => tab.toLowerCase() === hash) ?? 'Board';
 }
 
+/** Both ends of a column, as the control names them. Newest is where Done starts. */
+const ORDERS: readonly [Order, string][] = [
+  ['newest', 'Newest'],
+  ['oldest', 'Oldest'],
+];
+
 /** Which column a ticket may be dragged into, if any. */
 function dropTarget(t: Ticket): string | null {
   if (t.status === 'backlog') return COMMITTED;
@@ -71,6 +86,8 @@ export function App() {
   // The repository this board is working in. A fact of the running process, so it
   // is read once and never redrawn.
   const [repo, setRepo] = useState<string | null>(null);
+  // Which end of Done to read from. The browser's choice, not the workbench's.
+  const [order, chooseOrder] = useOrder();
 
   /** Anything appended redraws the board. No polling, and no refresh button. */
   useEffect(() => {
@@ -254,9 +271,13 @@ export function App() {
             <Column
               key={column.name}
               name={column.name}
-              tickets={tickets.filter((t) => columnFor(t) === column.name)}
+              tickets={inColumn(tickets, column.name, column.name === DONE ? order : 'oldest')}
               queued={queued}
               held={held}
+              // Only Done: the other six are the queue, and the order work is
+              // taken in is the manager's to set rather than the reader's to flip.
+              order={column.name === DONE ? order : undefined}
+              onOrder={chooseOrder}
               // The backlog is where a ticket starts, so that is where writing one
               // belongs — at the top of the column it will appear in, rather than in
               // the header beside things that are about the whole board.
@@ -340,6 +361,9 @@ function Column(props: {
   tickets: Ticket[];
   /** Something to do in this column, under its heading. Only the backlog has one. */
   action?: ReactNode;
+  /** Which end this column is read from, when it is a column that can be turned round. */
+  order?: Order;
+  onOrder: (order: Order) => void;
   /** Whether a card is next for a slot — the same judgement for every column. */
   queued: (t: Ticket) => boolean;
   /** The tickets a card is held behind. */
@@ -353,7 +377,7 @@ function Column(props: {
   onDragEnd: () => void;
   onOpen: (id: string) => void;
 }) {
-  const { name, tickets, accepts, dragging } = props;
+  const { name, tickets, accepts, dragging, order } = props;
 
   return (
     <div
@@ -369,6 +393,21 @@ function Column(props: {
       <h2>
         {name} {tickets.length > 0 && <span>({tickets.length})</span>}
       </h2>
+      {order !== undefined && (
+        <div className="order" role="group" aria-label={`${name} order`}>
+          {ORDERS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={value === order ? 'picked' : ''}
+              aria-pressed={value === order}
+              onClick={() => props.onOrder(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {props.action}
       {tickets.map((t) => (
         <Card

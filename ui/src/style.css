@@ -229,6 +229,41 @@ header form {
   font-variant-numeric: tabular-nums;
 }
 
+/* Which end Done is read from. Shaped like the theme control and as quiet: it is
+   about the reading rather than about the work. */
+.col .order {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  width: fit-content;
+  margin: 0 0 0.5rem 0.2rem;
+}
+
+.col .order button {
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+}
+
+.col .order button + button {
+  border-left: 1px solid var(--line);
+}
+
+.col .order button:hover {
+  color: var(--ink);
+  background: var(--card);
+}
+
+.col .order button.picked {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--card);
+}
+
 .card {
   display: block;
   width: 100%;
