@@ -58,6 +58,11 @@ export function TicketForm(props: {
   // would otherwise keep pushing the one about the title further away.
   const bodyNow = useRef(body);
   bodyNow.current = body;
+  // What is in the box now, so a slow answer about an earlier name cannot land on
+  // top of the answer about this one. Two questions in flight is the ordinary
+  // case: the wait is under a second and an answer takes several.
+  const titleNow = useRef(title);
+  titleNow.current = title;
 
   useEffect(() => {
     const name = title.trim();
@@ -68,6 +73,7 @@ export function TicketForm(props: {
       void wb
         .checkName(name, bodyNow.current)
         .then((reply) => {
+          if (name !== titleNow.current.trim()) return;
           if (reply.name !== null) {
             setSuggestion({ for: name, name: reply.name, why: reply.why ?? '' });
           }

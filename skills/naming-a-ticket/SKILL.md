@@ -23,7 +23,8 @@ of twenty decides from. It is worth the few seconds.
 
 ## Saying a better name
 
-Answer in these two lines and nothing else:
+When you are asked about a name someone is typing, answer in these two lines and
+nothing else:
 
 ```
 NAME: <the better name>
