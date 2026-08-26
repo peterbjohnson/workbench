@@ -635,7 +635,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           result.paths.map((p) => `  ${p}`).join('\n'),
       );
     }
-    store.append(ticket.id, { type: 'refreshed', base: result.base, commit: result.commit });
+    // Recorded against the merge rather than the commit the branch was cut from,
+    // because that is what this ticket's own work is now measured from: `diff` reads
+    // `base...HEAD`, so leaving the base behind the dependencies hands every stage —
+    // and then the reviewer — their work as though this ticket had written it. The
+    // failure `refreshed` moves the base to prevent, arriving by the other door.
+    store.append(ticket.id, { type: 'refreshed', base: result.commit, commit: result.commit });
   }
 
   /** Guards against a rule that keeps finding work forever. */

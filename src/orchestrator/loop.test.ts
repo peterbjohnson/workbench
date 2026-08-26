@@ -607,6 +607,10 @@ test('a ticket let go by a pull request is branched onto that work, not without 
     const events = h.store.eventsFor('t2').map((e) => e.type);
     assert.ok(events.indexOf('branched') < events.indexOf('refreshed'), 'cut, then merged onto');
     assert.ok(events.indexOf('refreshed') < events.indexOf('stage_started'), 'before the stage');
+
+    // And measured from the merge: every stage is handed `diff(base...HEAD)`, so a
+    // base left at abc1234 would show t1's and t3's work as t2's own.
+    assert.equal(h.store.ticket('t2').base, 'merge01', 'what t2 writes is measured from here');
   } finally {
     await h.close();
   }
@@ -645,14 +649,19 @@ test('dependencies that will not sit in one tree stop the ticket before it start
 test('a dependency that ended has no work to take, so nothing is merged', async () => {
   const h = harness();
   try {
-    create(h.store, 't1');
+    // Offered first, and stopped after: the case that matters, because cancelling
+    // does not take the offer back. A dependency that never offered anything would
+    // be let through by the rule that is wrong as readily as by the one that is right.
+    standing(h.store, 't1');
     waiting(h.store, 't2', ['t1']);
     h.store.append('t1', { type: 'cancelled', reason: 'not now' });
 
     await h.orch.idle();
 
     // Cancelling lets go of what waits, which is the point of it — but there is no
-    // branch of t1's that t2 should be standing on.
+    // branch of t1's that t2 should be standing on: merging it would ship work the
+    // manager stopped, through t2's pull request.
+    assert.equal(h.store.ticket('t1').offered, true, 'the offer outlived the cancelling');
     assert.equal(h.store.ticket('t2').status, 'plan_gate');
     assert.deepEqual(h.refreshed, [], 'nothing to take, so nothing was asked of git');
   } finally {
