@@ -71,6 +71,7 @@ async function rig(checks: string[] = []): Promise<Rig> {
         return url;
       },
       verdict: async () => ({ kind: 'pending' }),
+      merge: async () => {},
     },
     // The shipped agent definitions, so what the guard allows here is what it
     // will allow in a real run.

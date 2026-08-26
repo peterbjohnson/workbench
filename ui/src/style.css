@@ -142,15 +142,24 @@ code,
 
 /* Header ------------------------------------------------------------------ */
 
+/* `--brand` is the colour this workbench was given in its settings, put on the
+   document by the board. It is read here and nowhere else: any colour at all was
+   asked for, and an arbitrary one is not safe behind white text — so it tints this
+   band and rules it off rather than becoming the accent.
+
+   Every use of it falls back to what the bar was before there were colours, so an
+   instance that has chosen none is untouched by all of this. Mixed with --bg rather
+   than laid over it because the bar is sticky and has to be opaque. */
+
 header {
   display: flex;
   gap: 0.75rem;
   align-items: center;
   padding: 0.8rem 1.2rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--brand, var(--line));
   position: sticky;
   top: 0;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--brand, var(--bg)) 14%, var(--bg));
   z-index: 2;
 }
 
@@ -161,13 +170,39 @@ header h1 {
 }
 
 /* Which repository this board is working in. Quiet, because it is the answer to a
-   question you only ask when more than one of these is open. */
+   question you only ask when more than one of these is open — but pressable,
+   because the whole path is behind it. */
+.repo-at {
+  position: relative;
+  display: inline-flex;
+}
+
 header .repo {
   color: var(--dim);
   font-size: 0.75rem;
   padding: 0.1rem 0.4rem;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--brand, var(--line)) 40%, var(--line));
   border-radius: 4px;
+  background: none;
+}
+
+header .repo:hover {
+  color: inherit;
+}
+
+.repo-info {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 0.2rem);
+  left: 0;
+  max-width: 26rem;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
 }
 
 header form {
@@ -227,6 +262,41 @@ header form {
 
 .col h2 span {
   font-variant-numeric: tabular-nums;
+}
+
+/* Which end Done is read from. Shaped like the theme control and as quiet: it is
+   about the reading rather than about the work. */
+.col .order {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  width: fit-content;
+  margin: 0 0 0.5rem 0.2rem;
+}
+
+.col .order button {
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+}
+
+.col .order button + button {
+  border-left: 1px solid var(--line);
+}
+
+.col .order button:hover {
+  color: var(--ink);
+  background: var(--card);
+}
+
+.col .order button.picked {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--card);
 }
 
 .card {
@@ -327,6 +397,50 @@ aside .close {
 aside h2 {
   margin: 0.2rem 0 0.1rem;
   font-size: 1.05rem;
+}
+
+/* Where the ticket is, in words, before anything else. The status was only ever a
+   word in the chip line, so a ticket waiting on a pull request said nothing about
+   waiting on one — and whatever box happened to be set said it instead. */
+.headline {
+  margin: 0.5rem 0 0.8rem;
+  padding-left: 0.6rem;
+  border-left: 3px solid var(--line);
+}
+
+.headline .state {
+  font-weight: 600;
+}
+
+.headline .detail {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+/* The tones the stage line already uses, so the top of the panel and the line
+   under it read as the same news rather than as two colour schemes. */
+.headline.ok {
+  border-color: var(--ok);
+}
+
+.headline.ok .state {
+  color: var(--ok);
+}
+
+.headline.bad {
+  border-color: var(--bad);
+}
+
+.headline.bad .state {
+  color: var(--bad);
+}
+
+.headline.going {
+  border-color: var(--accent);
+}
+
+.headline.going .state {
+  color: var(--accent);
 }
 
 /* Where the ticket has got to, above everything else in the panel. One line of
@@ -1151,6 +1265,27 @@ ul.done-when {
 .setting textarea {
   resize: vertical;
   line-height: 1.5;
+}
+
+/* The colour picker, the hex it settled on, and the way back to none — the middle
+   column, like every other value on this page. */
+.setting .swatch {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.setting .swatch input {
+  width: 2.6rem;
+  height: 1.8rem;
+  padding: 0.1rem;
+  flex: none;
+}
+
+.setting .swatch button {
+  font-size: 0.78rem;
+  padding: 0.15rem 0.45rem;
 }
 
 /* A fact about this installation rather than a decision: it reads as the value it

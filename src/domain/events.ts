@@ -202,7 +202,16 @@ export type EventBody =
   | { type: 'changes_requested'; changes: string }
   | { type: 'pr_opened'; url: string }
   /** The workbench itself could not carry on — a worktree or a pull request failed. */
-  | { type: 'blocked'; reason: string }
+  | {
+      type: 'blocked';
+      reason: string;
+      /**
+       * The files the base and the branch disagree about, when that is what
+       * stopped it. Kept as data rather than only as prose in the reason, so the
+       * panel can list them and offer the way out.
+       */
+      conflicts?: string[];
+    }
   /** The manager stopped it. */
   | { type: 'cancelled'; reason: string }
   /**
@@ -210,6 +219,13 @@ export type EventBody =
    * Distinct from `blocked`: nothing is stuck and no answer would help.
    */
   | { type: 'gave_up'; reason: string }
+  /**
+   * The manager says merge it. Written rather than merged on the spot because the
+   * API server does no work of its own: the orchestrator picks this up, brings the
+   * base in, squashes the branch onto it and records the verdict itself. So a
+   * merge asked for survives a restart, and every one of them is in the log.
+   */
+  | { type: 'merge_requested' }
   | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string };
 
 export type Event = EventBody & {

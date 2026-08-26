@@ -97,6 +97,8 @@ export function createClient(baseUrl: string) {
     restart: (id: string) => post<unknown>(`/tickets/${id}/restart`),
     /** Offer what it has as a pull request, whatever the agents made of it. */
     ship: (id: string) => post<unknown>(`/tickets/${id}/ship`),
+    /** Squash the offered work onto the base. The orchestrator does it, and accepts it. */
+    merge: (id: string) => post<{ ticket: Ticket }>(`/tickets/${id}/merge`).then((r) => r.ticket),
     cancel: (id: string, reason: string) => post<unknown>(`/tickets/${id}/cancel`, { reason }),
 
     policy: () => call<Policy>('/policy'),

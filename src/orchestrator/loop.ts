@@ -122,6 +122,8 @@ export type Workspace = {
 export type CodeHost = {
   openPr: (ticket: Ticket) => Promise<string>;
   verdict: (ticket: Ticket) => Promise<Verdict>;
+  /** Merges the offer, because the manager said so here rather than on the host. */
+  merge: (ticket: Ticket) => Promise<void>;
 };
 
 export type Deps = {
@@ -335,6 +337,9 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           break;
         case 'poll_verdict':
           await doPollVerdict(ticket);
+          break;
+        case 'merge_pr':
+          await doMergePr(ticket);
           break;
         case 'give_up':
           store.append(ticket.id, { type: 'gave_up', reason: action.reason });
@@ -631,6 +636,9 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         reason:
           `this branch conflicts with ${result.base.slice(0, 8)}, which the base has ` +
           `moved on to:\n${result.paths.map((p) => `  ${p}`).join('\n')}`,
+        // The same paths as data, so the panel can list them and offer the way out
+        // rather than leaving them buried in a paragraph.
+        conflicts: result.paths,
       });
       return false;
     }
@@ -693,14 +701,39 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       reason: verdict.kind === 'rejected' ? verdict.reason : undefined,
     });
 
-    if (verdict.kind === 'accepted') {
-      // Tidying up is not the ticket's business: a directory left behind is untidy,
-      // not broken, and must not turn an accepted ticket into a blocked one.
-      await deps.workspace.discard(ticket.id).catch(() => {});
-      // The base has moved. Everything else standing is now offered against a base
-      // that no longer exists, which is the whole reason conflicts turn up at all.
-      await refreshOffered(ticket);
-    }
+    if (verdict.kind === 'accepted') await accepted(ticket);
+  }
+
+  /**
+   * The manager said merge it, here rather than on the code host.
+   *
+   * The base goes in first, and a clash stops the whole thing: nothing is merged,
+   * the branch is untouched, and the ticket parks with the files named. That is
+   * what `refresh` already does for a ticket being offered, and a merge is the one
+   * moment the answer matters most — the alternative is finding out from the host
+   * that the merge was refused, which says less and leaves it half-done.
+   *
+   * The verdict is recorded here rather than left for the next poll to read off
+   * the host: the ticket leaves `awaiting_verdict` at once, so a second tick
+   * cannot arrive and merge what has already been merged.
+   */
+  async function doMergePr(ticket: Ticket): Promise<void> {
+    const { path: worktree } = await prepare(ticket);
+    if (!(await refresh(ticket, worktree))) return;
+
+    await deps.host.merge(ticket);
+    store.append(ticket.id, { type: 'verdict', verdict: 'accepted' });
+    await accepted(ticket);
+  }
+
+  /** What follows work being accepted, however the acceptance was arrived at. */
+  async function accepted(ticket: Ticket): Promise<void> {
+    // Tidying up is not the ticket's business: a directory left behind is untidy,
+    // not broken, and must not turn an accepted ticket into a blocked one.
+    await deps.workspace.discard(ticket.id).catch(() => {});
+    // The base has moved. Everything else standing is now offered against a base
+    // that no longer exists, which is the whole reason conflicts turn up at all.
+    await refreshOffered(ticket);
   }
 
   /** Makes the workspace, recording where the branch was cut from the first time. */
