@@ -110,8 +110,10 @@ export function App() {
 
   // Which repository this is, and what colour it was given. Two boards on two ports
   // are otherwise identical down to the pixel, and the answer to "which one is this"
-  // should not be a page away. Read again when the settings are saved, because the
-  // colour is one of them and takes effect at once.
+  // should not be a page away. Read once: the settings page is the only thing that
+  // changes a colour, and it puts its own — draft or saved — on the header while it
+  // is open. Reading again on every event would overwrite an unsaved draft with the
+  // saved colour each time a running ticket said anything.
   useEffect(() => {
     let live = true;
     wb.settings()
@@ -126,7 +128,7 @@ export function App() {
     return () => {
       live = false;
     };
-  }, [version]);
+  }, []);
 
   // The tab as well as the header: a window you are looking for is usually one you
   // cannot see, and its title is all the switcher shows of it.
