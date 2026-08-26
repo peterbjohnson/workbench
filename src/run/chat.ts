@@ -32,6 +32,13 @@ export type ChatReply = {
   sessionId?: string;
 };
 
+/**
+ * How one attempt at a turn ended. `failed` is why it has no answer, and is here so
+ * that a resume which never reached the model can be told from a run that reached it
+ * and went wrong: only the first is worth starting again from the top.
+ */
+type Attempt = { text: string; costUsd: number; sessionId?: string; failed?: string };
+
 export type ChatRunnerDeps = {
   /** Asked for per turn, not held: the board edits this file like the other four. */
   agent: () => ChatAgentDef;
@@ -62,60 +69,96 @@ export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
     const agent = deps.agent();
     const cwd = deps.cwd(ticket);
 
-    const abortController = new AbortController();
-    const relayAbort = () => abortController.abort();
-    signal.addEventListener('abort', relayAbort, { once: true });
-    if (signal.aborted) relayAbort();
-
-    const options: Options = {
-      ...(resumeFrom !== undefined ? { resume: resumeFrom } : {}),
-      cwd,
-      model: agent.model,
-      effort: agent.effort,
-      permissionMode: agent.permissionMode,
-      allowedTools: [...agent.allowedTools],
-      disallowedTools: [...agent.disallowedTools],
-      maxTurns: agent.maxTurns,
-      maxBudgetUsd: agent.maxBudgetUsd,
-      abortController,
-      // Nothing from this machine, and no skills: this agent is a reader and a
-      // talker, and expertise about how work is done here is for the stages doing it.
-      settingSources: [],
-      mcpServers: wbServer(
-        { worktree: cwd, protectedPaths: deps.protectedPaths },
-        agent.allowedTools,
-      ),
-      strictMcpConfig: true,
-      env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
-      canUseTool: async (toolName): Promise<PermissionResult> => ({
-        behavior: 'deny',
-        message: `${toolName} is not available to the chat`,
-      }),
-    };
-
+    // Resuming is worth a try but must never be worth a chat that cannot be had
+    // again. The session lives in ~/.claude/projects on one machine and can simply
+    // be gone — and it goes for certain the first time a ticket is queued, because
+    // the cwd moves from the repository to the ticket's own worktree, and the
+    // session is looked for under the path it was started from.
+    //
     // A resumed conversation already holds the ticket and everything the agent read
-    // to answer the last turn. Rebuilding the brief would be paying twice for it.
-    const prompt = resumeFrom === undefined ? brief(deps, agent, ticket, events, message) : message;
-
-    let text = '';
-    let stopped: string | undefined;
-    let costUsd = 0;
-    let sessionId: string | undefined;
-
-    for await (const said of (deps.query ?? query)({ prompt, options })) {
-      sessionId ??= said.session_id;
-      if (said.type === 'result') {
-        costUsd += said.total_cost_usd;
-        if (said.subtype === 'success') text = said.result;
-        else stopped = said.subtype;
-      }
+    // to answer the last turn, so it is told the message alone: rebuilding the brief
+    // would be paying twice for it.
+    if (resumeFrom !== undefined) {
+      const resumed = await runOnce(message, resumeFrom);
+      // Only start again if the attempt got nowhere. One that spent money reached
+      // the model, so the session was there and this is its answer however bad;
+      // running it again would pay twice for the same turn.
+      if (resumed.failed === undefined || resumed.costUsd > 0) return replyTo(resumed);
     }
 
-    // Thrown rather than reported as an empty turn: unlike a stage, a chat has nobody
-    // downstream to make sense of silence, and the manager is sitting in front of it.
-    if (stopped !== undefined) throw new Error(`the chat stopped: ${stopped}`);
+    // Either a first turn or a conversation the agent has lost, which comes to the
+    // same thing: it is told the whole ticket, and the reply carries the new session
+    // for the next turn to resume — so the chat is never stuck on a dead one.
+    return replyTo(await runOnce(brief(deps, agent, ticket, events, message)));
 
-    return { text, proposals: readProposals(text), costUsd, ...(sessionId ? { sessionId } : {}) };
+    async function runOnce(prompt: string, resume?: string): Promise<Attempt> {
+      const abortController = new AbortController();
+      const relayAbort = () => abortController.abort();
+      signal.addEventListener('abort', relayAbort, { once: true });
+      if (signal.aborted) relayAbort();
+
+      const options: Options = {
+        ...(resume !== undefined ? { resume } : {}),
+        cwd,
+        model: agent.model,
+        effort: agent.effort,
+        permissionMode: agent.permissionMode,
+        allowedTools: [...agent.allowedTools],
+        disallowedTools: [...agent.disallowedTools],
+        maxTurns: agent.maxTurns,
+        maxBudgetUsd: agent.maxBudgetUsd,
+        abortController,
+        // Nothing from this machine, and no skills: this agent is a reader and a
+        // talker, and expertise about how work is done here is for the stages doing it.
+        settingSources: [],
+        mcpServers: wbServer(
+          { worktree: cwd, protectedPaths: deps.protectedPaths },
+          agent.allowedTools,
+        ),
+        strictMcpConfig: true,
+        env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
+        canUseTool: async (toolName): Promise<PermissionResult> => ({
+          behavior: 'deny',
+          message: `${toolName} is not available to the chat`,
+        }),
+      };
+
+      let text = '';
+      let costUsd = 0;
+      let sessionId: string | undefined;
+      let failed: string | undefined;
+
+      try {
+        for await (const said of (deps.query ?? query)({ prompt, options })) {
+          sessionId ??= said.session_id;
+          if (said.type === 'result') {
+            costUsd += said.total_cost_usd;
+            if (said.subtype === 'success') text = said.result;
+            else failed = `the chat stopped: ${said.subtype}`;
+          }
+        }
+      } catch (error) {
+        // Caught rather than left to escape: a resume that could not find its session
+        // throws, and that is the one failure this runner can do something about.
+        failed = error instanceof Error ? error.message : String(error);
+      }
+
+      return { text, costUsd, sessionId, failed };
+    }
+
+    function replyTo(attempt: Attempt): ChatReply {
+      // Thrown rather than reported as an empty turn: unlike a stage, a chat has
+      // nobody downstream to make sense of silence, and the manager is sitting in
+      // front of it. The route turns this into the reason the pane shows.
+      if (attempt.failed !== undefined) throw new Error(attempt.failed);
+
+      return {
+        text: attempt.text,
+        proposals: readProposals(attempt.text),
+        costUsd: attempt.costUsd,
+        ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
+      };
+    }
   };
 }
 
