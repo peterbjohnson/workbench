@@ -5,6 +5,7 @@ import { CONFIG_FILE, type Config } from '../config.ts';
 import { POLICY_KEYS, type Policy } from '../domain/rules.ts';
 import { MAX_REVISIONS } from '../domain/ticket.ts';
 import type { Store } from '../store/store.ts';
+import { PRESET_VALUES } from './presets.ts';
 
 /**
  * One thing about how this workbench works: what it is, what it is set to, and
@@ -15,7 +16,7 @@ export type Setting = {
   key: string;
   label: string;
   value: string | number | string[];
-  /** How it is edited. `lines` is a list, one to a line; `colour` is a hex colour or none. */
+  /** How it is edited. `lines` is a list, one to a line; `colour` is a preset colour or none. */
   type: 'number' | 'text' | 'lines' | 'choice' | 'colour';
   choices?: string[];
   about: string;
@@ -139,11 +140,13 @@ const CONFIGURED: Record<
   colour: {
     label: 'Instance colour',
     type: 'colour',
+    choices: PRESET_VALUES,
     group: 'Appearance',
     restart: false,
     about:
-      'The colour of this workbench’s top bar. Two boards open at once are otherwise ' +
-      'identical down to the pixel. With none chosen the bar is what it always was.',
+      'The colour of this workbench’s top bar and of the page behind its board, from ' +
+      'the few that suit being there. Two boards open at once are otherwise identical ' +
+      'down to the pixel. With none chosen the board is what it always was.',
   },
 };
 
@@ -282,7 +285,7 @@ function coerce(setting: Setting, raw: unknown): string | number | string[] {
     const chosen = String(raw ?? '').trim();
     if (chosen === '') return '';
     const colour = chosen.toLowerCase();
-    return /^#[0-9a-f]{6}$/.test(colour) ? colour : bad('must be a colour like #3a7d6f');
+    return PRESET_VALUES.includes(colour) ? colour : bad('must be one of the offered colours');
   }
 
   const text = String(raw ?? '').trim();

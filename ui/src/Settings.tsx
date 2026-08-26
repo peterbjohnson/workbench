@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { PRESETS } from '../../src/api/presets.ts';
 import type { Setting } from '../../src/api/settings.ts';
 import { applyBrand, isColour } from './brand.ts';
 import { wb } from './wb.ts';
@@ -145,19 +146,25 @@ function Field(props: { setting: Setting; value: string; onChange: (value: strin
     );
   }
 
-  // The machine's own colour picker, because "any colour" is what was asked for and
-  // a list of six would not be it. The hex beside it is what was chosen, and "None"
-  // is the way back out — a picker has no empty position to return the bar to.
+  // The colours on offer, each in its own colour, because that is the only thing
+  // worth knowing about one. Not a picker: this colour goes behind a whole board and
+  // most of them will not do there. "None" is the way back to nobody's in particular.
   if (setting.type === 'colour') {
+    const offered = PRESETS.filter((preset) => (setting.choices ?? []).includes(preset.value));
     return (
-      <span className="swatch">
-        <input
-          id={id}
-          type="color"
-          value={isColour(value) ? value : '#808080'}
-          onChange={(e) => props.onChange(e.target.value)}
-        />
-        <span className="mono">{value || 'none'}</span>
+      <span className="swatch" id={id} role="group" aria-label={setting.label}>
+        {offered.map((preset) => (
+          <button
+            key={preset.value}
+            className="colour"
+            type="button"
+            style={{ background: preset.value }}
+            title={preset.name}
+            aria-label={preset.name}
+            aria-pressed={value === preset.value}
+            onClick={() => props.onChange(preset.value)}
+          />
+        ))}
         <button type="button" disabled={value === ''} onClick={() => props.onChange('')}>
           None
         </button>

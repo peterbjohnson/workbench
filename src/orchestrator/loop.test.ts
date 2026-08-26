@@ -1015,7 +1015,12 @@ test('the manager can merge the offer here, and the ticket is done', async () =>
 
 test('a merge onto a base that will not merge names the files and merges nothing', async () => {
   const h = harness({
-    refresh: () => ({ kind: 'conflicted', base: 'newbase', paths: ['src/api/server.ts'] }),
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/api/server.ts'],
+      merging: false,
+    }),
   });
   try {
     standing(h.store, 't1');
