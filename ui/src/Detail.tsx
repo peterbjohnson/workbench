@@ -15,6 +15,7 @@ import {
   type Run,
 } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
+import { heldBy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Pick } from './Pick.tsx';
 import { TicketForm } from './TicketForm.tsx';
@@ -68,8 +69,9 @@ export function Detail(props: {
 
       <h2>{t.title}</h2>
 
-      {/* Where it is and what it is waiting for, in words, before anything else. */}
-      <Headline ticket={t} />
+      {/* Where it is and what it is waiting for, in words, before anything else.
+          Who it waits for is a fact about the board, so it is handed in. */}
+      <Headline ticket={t} held={heldBy(t, tickets)} />
 
       {/* Which stages there were and how each ended. The blocks per stage are
           further down for when you want them. */}
@@ -224,8 +226,8 @@ export function Detail(props: {
  * panel. The status was only ever a word in the chip line, so nothing here said the
  * state plainly and whatever box happened to be set said it instead.
  */
-function Headline({ ticket: t }: { ticket: Ticket }) {
-  const { state, detail, tone } = headline(t);
+function Headline({ ticket: t, held }: { ticket: Ticket; held: Ticket[] }) {
+  const { state, detail, tone } = headline(t, held);
 
   return (
     <div className={`headline ${tone}`}>

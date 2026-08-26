@@ -115,15 +115,19 @@ export type Headline = { state: string; detail: string; tone: Tone };
  * A fact about the lifecycle rather than about any particular panel, so it lives
  * here beside `columnFor` and is tested like it: every status has a line, and a
  * new status cannot be added without one.
+ *
+ * @param held the tickets this one is waiting on — `heldBy`, asked by the caller,
+ *   which is the one that has the other tickets to hand. Without it a ticket stuck
+ *   behind another would claim to be waiting for a slot, which its card denies.
  */
-export function headline(t: Ticket): Headline {
+export function headline(t: Ticket, held: readonly Ticket[] = []): Headline {
   switch (t.status) {
     case 'backlog':
       return { state: 'An idea', detail: 'nothing starts until you commit to it', tone: 'note' };
     case 'queued':
-      return atStage(t, 'Committed', 'plan');
+      return atStage(t, 'Committed', 'plan', held);
     case 'planning':
-      return atStage(t, 'Planning', 'plan');
+      return atStage(t, 'Planning', 'plan', held);
     case 'plan_gate':
       return {
         state: 'Waiting on you',
@@ -131,11 +135,11 @@ export function headline(t: Ticket): Headline {
         tone: 'note',
       };
     case 'implementing':
-      return atStage(t, 'Building', 'implement');
+      return atStage(t, 'Building', 'implement', held);
     case 'reviewing':
-      return atStage(t, 'Building', 'review');
+      return atStage(t, 'Building', 'review', held);
     case 'verifying':
-      return atStage(t, 'Building', 'verify');
+      return atStage(t, 'Building', 'verify', held);
     case 'ready_for_pr':
       return { state: 'Offering it', detail: 'opening the pull request', tone: 'going' };
     case 'awaiting_verdict':
@@ -158,14 +162,18 @@ export function headline(t: Ticket): Headline {
 /**
  * A stage of the loop, running or waiting to. The one thing a twenty-minute stage
  * can say for itself is how far it has got, so it says that when it has said.
+ *
+ * A ticket held behind another is not waiting for a slot — it is not next, and a
+ * slot coming free would do nothing for it. It says who it waits for, the same as
+ * its card does, rather than the two contradicting each other.
  */
-function atStage(t: Ticket, state: string, stage: Stage): Headline {
+function atStage(t: Ticket, state: string, stage: Stage, held: readonly Ticket[]): Headline {
   const step = t.step !== null && t.steps.length > 0 ? `, step ${t.step}/${t.steps.length}` : '';
-  return {
-    state,
-    detail: t.running ? `${stage} is running${step}` : `waiting for a slot to ${stage}`,
-    tone: 'going',
-  };
+  const waiting =
+    held.length > 0
+      ? `waiting for ${held.map((h) => h.id).join(', ')}`
+      : `waiting for a slot to ${stage}`;
+  return { state, detail: t.running ? `${stage} is running${step}` : waiting, tone: 'going' };
 }
 
 /**

@@ -110,6 +110,14 @@ test('the headline is what the panel is opened to find out', () => {
   assert.equal(headline({ ...reviewing, running: true }).detail, 'review is running, step 2/5');
   assert.equal(headline({ ...reviewing, running: true, step: null }).detail, 'review is running');
   assert.equal(headline(reviewing).detail, 'waiting for a slot to review');
+
+  // A ticket held behind another is not waiting for a slot, and its card already
+  // says so — the block the ticket asked to be the one you trust must not
+  // contradict the card about the same ticket.
+  const waiting = { ...at('queued'), waitsFor: ['t3'] };
+  const other = { ...at('queued'), id: 't3' };
+  assert.equal(headline(waiting, heldBy(waiting, [waiting, other])).detail, 'waiting for t3');
+  assert.equal(headline(waiting, []).detail, 'waiting for a slot to plan', 'once it is let go');
 });
 
 test('a rejection stands only while the ticket is doing something about it', () => {
