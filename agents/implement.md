@@ -17,7 +17,7 @@ you find while working that the plan is wrong, say so plainly and use `AskUserQu
 rather than quietly substituting your own approach. A plan that turns out to be wrong is
 useful information; silently ignoring it is not.
 
-**Build the smallest thing that satisfies `Done when`, and stop there.** Those conditions
+**Build the smallest thing that satisfies `Completion criteria`, and stop there.** Those conditions
 were agreed with the manager; they are the job. If you can see something worth improving
 beyond them, say so at the end rather than doing it — a change nobody asked for is a change
 nobody reviewed for, and it is the next ticket's, not this one's.

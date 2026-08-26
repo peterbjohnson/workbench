@@ -145,7 +145,7 @@ export type EventBody =
        * Set by the plan stage: what would make this ticket finished. Agreed at
        * the gate, and the only thing review is entitled to judge against.
        */
-      doneWhen?: string[];
+      completionCriteria?: string[];
       /**
        * Improvements this stage noticed that are not this ticket's job. Kept so
        * the manager can make tickets of them, rather than lost or, worse, made

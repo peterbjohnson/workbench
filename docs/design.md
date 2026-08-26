@@ -24,18 +24,18 @@ structures a report is not something a tool can arrive knowing.
 
 ## The plan says when the ticket is finished
 
-A plan ends with a `DONE WHEN:` list — a few conditions anyone could check — and you agree
-them by approving the plan. That list is then the **only** thing review and verify are
-entitled to object about.
+A plan ends with a `COMPLETION CRITERIA:` list — a few conditions anyone could check — and
+you agree them by approving the plan. That list is then the **only** thing review and
+verify are entitled to object about.
 
 Without it they are answering "is this as good as it could be", which has no end. A
 question with no answer cannot be the gate on shipping.
 
 ## Anything merely better is a later ticket
 
-An agent that can see an improvement beyond `DONE WHEN` puts it under `LATER:`, not in its
-verdict. Those appear on the ticket with two buttons — **Backlog** and **Commit to it** —
-so a good idea costs one click to keep and nothing to ignore.
+An agent that can see an improvement beyond the `COMPLETION CRITERIA` puts it under
+`LATER:`, not in its verdict. Those appear on the ticket with two buttons — **Backlog** and
+**Commit to it** — so a good idea costs one click to keep and nothing to ignore.
 
 This is not a way of silencing agents. It is a way of separating *this work is wrong* from
 *something else would also be good*, which are different claims that were arriving in the

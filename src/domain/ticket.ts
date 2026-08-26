@@ -70,7 +70,7 @@ export type Ticket = {
    * are answering "is this as good as it could be", which has no end, and which
    * is what killed the first two real tickets.
    */
-  doneWhen: string[];
+  completionCriteria: string[];
   /**
    * The step the running stage says it has reached, counting from 1. Null when a
    * stage has not said, which is every stage that does not announce them.
@@ -189,7 +189,7 @@ function blank(id: string): Ticket {
     plan: null,
     scale: 'standard',
     steps: [],
-    doneWhen: [],
+    completionCriteria: [],
     step: null,
     rejection: null,
     changes: null,
@@ -293,7 +293,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // that justified it. Its steps go the same way, for the same reason.
         scale: e.stage === 'plan' ? 'standard' : t.scale,
         steps: e.stage === 'plan' ? [] : t.steps,
-        doneWhen: e.stage === 'plan' ? [] : t.doneWhen,
+        completionCriteria: e.stage === 'plan' ? [] : t.completionCriteria,
         // A new plan is a new approach, so the rounds of comments start again.
         revisions: e.stage === 'plan' ? 0 : t.revisions,
         // Read into the brief by the stage now starting; it must not be read twice.
@@ -379,7 +379,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             : t.commits,
         scale: e.scale ?? t.scale,
         steps: e.steps ?? t.steps,
-        doneWhen: e.doneWhen ?? t.doneWhen,
+        // Events are stored and replayed, so a ticket planned before the rename
+        // still carries the criteria under the key it was written with.
+        completionCriteria:
+          e.completionCriteria ?? (e as { doneWhen?: string[] }).doneWhen ?? t.completionCriteria,
         // Set only by a run that stopped with something left to say; anything else
         // clears it, so nothing ever resumes a conversation that has finished.
         session: e.sessionId ?? null,

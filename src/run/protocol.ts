@@ -42,17 +42,20 @@ export function readSteps(stage: Stage, text: string): { steps?: string[] } {
 }
 
 /**
- * The plan says what would make this ticket finished, as a `DONE WHEN:` list. It
- * is shown at the gate, so approving the plan agrees the finish line — and review
- * judges against it rather than against its own taste.
+ * The plan says what would make this ticket finished, as a `COMPLETION CRITERIA:`
+ * list. It is shown at the gate, so approving the plan agrees the finish line —
+ * and review judges against it rather than against its own taste.
  *
  * Without it a reviewer is answering "is this as good as it could be", which has
  * no end. Both of the first real tickets died of that question.
  */
-export function readDoneWhen(stage: Stage, text: string): { doneWhen?: string[] } {
+export function readCompletionCriteria(
+  stage: Stage,
+  text: string,
+): { completionCriteria?: string[] } {
   if (stage !== 'plan') return {};
-  const doneWhen = listUnder(text, /^DONE WHEN:$/i);
-  return doneWhen.length > 0 ? { doneWhen } : {};
+  const completionCriteria = listUnder(text, /^COMPLETION CRITERIA:$/i);
+  return completionCriteria.length > 0 ? { completionCriteria } : {};
 }
 
 /**
@@ -170,7 +173,7 @@ function bare(line: string): string {
  * the end of the message and swallows whatever follows it — which put a reviewer's
  * `LATER:` suggestions into the objections the implementer was told to fix.
  */
-const NEXT_BLOCK = /^(LATER|STEPS|DONE WHEN|SCALE|CHANGES):|^(APPROVED|REJECTED:)/i;
+const NEXT_BLOCK = /^(LATER|STEPS|COMPLETION CRITERIA|SCALE|CHANGES):|^(APPROVED|REJECTED:)/i;
 
 /** The objections under a `CHANGES:` heading, in the reviewer's own words. */
 function readChanges(lines: string[], start: number): string | undefined {

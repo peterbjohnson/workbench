@@ -55,11 +55,11 @@ though the last attempt never happened.
 
 ## Say when it is finished
 
-End with a `DONE WHEN:` line, and under it the conditions that would make this ticket
-finished, one per line:
+End with a `COMPLETION CRITERIA:` line, and under it the conditions that would make this
+ticket finished, one per line:
 
 ```
-DONE WHEN:
+COMPLETION CRITERIA:
 - calcs_v04.md exists in agent_made/ and every number in it matches calcs_v03.py
 - the three existing figures are referenced, and no figure is invented
 - v02's conclusions are restated with the vapour correction applied
@@ -69,7 +69,7 @@ Two to five of them. Each one has to be something a reader could check and answe
 no to — not "the report is good", which nobody can check, but "every quoted number matches
 the script", which anyone can.
 
-**This is the most important line in the plan.** The manager agrees it when approving, and
+**These are the most important lines in the plan.** The manager agrees them when approving, and
 it is then the *only* thing review and verify are entitled to object about. Set it too
 loosely and work goes out unfinished; set it to everything you can imagine, and the ticket
 never ends — which is how the first two real tickets died, each one reviewed against an

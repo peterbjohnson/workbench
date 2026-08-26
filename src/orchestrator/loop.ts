@@ -23,7 +23,7 @@ export type RunResult = {
   /** Set by the plan stage: what the work breaks into, in order. */
   steps?: string[];
   /** Set by the plan stage: what would make this ticket finished. */
-  doneWhen?: string[];
+  completionCriteria?: string[];
   /** Improvements worth a later ticket, which are not this one's job. */
   later?: string[];
   /** Set when the agent asked the manager something. */
@@ -590,7 +590,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       commit: commit ?? undefined,
       scale: result.scale,
       steps: result.steps,
-      doneWhen: result.doneWhen,
+      completionCriteria: result.completionCriteria,
       later: result.later,
       sessionId: result.sessionId,
     });

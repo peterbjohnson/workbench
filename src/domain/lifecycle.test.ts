@@ -256,6 +256,22 @@ test('the plan carries the steps, and a new plan drops the old ones', () => {
   assert.deepEqual(j.add({ type: 'stage_started', stage: 'plan', runId: 'r3' }).steps, []);
 });
 
+test('completion criteria written under the old key still reach the ticket', () => {
+  // Events are stored as JSON and replayed on every read, so a ticket planned
+  // before the rename still carries its criteria under `doneWhen`.
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  const planned = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'the plan',
+    doneWhen: ['every number matches calcs_v03.py'],
+  } as EventBody);
+
+  assert.deepEqual(planned.completionCriteria, ['every number matches calcs_v03.py']);
+});
+
 test('a ticket can go back to the backlog, but only before it starts', () => {
   const j = newTicket();
 

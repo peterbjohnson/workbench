@@ -78,7 +78,8 @@ would demonstrate it.
 
 **Has this ticket been done?** Not: is this the best version of it.
 
-The brief carries `Done when` — the conditions the manager agreed when approving the plan.
+The brief carries `Completion criteria` — the conditions the manager agreed when approving
+the plan.
 Those, and defects, are what you may object to. If every condition is met and you have
 found nothing wrong, the verdict is `APPROVED`, however much better you can see it being.
 
