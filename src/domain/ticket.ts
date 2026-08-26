@@ -117,6 +117,18 @@ export type Ticket = {
    */
   offered: boolean;
   /**
+   * A merge the manager has asked for and the workbench has not carried out yet.
+   * True only in between: an attempt that failed clears it, because a merge that
+   * conflicts is not something to keep retrying on its own.
+   */
+  mergeRequested: boolean;
+  /**
+   * The files the base and this branch disagree about, as the last attempt to
+   * bring the base in found them. Empty when there is no clash — which is the
+   * ordinary state, and what a stage starting puts it back to.
+   */
+  conflicts: string[];
+  /**
    * What this ticket's change is measured against: the commit the branch was cut
    * from, and afterwards the last base it merged in. Not a record of where it
    * started — that is in the events — but the point a diff of its own work is
@@ -184,6 +196,8 @@ function blank(id: string): Ticket {
     answer: null,
     prUrl: null,
     offered: false,
+    mergeRequested: false,
+    conflicts: [],
     base: null,
     commits: [],
     cycles: 0,
@@ -283,6 +297,9 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         changes: null,
         // Progress belongs to a run, not to the ticket. A stage starting has made none.
         step: null,
+        // A clash with the base is a fact about the branch as it was. Work is being
+        // done to it again, so the paths stand until something looks afresh.
+        conflicts: [],
       };
 
     case 'step_reached':
@@ -362,11 +379,25 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Either ends the offer without touching `prUrl` — the branch keeps its pull
     // request, and the rework is pushed to that same one.
     case 'plan_rejected':
-      return { ...t, status: 'planning', running: false, offered: false, rejection: e.reason };
+      return {
+        ...t,
+        status: 'planning',
+        running: false,
+        offered: false,
+        mergeRequested: false,
+        rejection: e.reason,
+      };
 
     // Not capped, and no revision counted: see `changes_requested` in events.ts.
     case 'changes_requested':
-      return { ...t, status: 'implementing', running: false, offered: false, changes: e.changes };
+      return {
+        ...t,
+        status: 'implementing',
+        running: false,
+        offered: false,
+        mergeRequested: false,
+        changes: e.changes,
+      };
 
     case 'pr_opened':
       return { ...t, status: 'awaiting_verdict', prUrl: e.url, offered: true };
@@ -376,6 +407,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         ...t,
         status: 'blocked',
         running: false,
+        // Whatever the manager asked for did not happen. Asking again is theirs to
+        // decide, once they know what stopped it.
+        mergeRequested: false,
+        conflicts: e.conflicts ?? [],
         question: {
           question: e.reason,
           reasoning: 'the workbench could not carry on by itself',
@@ -394,10 +429,19 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // offered again, on the same branch and so on the same pull request — which is
     // why `prUrl` stays. It is `offered` that ends, so the ticket can be shipped
     // and its stages restarted while it is being put right.
+    case 'merge_requested':
+      return { ...t, mergeRequested: true };
+
     case 'verdict':
       return e.verdict === 'accepted'
-        ? { ...t, status: 'done', offered: false }
-        : { ...t, status: 'planning', offered: false, rejection: e.reason ?? null };
+        ? { ...t, status: 'done', offered: false, mergeRequested: false }
+        : {
+            ...t,
+            status: 'planning',
+            offered: false,
+            mergeRequested: false,
+            rejection: e.reason ?? null,
+          };
   }
 }
 

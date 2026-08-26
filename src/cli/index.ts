@@ -233,6 +233,13 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case 'merge': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.merge(args[0]);
+      console.log(`${args[0]} will be squashed onto the base`);
+      return 0;
+    }
+
     case 'restart': {
       if (!args[0]) return fail('which ticket?');
       await wb.restart(args[0]);

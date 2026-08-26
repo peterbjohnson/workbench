@@ -240,6 +240,17 @@ async function handle(
         case 'ship':
           store.append(id, { type: 'shipped' });
           return send(res, 200, { ticket: store.ticket(id) });
+        case 'merge': {
+          // Nothing to merge unless an offer is actually standing. A ticket being
+          // reworked keeps its `prUrl`, so that alone would let the work in flight
+          // be merged halfway through.
+          const ticket = store.ticket(id);
+          if (!ticket.offered || ticket.prUrl === null) {
+            return send(res, 400, { error: 'there is no pull request to merge' });
+          }
+          store.append(id, { type: 'merge_requested' });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
         case 'restart':
           store.append(id, { type: 'stage_restarted' });
           return send(res, 200, { ticket: store.ticket(id) });

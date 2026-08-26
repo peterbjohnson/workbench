@@ -22,6 +22,10 @@ export function githubHost(cfg: GitConfig): CodeHost {
       if (!ticket.prUrl) throw new Error('no pull request to read a verdict from');
       return verdict(ticket.prUrl, cfg.repoRoot);
     },
+    merge: async (ticket) => {
+      if (!ticket.prUrl) throw new Error('no pull request to merge');
+      return mergePr(worktreeFor(cfg, ticket.id), ticket.prUrl);
+    },
   };
 }
 
@@ -123,6 +127,28 @@ async function prFor(wt: Worktree): Promise<string | null> {
     // `gh` fails when there is no pull request to view, which is the ordinary case.
     return null;
   }
+}
+
+/**
+ * How the pull request is merged: everything the ticket did, squashed into one
+ * commit on the base. One ticket, one commit — the branch's own history is the
+ * stages arguing with each other, which is in the workbench and is not what the
+ * base wants. Its own function so the `--squash` can be tested without a network.
+ */
+export function mergeArgs(prUrl: string): string[] {
+  return ['pr', 'merge', prUrl, '--squash'];
+}
+
+/**
+ * Pushes the branch and merges the pull request.
+ *
+ * The push first because the branch may have gained a commit the pull request has
+ * never seen: bringing the base in happens here, immediately before this, and
+ * merging without it would merge the code as GitHub last saw it.
+ */
+export async function mergePr(wt: Worktree, prUrl: string): Promise<void> {
+  await run('git', ['push', 'origin', wt.branch], { cwd: wt.path });
+  await run('gh', mergeArgs(prUrl), { cwd: wt.path });
 }
 
 export async function verdict(prUrl: string, cwd: string): Promise<Verdict> {
