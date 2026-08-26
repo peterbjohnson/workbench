@@ -37,6 +37,7 @@ const CONFIG_DEFAULTS: Record<string, string | number | string[]> = {
   port: 4600,
   runner: 'claude',
   colour: '',
+  ticketPrefixes: ['feature', 'fix', 'chore', 'docs'],
 };
 
 const LIMITS: Record<keyof Policy, { label: string; about: string }> = {
@@ -89,6 +90,16 @@ const CONFIGURED: Record<
     about:
       'A file describing the project, relative to the repository root, put in front of ' +
       'every stage. Point it at nothing and the section is left out.',
+  },
+  ticketPrefixes: {
+    label: 'Ticket prefixes',
+    type: 'lines',
+    group: 'Work',
+    restart: false,
+    about:
+      'What the drop-down in front of a ticket’s title offers, one to a line. A ' +
+      'prefix is never required — "none" is always there — and nothing else in the ' +
+      'workbench reads it. It is a nudge towards naming tickets alike, not a rule.',
   },
   runner: {
     label: 'Runner',
