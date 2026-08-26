@@ -62,8 +62,9 @@ export type StageRunnerDeps = {
 type Attempt = { result: RunResult; crashed: boolean };
 
 /**
- * The one place that talks to the model service. Everything above it deals in
- * tickets, stages and outcomes; nothing above it knows this SDK exists.
+ * Where a stage talks to the model service. Everything above it deals in tickets,
+ * stages and outcomes; nothing above it knows this SDK exists. The only other file
+ * that calls the service is `nameCheck.ts`, which is one cheap question and no run.
  */
 export function createStageRunner(deps: StageRunnerDeps): StageRunner {
   return async function runStage({

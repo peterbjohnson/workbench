@@ -612,6 +612,24 @@ section > h3 {
   font-size: 0.78rem;
 }
 
+/* What this ticket might better be called, under the name that was typed. An offer,
+   never a correction: nothing here stops the form being submitted as it stands. */
+.suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: -0.4rem 0 0.8rem;
+}
+
+.suggest .name {
+  font-size: 0.9rem;
+}
+
+.suggest .quiet {
+  flex: 1;
+}
+
 details {
   margin: 0.8rem 0;
   font-size: 0.85rem;

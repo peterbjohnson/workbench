@@ -211,6 +211,7 @@ at all.
 | `POST /tickets/:id/restart` | run a failed stage again, from the top |
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
+| `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |

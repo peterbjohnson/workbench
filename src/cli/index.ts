@@ -316,7 +316,10 @@ async function init(where: string | undefined): Promise<number> {
       2,
     )}\n`,
   );
-  write('skills/.gitkeep', '');
+  // The skills that ship with the workbench, copied in rather than read from the
+  // package, so they are this project's from the start: editing one on the board
+  // changes how work is done here and nowhere else.
+  fs.cpSync(path.join(PACKAGE_ROOT, 'skills'), path.join(home, 'skills'), { recursive: true });
 
   const shown = path.relative(target, home) || home;
   console.log(
@@ -324,7 +327,7 @@ async function init(where: string | undefined): Promise<number> {
       `Workbench started in ${shown}/`,
       '',
       `  ${CONFIG_FILE.padEnd(22)}the branch to work from, and the checks every ticket must pass`,
-      `  ${'skills/'.padEnd(22)}how work of a kind is done here — one directory each`,
+      `  ${'skills/'.padEnd(22)}how work of a kind is done here — naming-a-ticket, and yours`,
       '',
       'Next:',
       '  wb auth               prove the workbench can reach the model service',

@@ -8,6 +8,7 @@ import type { Event } from '../domain/events.ts';
 import type { Config } from '../config.ts';
 import { listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
+import type { NameChecker } from '../run/nameCheck.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
 export const UI_DIST = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -23,6 +24,15 @@ const CONTENT_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+export type ApiDeps = {
+  /**
+   * What a ticket being written might better be called. Absent when nothing should
+   * be asked — a workbench running fake agents spends nothing, and this must not be
+   * the exception — and then the route answers that it has no suggestion.
+   */
+  checkName?: NameChecker;
+};
+
 export type Api = {
   /** Returns the port it really got, which is not the one asked for when that is 0. */
   listen: (port: number) => Promise<number>;
@@ -34,9 +44,9 @@ export type Api = {
  * is reachable from one and not the other. It decides nothing: every endpoint
  * either reads derived state or appends one event and lets the rules react.
  */
-export function createApi(store: Store, config: Config): Api {
+export function createApi(store: Store, config: Config, deps: ApiDeps = {}): Api {
   const server = http.createServer((req, res) => {
-    handle(store, config, req, res).catch((error: unknown) => {
+    handle(store, config, deps, req, res).catch((error: unknown) => {
       send(res, 500, { error: error instanceof Error ? error.message : String(error) });
     });
   });
@@ -74,6 +84,7 @@ export function createApi(store: Store, config: Config): Api {
 async function handle(
   store: Store,
   config: Config,
+  deps: ApiDeps,
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
@@ -111,6 +122,19 @@ async function handle(
       const patch = await readJson(req);
       return refusable(res, () => ({ settings: applySettings(store, config, patch) }));
     }
+  }
+
+  // What this ticket might better be called, asked while it is being typed. It
+  // creates nothing and refuses nothing: `{name: null}` is the ordinary answer,
+  // and the one given when there is nobody to ask.
+  if (method === 'POST' && route === '/name-check') {
+    const { title, body } = await readJson(req);
+    const name = typeof title === 'string' ? title.trim() : '';
+    const suggestion =
+      name === '' || deps.checkName === undefined
+        ? null
+        : await deps.checkName(name, String(body ?? ''));
+    return send(res, 200, suggestion ?? { name: null });
   }
 
   if (method === 'GET' && (route === '/agents' || route === '/skills')) {

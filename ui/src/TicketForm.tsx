@@ -1,7 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { Ticket } from '../../src/domain/ticket.ts';
 import { Pick } from './Pick.tsx';
+import { wb } from './wb.ts';
+
+/** How long the title has to stop changing before it is worth asking about. */
+const SETTLED_MS = 800;
 
 /**
  * Writing a ticket, and rewriting one. The same form both times: what you can say
@@ -38,6 +42,41 @@ export function TicketForm(props: {
   const [requiresApproval, setRequiresApproval] = useState(true);
   const [waitsFor, setWaitsFor] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  /** A better name for this ticket, and the name it is better than. */
+  const [suggestion, setSuggestion] = useState<{ for: string; name: string; why: string }>();
+
+  /**
+   * Every name already asked about, so a name is asked about once however long
+   * someone spends on the rest of the form — including one that came back with a
+   * suggestion that was then dismissed, and the suggestion itself once taken.
+   *
+   * The name a ticket already has starts in it: opening the form to rewrite the
+   * instructions is not someone asking what the ticket should be called.
+   */
+  const asked = useRef(new Set<string>([(props.title ?? '').trim()]));
+  // Sent as context, but never what starts a question: typing the instructions
+  // would otherwise keep pushing the one about the title further away.
+  const bodyNow = useRef(body);
+  bodyNow.current = body;
+
+  useEffect(() => {
+    const name = title.trim();
+    if (name === '' || asked.current.has(name)) return;
+
+    const timer = setTimeout(() => {
+      asked.current.add(name);
+      void wb
+        .checkName(name, bodyNow.current)
+        .then((reply) => {
+          if (reply.name !== null) {
+            setSuggestion({ for: name, name: reply.name, why: reply.why ?? '' });
+          }
+        })
+        // A hint about a name is never worth interrupting someone writing a ticket.
+        .catch(() => {});
+    }, SETTLED_MS);
+    return () => clearTimeout(timer);
+  }, [title]);
 
   return (
     <form
@@ -60,6 +99,28 @@ export function TicketForm(props: {
           onChange={(e) => setTitle(e.target.value)}
         />
       </label>
+
+      {/* Shown only while it is still about what is in the box: carry on typing and
+          it goes, rather than recommending a name for a name you have left behind. */}
+      {suggestion !== undefined && suggestion.for === title.trim() && (
+        <div className="suggest">
+          <span className="name">{suggestion.name}</span>
+          <span className="quiet">{suggestion.why}</span>
+          <button
+            type="button"
+            onClick={() => {
+              asked.current.add(suggestion.name);
+              setTitle(suggestion.name);
+              setSuggestion(undefined);
+            }}
+          >
+            Accept
+          </button>
+          <button type="button" onClick={() => setSuggestion(undefined)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <label>
         Instructions
