@@ -116,6 +116,13 @@ ticket reads it. Point it at nothing and the section is left out.
 home is always one of them, worked out rather than configured; anything you add joins it.
 A path may be a file or a directory.
 
+**`port`** (4600) is where `wb serve` listens and where every other `wb` command looks for
+it. One workbench per repository is the intended way to run this, and the only thing in
+the way is that they all start out wanting the same port — so a `wb serve` that finds it
+taken says who is on it and offers the next free one, writing the answer here if you take
+it. Two workbenches for the *same* repository is refused rather than moved: they would
+open one database between them.
+
 ## Limits
 
 A ticket cannot run away with your money.

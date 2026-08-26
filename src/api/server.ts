@@ -83,8 +83,11 @@ async function handle(
   const ticketPath = /^\/tickets\/([^/]+)(\/[a-z]+)?$/.exec(route);
   const docPath = /^\/(agents|skills)\/([\w.-]+)$/.exec(route);
 
+  // Who is answering, not merely that something is. `wb serve` asks this of a port
+  // it finds taken, to tell a workbench for another repository — ordinary — from a
+  // second one for this repository, which would share a database with the first.
   if (method === 'GET' && route === '/health') {
-    return send(res, 200, { ok: true });
+    return send(res, 200, { ok: true, home: config.home });
   }
 
   if (method === 'GET' && route === '/events') {
