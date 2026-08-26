@@ -483,6 +483,81 @@ test('happy path: created to merged', () => {
   assert.deepEqual(j.next(), { kind: 'wait' });
 });
 
+/** Offered and waiting on the manager, which is where a merge is asked for. */
+function offeredTicket(): Journal {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  runStage(j, 'implement');
+  runStage(j, 'review');
+  runStage(j, 'verify');
+  j.add({ type: 'pr_opened', url: 'https://example/pr/7' });
+  return j;
+}
+
+test('the manager can ask for the merge here, and it is done once', () => {
+  const j = offeredTicket();
+  assert.deepEqual(j.next(), { kind: 'poll_verdict' });
+
+  const asked = j.add({ type: 'merge_requested' });
+  assert.equal(asked.mergeRequested, true);
+  assert.deepEqual(j.next(), { kind: 'merge_pr' }, 'an answer given is not one to poll for');
+
+  const merged = j.add({ type: 'verdict', verdict: 'accepted' });
+  assert.equal(merged.status, 'done');
+  assert.equal(merged.mergeRequested, false, 'nothing is left asking to be merged again');
+  assert.deepEqual(j.next(), { kind: 'wait' });
+});
+
+test('a merge that cannot happen names the files and stops asking', () => {
+  const j = offeredTicket();
+  j.add({ type: 'merge_requested' });
+
+  const stuck = j.add({
+    type: 'blocked',
+    reason: 'this branch conflicts with the base',
+    conflicts: ['src/api/server.ts', 'ui/src/Detail.tsx'],
+  });
+  assert.equal(stuck.status, 'blocked');
+  assert.deepEqual(stuck.conflicts, ['src/api/server.ts', 'ui/src/Detail.tsx']);
+  assert.equal(stuck.mergeRequested, false, 'a merge that failed is not retried by itself');
+  assert.deepEqual(j.next(), { kind: 'wait' });
+
+  // The way out: back to implement to resolve them, which is where the paths stop
+  // being true — they are a fact about the branch as it was.
+  const back = j.add({ type: 'changes_requested', changes: 'resolve the conflicts' });
+  assert.equal(back.status, 'implementing');
+  assert.equal(back.mergeRequested, false);
+  assert.deepEqual(back.conflicts, ['src/api/server.ts', 'ui/src/Detail.tsx'], 'until it starts');
+
+  const started = j.add({ type: 'stage_started', stage: 'implement', runId: 'r-fix' });
+  assert.deepEqual(started.conflicts, []);
+});
+
+test('the conflicting paths last no longer than the clash does', () => {
+  // A stage starting was once the only thing that cleared them, so a ticket that
+  // got past the clash any other way went on listing files it no longer disagreed
+  // about — a merged one included, where the panel offered to send it back.
+  const stuck = (): Journal => {
+    const j = offeredTicket();
+    j.add({ type: 'merge_requested' });
+    j.add({ type: 'blocked', reason: 'it conflicts', conflicts: ['src/api/server.ts'] });
+    return j;
+  };
+
+  const merged = stuck().add({ type: 'verdict', verdict: 'accepted' });
+  assert.deepEqual(merged.conflicts, [], 'the merge is what settled them');
+
+  const answered = stuck().add({ type: 'question_answered', answer: 'merged it by hand' });
+  assert.deepEqual(answered.conflicts, [], 'back to the wait, with the clash dealt with');
+
+  const restarted = stuck().add({ type: 'stage_restarted' });
+  assert.deepEqual(restarted.conflicts, []);
+
+  const refreshed = stuck().add({ type: 'refreshed', base: 'aaaa111', commit: 'bbbb222' });
+  assert.deepEqual(refreshed.conflicts, [], 'the base went in cleanly this time');
+});
+
 test('restarting a ticket whose pull request is open resumes the verdict, not the stages', () => {
   // t32: the poll failed while the work sat in a pull request, and the restart put
   // the ticket back into verify. It came round to `ready_for_pr` a second time and

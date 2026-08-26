@@ -27,8 +27,12 @@ export type Refreshed =
   /** The branch already had the base. Nothing happened, and nothing is recorded. */
   | { kind: 'up-to-date' }
   | { kind: 'merged'; base: string; commit: string }
-  /** Left un-merged, and the branch is exactly as it was. */
-  | { kind: 'conflicted'; base: string; paths: string[] };
+  /**
+   * Left un-merged. `merging` says which: the branch is exactly as it was, or the
+   * merge is still going, on disk, for a stage to finish. A caller that did not ask
+   * to keep one can still be told this, by a merge an earlier run left behind.
+   */
+  | { kind: 'conflicted'; base: string; paths: string[]; merging: boolean };
 
 /**
  * Everything else in the system is derived from this list.
@@ -187,9 +191,18 @@ export type EventBody =
    * is the ticket's own work, not everything the base gained while it was busy.
    *
    * Only written when something actually merged. A branch that already had the
-   * base is the ordinary case and says nothing.
+   * base is the ordinary case and says nothing. A merge handed to a stage is
+   * written here too, but not until the stage's commit concludes it: before that
+   * there is nothing on the branch for the base to be moved to.
    */
   | { type: 'refreshed'; base: string; commit: string }
+  /**
+   * The base had moved on and the branch could not take it cleanly, so the merge
+   * was left in the worktree and given to the stage that was about to run. Not a
+   * `refreshed`: nothing is committed yet, and until this stage resolves it the
+   * ticket's branch is mid-merge.
+   */
+  | { type: 'conflicted'; runId: string; base: string; paths: string[] }
   | { type: 'plan_approved' }
   /**
    * The manager says the approach is wrong: back to planning, and the reason is
@@ -213,7 +226,16 @@ export type EventBody =
   | { type: 'changes_requested'; changes: string }
   | { type: 'pr_opened'; url: string }
   /** The workbench itself could not carry on — a worktree or a pull request failed. */
-  | { type: 'blocked'; reason: string }
+  | {
+      type: 'blocked';
+      reason: string;
+      /**
+       * The files the base and the branch disagree about, when that is what
+       * stopped it. Kept as data rather than only as prose in the reason, so the
+       * panel can list them and offer the way out.
+       */
+      conflicts?: string[];
+    }
   /** The manager stopped it. */
   | { type: 'cancelled'; reason: string }
   /**
@@ -221,6 +243,13 @@ export type EventBody =
    * Distinct from `blocked`: nothing is stuck and no answer would help.
    */
   | { type: 'gave_up'; reason: string }
+  /**
+   * The manager says merge it. Written rather than merged on the spot because the
+   * API server does no work of its own: the orchestrator picks this up, brings the
+   * base in, squashes the branch onto it and records the verdict itself. So a
+   * merge asked for survives a restart, and every one of them is in the log.
+   */
+  | { type: 'merge_requested' }
   | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string };
 
 export type Event = EventBody & {

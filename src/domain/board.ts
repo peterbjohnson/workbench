@@ -121,6 +121,96 @@ export function needsYou(t: Ticket): boolean {
   return t.status === 'plan_gate' || t.status === 'blocked';
 }
 
+/** How a thing should read: as progress, as a problem, as still going, or as neither. */
+export type Tone = 'ok' | 'bad' | 'going' | 'note';
+
+/** Where the ticket is and what it is waiting for, in words. */
+export type Headline = { state: string; detail: string; tone: Tone };
+
+/**
+ * The one thing a ticket should say before anything else: where it is, and what
+ * happens next. The panel had the status only as a word in the chip line, so the
+ * loudest thing on a ticket in a pull request was a rejection three stages old —
+ * history drawn as if it were news.
+ *
+ * A fact about the lifecycle rather than about any particular panel, so it lives
+ * here beside `columnFor` and is tested like it: every status has a line, and a
+ * new status cannot be added without one.
+ *
+ * @param held the tickets this one is waiting on — `heldBy`, asked by the caller,
+ *   which is the one that has the other tickets to hand. Without it a ticket stuck
+ *   behind another would claim to be waiting for a slot, which its card denies.
+ */
+export function headline(t: Ticket, held: readonly Ticket[] = []): Headline {
+  switch (t.status) {
+    case 'backlog':
+      return { state: 'An idea', detail: 'nothing starts until you commit to it', tone: 'note' };
+    case 'queued':
+      return atStage(t, 'Committed', 'plan', held);
+    case 'planning':
+      return atStage(t, 'Planning', 'plan', held);
+    case 'plan_gate':
+      return {
+        state: 'Waiting on you',
+        detail: 'approve the plan, or send it back',
+        tone: 'note',
+      };
+    case 'implementing':
+      return atStage(t, 'Building', 'implement', held);
+    case 'reviewing':
+      return atStage(t, 'Building', 'review', held);
+    case 'verifying':
+      return atStage(t, 'Building', 'verify', held);
+    case 'ready_for_pr':
+      return { state: 'Offering it', detail: 'opening the pull request', tone: 'going' };
+    case 'awaiting_verdict':
+      return { state: 'Offered', detail: 'waiting on the pull request', tone: 'going' };
+    case 'blocked':
+      // A stage that stopped to ask is waiting on you; one that fell over is not
+      // waiting on anything, and the two need different things done about them.
+      return t.question !== null
+        ? { state: 'Waiting on you', detail: 'an agent asked you something', tone: 'note' }
+        : { state: 'Stuck', detail: 'a stage failed — restart it, or send it back', tone: 'bad' };
+    case 'cancelled':
+      return { state: 'Cancelled', detail: 'stopped, and nothing will pick it up', tone: 'note' };
+    case 'gave_up':
+      return { state: 'Given up on', detail: 'the workbench stopped trying', tone: 'bad' };
+    case 'done':
+      return { state: 'Done', detail: 'merged, and off the board', tone: 'ok' };
+  }
+}
+
+/**
+ * A stage of the loop, running or waiting to. The one thing a twenty-minute stage
+ * can say for itself is how far it has got, so it says that when it has said.
+ *
+ * A ticket held behind another is not waiting for a slot — it is not next, and a
+ * slot coming free would do nothing for it. It says who it waits for, the same as
+ * its card does, rather than the two contradicting each other.
+ */
+function atStage(t: Ticket, state: string, stage: Stage, held: readonly Ticket[]): Headline {
+  const step = t.step !== null && t.steps.length > 0 ? `, step ${t.step}/${t.steps.length}` : '';
+  const waiting =
+    held.length > 0
+      ? `waiting for ${held.map((h) => h.id).join(', ')}`
+      : `waiting for a slot to ${stage}`;
+  return { state, detail: t.running ? `${stage} is running${step}` : waiting, tone: 'going' };
+}
+
+/**
+ * Whether the rejection on the ticket is what it is doing now, rather than what
+ * happened to it once. It is never cleared — the brief and the hand-over message
+ * both read it — so only the ticket actually acting on it should lead with it.
+ */
+export function rejectionStands(t: Ticket): boolean {
+  return t.status === 'planning' || (t.status === 'blocked' && t.stage === 'plan');
+}
+
+/** The same for the changes asked for: the stage putting them right, and no other. */
+export function changesStand(t: Ticket): boolean {
+  return t.status === 'implementing' || (t.status === 'blocked' && t.stage === 'implement');
+}
+
 /**
  * Whether there is anything to say no to. Both of the manager's noes send the
  * ticket back into the loop, so both need work under way to send back.
@@ -282,7 +372,7 @@ export function statusOf(run: Run): string {
  * so it gets no colour rather than borrowing one that means something else. Being
  * stopped is the same kind of thing, for the same reason.
  */
-export function toneOf(run: Run): 'ok' | 'bad' | 'going' | 'note' {
+export function toneOf(run: Run): Tone {
   if (run.outcome === 'running') return 'going';
   if (run.outcome === 'interrupted') return 'note';
   if (run.outcome === 'failed' || run.rejected !== null) return 'bad';

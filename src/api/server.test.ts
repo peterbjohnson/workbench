@@ -10,8 +10,11 @@ import { fileURLToPath } from 'node:url';
 
 import { createApi } from './server.ts';
 import { createClient, type Client } from './client.ts';
+import { deleteDoc } from './documents.ts';
 import { openStore, type Store } from '../store/store.ts';
-import { CONFIG_FILE, loadConfig } from '../config.ts';
+import { loadSkills, parseSkill } from '../agents/load.ts';
+import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
+import type { Setting } from './settings.ts';
 
 /**
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
@@ -41,13 +44,15 @@ function scratchConfig() {
 }
 
 /** A real server on an ephemeral port, with a real client talking to it. */
-async function withApi(fn: (wb: Client, store: Store) => Promise<void>): Promise<void> {
+async function withApi(
+  fn: (wb: Client, store: Store, config: Config) => Promise<void>,
+): Promise<void> {
   const store = openStore(':memory:');
   const config = scratchConfig();
   const api = createApi(store, config);
   const port = await api.listen(0);
   try {
-    await fn(createClient(`http://127.0.0.1:${port}`), store);
+    await fn(createClient(`http://127.0.0.1:${port}`), store, config);
   } finally {
     await api.close();
     store.close();
@@ -158,6 +163,23 @@ test('an interrupted ticket can be carried on, or restarted from the top', async
     stoppedMidStage();
     await wb.restart('t1');
     assert.equal((await wb.ticket('t1')).ticket.session, null);
+  });
+});
+
+test('asking for the merge records it, and only where there is an offer to merge', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('a thing', '');
+    await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
+
+    store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
+    const asked = await wb.merge('t1');
+    assert.equal(asked.mergeRequested, true, 'the orchestrator picks it up from here');
+    assert.equal(asked.status, 'awaiting_verdict', 'the API merges nothing itself');
+
+    // A ticket sent back keeps its `prUrl` and is being worked on again: merging
+    // it would land whatever the rework has got to so far.
+    store.append('t1', { type: 'changes_requested', changes: 'rename it' });
+    await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
   });
 });
 
@@ -358,6 +380,12 @@ test('offered work can be sent back, or kept and put right', async () => {
     assert.equal(fixing.prUrl, 'https://example/pr/1', 'still headed for the same pull request');
 
     await assert.rejects(() => wb.changes('t1', '  '), /say what to put right/);
+
+    // And not once it is over. This is what the conflicts box presses, and the
+    // paths outlive the clash by a moment: a merged ticket would go back to
+    // implement to resolve conflicts that the merge settled.
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    await assert.rejects(() => wb.changes('t1', 'one more thing'), /this ticket is over/);
   });
 });
 
@@ -543,6 +571,101 @@ test('a skill is refused if nothing would ever decide to read it', async () => {
   });
 });
 
+test('a skill added from the board is one every stage can load', async () => {
+  await withApi(async (wb, _store, config) => {
+    const made = await wb.createDoc('skill', 'writing-reports');
+    assert.equal(made.where, path.join('skills', 'writing-reports', 'SKILL.md'));
+    assert.ok(made.about.length > 0, 'a description from the moment it exists');
+
+    assert.deepEqual(
+      (await wb.docs('skill')).map((d) => d.name),
+      ['writing-python', 'writing-reports'],
+    );
+
+    const file = path.join(config.home, 'skills', 'writing-reports', 'SKILL.md');
+    assert.equal(fs.readFileSync(file, 'utf8'), made.text, 'on disk, not only in the reply');
+    assert.equal(
+      parseSkill(made.text, 'writing-reports'),
+      made.about,
+      'what it starts as loads — an unloadable one would stop every stage',
+    );
+  });
+});
+
+test('the first skill in a home with no plugin manifest is still named', async () => {
+  await withApi(async (wb, _store, config) => {
+    fs.rmSync(path.join(config.home, 'skills', 'writing-python'), { recursive: true });
+    fs.rmSync(path.join(config.home, '.claude-plugin'), { recursive: true });
+
+    await wb.createDoc('skill', 'writing-reports');
+    assert.deepEqual(
+      loadSkills(config.home).map((s) => s.name),
+      ['workbench:writing-reports'],
+      'without the manifest this home would have no name to offer the skill under',
+    );
+  });
+});
+
+test('a skill deleted from the board takes its whole directory with it', async () => {
+  await withApi(async (wb, _store, config) => {
+    const dir = path.join(config.home, 'skills', 'writing-python');
+    fs.writeFileSync(path.join(dir, 'example.md'), 'the rest of it');
+
+    assert.equal(await wb.deleteDoc('skill', 'writing-python'), 'writing-python');
+    assert.equal(fs.existsSync(dir), false, 'a skill is its directory, not only its SKILL.md');
+    assert.deepEqual(await wb.docs('skill'), []);
+  });
+});
+
+test('a skill directory the board would not have named that way is still removable', async () => {
+  await withApi(async (wb, _store, config) => {
+    const dir = path.join(config.home, 'skills', 'Writing_Python');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\ndescription: An older one.\n---\n\n# Old\n');
+
+    assert.deepEqual(
+      (await wb.docs('skill')).map((d) => d.name),
+      ['Writing_Python', 'writing-python'],
+      'listed and saveable, so what the Delete button offers has to be a deletion',
+    );
+    assert.equal(await wb.deleteDoc('skill', 'Writing_Python'), 'Writing_Python');
+    assert.equal(fs.existsSync(dir), false);
+  });
+});
+
+test('a skill whose name YAML would read as a number still loads as its own name', async () => {
+  await withApi(async (wb) => {
+    const made = await wb.createDoc('skill', '2024');
+    assert.equal(
+      parseSkill(made.text, '2024'),
+      made.about,
+      'unquoted, its frontmatter would call it the number 2024 and refuse to load',
+    );
+  });
+});
+
+test('adding and removing are refused for anything that is not a skill of its own', async () => {
+  await withApi(async (wb, _store, config) => {
+    const skills = path.join(config.home, 'skills');
+    const before = fs.readdirSync(skills);
+
+    await assert.rejects(() => wb.createDoc('agent', 'planner'), /stages are fixed/);
+    await assert.rejects(() => wb.deleteDoc('agent', 'plan'), /stages are fixed/);
+    await assert.rejects(() => wb.createDoc('skill', 'writing-python'), /already a skill/);
+    await assert.rejects(() => wb.createDoc('skill', ''), /not a skill name/);
+    await assert.rejects(() => wb.createDoc('skill', 'over/there'), /not a skill name/);
+    await assert.rejects(() => wb.createDoc('skill', '..'), /not a skill name/);
+    await assert.rejects(() => wb.deleteDoc('skill', 'nonesuch'), /no skill called nonesuch/);
+    // A separator or `..` never survives a URL — one collapses the path and the other
+    // matches no route — so removing by such a name is refused where the check lives.
+    assert.throws(() => deleteDoc(config, 'skill', 'over/there'), /not a skill name/);
+    assert.throws(() => deleteDoc(config, 'skill', '..'), /not a skill name/);
+
+    assert.deepEqual(fs.readdirSync(skills), before, 'and the disk is as it was');
+    assert.equal((await wb.docs('agent')).length, 4);
+  });
+});
+
 test('the settings say what the workbench is set to, and a limit changed there holds', async () => {
   await withApi(async (wb) => {
     const before = await wb.settings();
@@ -580,5 +703,60 @@ test('a configured setting is written to the config file, and a default is taken
     // what this project decided, not a copy of every default.
     await wb.setSettings({ base: 'main' });
     assert.equal('base' in file(), false);
+  });
+});
+
+test('the instance colour is kept in the config file, and clearing it takes the key out', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    const colour = (all: Setting[]) => all.find((s) => s.key === 'colour');
+    assert.equal(colour(await wb.settings())?.value, '', 'no colour until one is chosen');
+
+    const after = await wb.setSettings({ colour: '#3A7D6F' });
+    assert.equal(colour(after)?.value, '#3a7d6f', 'and it is written the one way');
+    // The board reads it every time it loads, so saying "next start" would be a lie.
+    assert.equal(colour(after)?.restart, false);
+    assert.equal(file()['colour'], '#3a7d6f');
+
+    // No colour is the default, so the file stops mentioning it rather than holding
+    // an empty string nobody can read a decision out of.
+    const cleared = await wb.setSettings({ colour: '' });
+    assert.equal(colour(cleared)?.value, '');
+    assert.equal('colour' in file(), false);
+  });
+});
+
+test('the ticket prefixes are a list in the config file, and the default is taken back out', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    const prefixes = (all: Setting[]) => all.find((s) => s.key === 'ticketPrefixes');
+    assert.deepEqual(prefixes(await wb.settings())?.value, ['feature', 'fix', 'chore', 'docs']);
+
+    const after = await wb.setSettings({ ticketPrefixes: 'spike\n\n  refactor  ' });
+    assert.deepEqual(prefixes(after)?.value, ['spike', 'refactor']);
+    // The form reads it every time it opens, so saying "next start" would be a lie.
+    assert.equal(prefixes(after)?.restart, false);
+    assert.deepEqual(file()['ticketPrefixes'], ['spike', 'refactor']);
+
+    await wb.setSettings({ ticketPrefixes: 'feature\nfix\nchore\ndocs' });
+    assert.equal('ticketPrefixes' in file(), false);
+  });
+});
+
+test('something that is not a colour is refused, and nothing is written', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), /Instance colour must be a/);
+    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), /Instance colour must be a/);
+    assert.equal('colour' in file(), false);
   });
 });

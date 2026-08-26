@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import {
+  changesStand,
   details,
+  headline,
   madeInto,
+  rejectionStands,
   runs,
   salvageable,
   sendableBack,
@@ -12,6 +15,7 @@ import {
   type Run,
 } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
+import { heldBy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Pick } from './Pick.tsx';
 import { TicketForm } from './TicketForm.tsx';
@@ -22,10 +26,12 @@ export function Detail(props: {
   version: number;
   /** Every ticket on the board, which is where a suggestion's fate is written. */
   tickets: Ticket[];
+  /** What the form offers in front of a title, for when this one's is rewritten. */
+  prefixes: string[];
   onAct: (work: Promise<unknown>) => Promise<void>;
   onClose: () => void;
 }) {
-  const { id, version, tickets, onAct, onClose } = props;
+  const { id, version, tickets, prefixes, onAct, onClose } = props;
   const [state, setState] = useState<{ ticket: Ticket; events: Event[] } | null>(null);
   const [editing, setEditing] = useState(false);
   /**
@@ -64,6 +70,16 @@ export function Detail(props: {
       </button>
 
       <h2>{t.title}</h2>
+
+      {/* Where it is and what it is waiting for, in words, before anything else.
+          Who it waits for is a fact about the board, so it is handed in. */}
+      <Headline ticket={t} held={heldBy(t, tickets)} />
+
+      {/* Which stages there were and how each ended. The blocks per stage are
+          further down for when you want them. */}
+      {stages.length > 0 && <Pipeline stages={stages} step={t.step} steps={t.steps} />}
+
+      {/* Identification rather than status, so it sits under both. */}
       <div className="meta">
         <span className="mono">{t.id}</span> · {t.status.replace(/_/g, ' ')}
         {t.running && ' · running'}
@@ -95,11 +111,6 @@ export function Detail(props: {
         )}
       </div>
 
-      {/* Where it has got to, in one line. The blocks per stage are further down
-          for when you want them; this is the answer to "what is happening", which
-          is what the panel is opened for. */}
-      {stages.length > 0 && <Pipeline stages={stages} step={t.step} steps={t.steps} />}
-
       {t.question !== null && (
         <div className="box ask">
           <h3>Waiting on you</h3>
@@ -108,14 +119,18 @@ export function Detail(props: {
         </div>
       )}
 
-      {t.rejection !== null && (
+      {/* Only while the ticket is acting on it. Neither is ever cleared, so at the
+          top unconditionally they went on shouting long after the stage that
+          answered them — a ticket in a pull request led with why it was sent back
+          three stages ago. Off duty they are history, and fold away below. */}
+      {t.rejection !== null && rejectionStands(t) && (
         <div className="box">
           <h3>Sent back because</h3>
           {t.rejection}
         </div>
       )}
 
-      {t.changes !== null && (
+      {t.changes !== null && changesStand(t) && (
         <div className="box">
           {/* Only when a round of agent comments is what put it there. Yours count
               none, so the heading would otherwise say "revision 0". */}
@@ -124,7 +139,43 @@ export function Detail(props: {
         </div>
       )}
 
+      {/* Naming the files is half of it; the other half is the way out. Resolving
+          them is implement's work, so the button is the ordinary "keep the work and
+          put this right" with the paths already written into it.
+
+          Only while the ticket is actually stuck on them: the paths are what one
+          attempt found, and offering to send a ticket back is only an offer worth
+          making where there is nothing else going on. */}
+      {t.status === 'blocked' && t.conflicts.length > 0 && (
+        <div className="box">
+          <h3>Conflicts with the base</h3>
+          {t.conflicts.map((path) => (
+            <div key={path} className="mono">
+              {path}
+            </div>
+          ))}
+          <div className="row">
+            <button
+              type="button"
+              onClick={() =>
+                void onAct(
+                  wb.changes(
+                    t.id,
+                    'The base has moved on and this branch no longer merges into it. ' +
+                      `Resolve the conflicts in:\n${t.conflicts.map((p) => `- ${p}`).join('\n')}`,
+                  ),
+                )
+              }
+            >
+              Send back to resolve them
+            </button>
+          </div>
+        </div>
+      )}
+
       <Actions ticket={t} tickets={tickets} onAct={onAct} />
+
+      <Earlier ticket={t} />
 
       {/* What the work was asked for, above what has been made of it: the plan and
           the runs are answers to this, and reading them against anything else is
@@ -139,6 +190,7 @@ export function Detail(props: {
           <TicketForm
             title={t.title}
             body={t.body}
+            prefixes={prefixes}
             submitLabel="Save"
             onCancel={() => setEditing(false)}
             // Title and body only. The gate was settled when the ticket was written,
@@ -203,6 +255,52 @@ export function Detail(props: {
         </div>
       </details>
     </aside>
+  );
+}
+
+/**
+ * What the ticket is doing and what it is waiting for, in words, at the top of the
+ * panel. The status was only ever a word in the chip line, so nothing here said the
+ * state plainly and whatever box happened to be set said it instead.
+ */
+function Headline({ ticket: t, held }: { ticket: Ticket; held: Ticket[] }) {
+  const { state, detail, tone } = headline(t, held);
+
+  return (
+    <div className={`headline ${tone}`}>
+      <div className="state">{state}</div>
+      <div className="detail">{detail}</div>
+    </div>
+  );
+}
+
+/**
+ * A rejection or a change request the ticket is no longer acting on. Nothing is
+ * lost by demoting them — they are still here, in full, and still the thing to read
+ * when you want to know how the ticket got where it is. They are just no longer
+ * news, and news is what the top of the panel is for.
+ */
+function Earlier({ ticket: t }: { ticket: Ticket }) {
+  const rejection = rejectionStands(t) ? null : t.rejection;
+  const changes = changesStand(t) ? null : t.changes;
+  if (rejection === null && changes === null) return null;
+
+  return (
+    <details>
+      <summary>Earlier</summary>
+      {rejection !== null && (
+        <div className="box">
+          <h3>Why it was sent back</h3>
+          {rejection}
+        </div>
+      )}
+      {changes !== null && (
+        <div className="box">
+          <h3>Changes asked for</h3>
+          {changes}
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -522,6 +620,26 @@ function Actions({
           )}
         </>
       )}
+
+      {/* Answering the offer here rather than on GitHub. It says what it does: the
+          ticket's commits become one commit on the base, which is what the branch's
+          own history — the stages arguing — is not worth putting there. */}
+      {t.status === 'awaiting_verdict' &&
+        t.prUrl !== null &&
+        (t.mergeRequested ? (
+          <div className="row">
+            <span className="quiet">merging…</span>
+          </div>
+        ) : (
+          <div className="row">
+            <button type="button" className="go" onClick={() => void onAct(wb.merge(t.id))}>
+              Squash and merge
+            </button>
+            <span className="quiet">
+              squashes this ticket&rsquo;s commits into one on the base, and accepts it
+            </span>
+          </div>
+        ))}
 
       {/* The manager's own verdict. Anything with work in it can be offered as a
           pull request, whatever the agents made of it — otherwise two of them
@@ -850,6 +968,8 @@ function detail(e: Event): string {
       return e.branch;
     case 'refreshed':
       return `merged the base at ${e.base.slice(0, 8)}`;
+    case 'conflicted':
+      return `the base at ${e.base.slice(0, 8)} conflicts: ${e.paths.join(', ')}`;
     default:
       return '';
   }
