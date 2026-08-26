@@ -24,14 +24,16 @@ test('a stop names what it is waiting for, and what it has cost', () => {
   assert.match(said, /t14 {2}review {5}\$0\.20 so far/);
 });
 
-test('a stop says what ending it early would throw away', () => {
-  // The second Ctrl-C is the expensive one, so the first must say so. Without this
-  // the wait is silent and ending it looks free.
+test('a stop says what ending it early would leave unfinished', () => {
+  // The second Ctrl-C used to be the expensive one and the first said so. It is not
+  // any more — an abandoned stage keeps its conversation — so the message must not
+  // go on pricing the choice at a whole stage that no longer has to be bought.
   const said = draining([running('t12', 'implement', 3.4)]);
 
   assert.match(said, /Ctrl-C again/);
-  assert.match(said, /runs again from the top/);
-  assert.match(said, /what it has spent is spent/);
+  assert.match(said, /can carry on from/);
+  assert.match(said, /pick it back up/);
+  assert.doesNotMatch(said, /from the top/);
 });
 
 test('one stage is not "1 stages"', () => {
@@ -52,5 +54,8 @@ test('abandoning names every ticket it gave up on', () => {
   const said = abandoning([running('t12', 'implement', 3.4), running('t14', 'review', 0.2)]);
 
   assert.match(said, /abandoning 2 stages: t12, t14\./);
-  assert.match(said, /starts again from the top/);
+  // Said over exactly the tickets `reconcile` will mark interrupted on the next
+  // start, so it has to promise what they will actually be offered there.
+  assert.match(said, /can carry on from where it got to/);
+  assert.doesNotMatch(said, /from the top/);
 });
