@@ -40,6 +40,7 @@ workbench — a board of tickets that agents work through
   wb answer <id> <text>        answer a blocked ticket and let it carry on
   wb restart <id>              run a failed stage again, from the top
   wb ship <id>                 offer what it has as a pull request, and decide there
+  wb merge <id>                squash the offered work onto the base and accept it
   wb cancel <id> [why]         stop a ticket, including one that is running
   wb wip <n>                   how many tickets may run at once
 
@@ -157,8 +158,9 @@ copies it into your home — yours from then on, to edit or to delete. Every oth
 yours to write: how your repository writes Python is yours to say.
 
 Every stage gets every skill, named in its brief with its description, and reads one with
-the `Skill` tool. The **Skills** page on the board reads and writes them, as **Agents**
-does for the four stage definitions.
+the `Skill` tool. The **Skills** page on the board reads and writes them, and adds and
+removes them — deleting asks first, because it takes the whole directory. **Agents** reads
+and writes only: the four stage definitions are fixed.
 
 Nothing is rationed per stage: review has to judge work against the standard implement
 wrote it to, so giving them different expertise would be arranging a disagreement. The
@@ -211,12 +213,15 @@ at all.
 | `POST /tickets/:id/answer` | answer a blocked ticket — `{answer}` |
 | `POST /tickets/:id/restart` | run a failed stage again, from the top |
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
+| `POST /tickets/:id/merge` | squash the offered work onto the base and accept it |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |
 | `PUT /agents/:stage`, `PUT /skills/:name` | save one — `{text}`; refused if it would not load |
+| `POST /skills` | add one — `{name, text?}`; without text it starts from a file that loads |
+| `DELETE /skills/:name` | remove it, directory and all |
 | `GET /events` | server-sent events, live |
 
 Nothing here decides anything: each endpoint appends one event and lets the rules react.

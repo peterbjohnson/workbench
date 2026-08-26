@@ -74,6 +74,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     worktree,
     scratch,
     checks,
+    conflict,
     resume,
     emit,
     signal,
@@ -106,6 +107,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         map: await worktreeMap(worktree),
         diff: needsDiff ? await deps.diff(ticket, worktree) : undefined,
         checks,
+        conflict,
         answer: ticket.answer ?? undefined,
         continues: ticket.continues === null ? undefined : deps.continued(ticket.continues),
       });
