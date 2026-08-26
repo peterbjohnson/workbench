@@ -203,8 +203,23 @@ test('the agent may not undo its own isolation through git', () => {
     'git switch main',
     'git reset --hard',
     'git rebase main',
+    // The workbench hands a stage a conflicted merge to finish. Aborting it would
+    // pass the end guard by throwing away the very thing the stage was asked to do.
+    'git merge --abort',
   ]) {
     assert.equal(guard(PROTECTED, 'Bash', { command }).allow, false, command);
+  }
+});
+
+test('the read-only merge plumbing is not caught by the ban on merging', () => {
+  // `\b` matches before a hyphen too, so a bare `merge` in the alternation took these
+  // with it — and an agent handed a conflict to resolve has every reason to ask.
+  for (const command of [
+    'git merge-base main HEAD',
+    'git merge-file a b c',
+    'git mergetool --help',
+  ]) {
+    assert.equal(guard(PROTECTED, 'Bash', { command }).allow, true, command);
   }
 });
 

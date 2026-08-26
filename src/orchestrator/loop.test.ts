@@ -9,7 +9,7 @@ import {
   type Verdict,
 } from './loop.ts';
 import { openStore, type Store } from '../store/store.ts';
-import type { CheckRun, Refreshed, Stage } from '../domain/events.ts';
+import type { CheckRun, Event, Refreshed, Stage } from '../domain/events.ts';
 import type { Credentials } from '../run/credentials.ts';
 import { DEFAULT_POLICY } from '../domain/rules.ts';
 
@@ -25,6 +25,8 @@ type Harness = {
   prsMerged: string[];
   /** Tickets whose worktree was cleaned up. */
   tidied: string[];
+  /** Every stage commit that was made, as `<ticket>: <message>`. */
+  committed: string[];
   /** What the loop told whoever is watching. */
   announced: string[];
   close: () => Promise<void>;
@@ -53,6 +55,11 @@ function harness(
     checks?: CheckRun[] | (() => CheckRun[]);
     /** What bringing the base in does. An up-to-date branch is the default. */
     refresh?: (ticketId: string) => Refreshed;
+    /**
+     * What a stage left of a merge it was handed. Nothing — the stage resolved it
+     * — is the default, because that is what a stage handed one is asked to do.
+     */
+    unresolved?: (paths: readonly string[]) => string[];
   } = {},
 ): Harness {
   const store = openStore(':memory:');
@@ -63,6 +70,7 @@ function harness(
   const prsOpened: string[] = [];
   const prsMerged: string[] = [];
   const tidied: string[] = [];
+  const committed: string[] = [];
   const announced: string[] = [];
   const attempts = new Map<Stage, number>();
 
@@ -79,7 +87,13 @@ function harness(
         };
       },
       refresh: async (id) => opts.refresh?.(id) ?? { kind: 'up-to-date' },
-      commit: async () => 'c0ffee1',
+      unresolved: async (_id, paths) => opts.unresolved?.(paths) ?? [],
+      commit: async (ticket, message) => {
+        committed.push(`${ticket.id}: ${message}`);
+        // A hash of its own each time, as real commits have: a test that counts what
+        // is on the branch cannot be answered by one the fake repeats.
+        return `c0ffee${committed.length}`;
+      },
       discard: async (id) => {
         tidied.push(id);
       },
@@ -120,6 +134,7 @@ function harness(
     prsOpened,
     prsMerged,
     tidied,
+    committed,
     announced,
     close: async () => {
       await orch.stop();
@@ -1039,7 +1054,12 @@ test('a merge the code host refuses parks the ticket rather than finishing it', 
 
 test('work that conflicts with the base it must land on is not offered', async () => {
   const h = harness({
-    refresh: () => ({ kind: 'conflicted', base: 'newbase', paths: ['src/domain/rules.ts'] }),
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/domain/rules.ts'],
+      merging: false,
+    }),
   });
   try {
     create(h.store);
@@ -1079,6 +1099,247 @@ test('work the new base breaks is not offered either', async () => {
     assert.match(ticket.question?.question ?? '', /1 failing/, 'with the failure, not a summary');
     assert.equal(ticket.commits.at(-1), 'merge01', 'the merge is still on the branch');
     assert.deepEqual(h.prsOpened, []);
+  } finally {
+    await h.close();
+  }
+});
+
+/** What one stage run recorded, from its `stage_started` to its `stage_finished`. */
+function during(store: Store, ticketId: string, stage: Stage): Event[] {
+  const events = store.eventsFor(ticketId);
+  const from = events.findIndex((e) => e.type === 'stage_started' && e.stage === stage);
+  if (from === -1) return [];
+  const to = events.findIndex((e, i) => i > from && e.type === 'stage_finished');
+  return events.slice(from, to === -1 ? undefined : to);
+}
+
+test('a branch that is already on the base records nothing on the way through', async () => {
+  const h = harness();
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const noise = h.store
+      .eventsFor('t1')
+      .filter((e) => e.type === 'refreshed' || e.type === 'conflicted');
+    assert.deepEqual(noise, [], 'refreshing a clean branch costs a merge that does nothing');
+  } finally {
+    await h.close();
+  }
+});
+
+test('the base is taken in when a stage starts, not only when the work is offered', async () => {
+  // t64 and t65 ran implement and verify to completion — the suite twice over — and
+  // heard about the commit that clashed with them on the way to a pull request.
+  const h = harness({ refresh: () => ({ kind: 'merged', base: 'newbase', commit: 'merge01' }) });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    for (const stage of ['implement', 'verify'] as const) {
+      assert.ok(
+        during(h.store, 't1', stage).some((e) => e.type === 'refreshed'),
+        `${stage} works against the base that exists`,
+      );
+    }
+    for (const stage of ['plan', 'review'] as const) {
+      assert.deepEqual(
+        during(h.store, 't1', stage).filter((e) => e.type === 'refreshed'),
+        [],
+        `${stage} can do nothing about a merge, so it is not given one`,
+      );
+    }
+  } finally {
+    await h.close();
+  }
+});
+
+test('a stage that took the base in is given the ticket the merge left, not the one before it', async () => {
+  // The brief's diff is taken as `diff(config, worktree, ticket.base)`, from the
+  // object the run was handed. A stage still holding the base its branch was cut from
+  // reads the whole of the merged-in work as its own — the very failure the refresh
+  // is for, one stage along.
+  const bases = new Map<Stage, string | null>();
+  const h = harness({
+    refresh: () => ({ kind: 'merged', base: 'newbase', commit: 'merge01' }),
+    runStage: async ({ ticket, stage }) => {
+      bases.set(stage, ticket.base);
+      return ok(`${stage} done`);
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.equal(bases.get('implement'), 'newbase');
+    assert.equal(bases.get('verify'), 'newbase');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a conflict at the start of a stage is handed to the stage, not to the manager', async () => {
+  const handed: { stage: Stage; paths: string[] }[] = [];
+  const h = harness({
+    refresh: (id) =>
+      id === 't1' && handed.length === 0
+        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'], merging: true }
+        : { kind: 'up-to-date' },
+    runStage: async ({ stage, conflict }) => {
+      if (conflict) handed.push({ stage, paths: conflict.paths });
+      return ok(`${stage} done`);
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(handed, [{ stage: 'implement', paths: ['src/rules.ts'] }]);
+    const conflicted = during(h.store, 't1', 'implement').filter((e) => e.type === 'conflicted');
+    assert.equal(conflicted.length, 1, 'recorded on the ticket, with what clashed');
+    assert.deepEqual(conflicted[0]?.type === 'conflicted' ? conflicted[0].paths : [], [
+      'src/rules.ts',
+    ]);
+
+    // The whole point: the stage runs, and resolving it is part of the run rather
+    // than something a person is asked about a day later.
+    assert.deepEqual(h.ran, ['plan', 'implement', 'review', 'verify']);
+    assert.ok(
+      h.committed.some((c) => c.startsWith('t1: implement')),
+      'and its work is committed',
+    );
+    assert.equal(h.store.ticket('t1').status, 'awaiting_verdict');
+  } finally {
+    await h.close();
+  }
+});
+
+test('the checks a merge kept from running at the start of verify are run at the end', async () => {
+  // Before the run they would be asked of a tree full of conflict markers, fail for
+  // that alone, and send the ticket back to planning without the agent ever seeing
+  // the merge. After it, they are the only thing that will ask: `open_pr` refreshes
+  // a branch that is by then up to date and runs nothing.
+  let refreshes = 0;
+  const order: string[] = [];
+  const h = harness({
+    refresh: () =>
+      ++refreshes === 2
+        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'], merging: true }
+        : { kind: 'up-to-date' },
+    checks: () => {
+      order.push('checks');
+      return [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }];
+    },
+    runStage: async ({ stage }) => {
+      order.push(stage);
+      return ok(`${stage} done`);
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      order.slice(0, 5),
+      ['plan', 'implement', 'review', 'verify', 'checks'],
+      'asked of the tree the stage resolved, not the one it was given',
+    );
+    assert.equal(
+      during(h.store, 't1', 'verify').filter((e) => e.type === 'checks_run').length,
+      1,
+      'and what they said is on the ticket',
+    );
+
+    assert.match(
+      h.store.ticket('t1').rejection ?? '',
+      /1 failing/,
+      'a suite the merge broke sends the work back, with the failure itself',
+    );
+    assert.deepEqual(
+      order.slice(5),
+      ['plan'],
+      'to a new plan rather than to a pull request nobody ran the suite against',
+    );
+    assert.deepEqual(h.prsOpened, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test('the base a resolved merge brought in is recorded when the stage commits it', async () => {
+  // Until the commit there is nothing on the branch to move the base to, and after
+  // it there had better be: the diff every later stage reads is taken from the
+  // ticket's base, so an old one shows the merged-in work as this ticket's own.
+  let refreshes = 0;
+  const h = harness({
+    refresh: () =>
+      refreshes++ === 0
+        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'], merging: true }
+        : { kind: 'up-to-date' },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const refreshed = during(h.store, 't1', 'implement').filter((e) => e.type === 'refreshed');
+    assert.equal(refreshed.length, 1, 'the merge is on the branch, so the base has moved');
+    assert.equal(h.store.ticket('t1').base, 'newbase');
+
+    // The merge commit is named twice — by the refresh and by the stage that made
+    // it — and is one commit.
+    const merge = refreshed[0]?.type === 'refreshed' ? refreshed[0].commit : '';
+    assert.deepEqual(
+      h.store.ticket('t1').commits.filter((c) => c === merge),
+      [merge],
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test('a stage that leaves the merge unfinished is blocked, and commits nothing', async () => {
+  const h = harness({
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/rules.ts'],
+      merging: true,
+    }),
+    unresolved: (paths) => [...paths],
+    stages: { implement: ok('rewrote the retry loop') },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.status, 'blocked');
+    assert.deepEqual(h.ran, ['plan', 'implement'], 'and the ticket goes no further');
+
+    assert.deepEqual(
+      h.committed.filter((c) => c.includes('implement')),
+      [],
+      'committing would put the markers on the branch as though they were work',
+    );
+    const finished = h.store.eventsFor('t1').findLast((e) => e.type === 'stage_finished');
+    assert.equal(finished?.type === 'stage_finished' ? finished.outcome : '', 'blocked');
+    const summary = finished?.type === 'stage_finished' ? finished.summary : '';
+    assert.match(summary, /src\/rules\.ts/, 'saying what is unfinished');
+    assert.match(summary, /rewrote the retry loop/, 'and keeping what the run said it did');
   } finally {
     await h.close();
   }

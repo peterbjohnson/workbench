@@ -157,8 +157,9 @@ how Python is written here. **The workbench ships none** — how your repository
 Python is yours to say.
 
 Every stage gets every skill, named in its brief with its description, and reads one with
-the `Skill` tool. The **Skills** page on the board reads and writes them, as **Agents**
-does for the four stage definitions.
+the `Skill` tool. The **Skills** page on the board reads and writes them, and adds and
+removes them — deleting asks first, because it takes the whole directory. **Agents** reads
+and writes only: the four stage definitions are fixed.
 
 Nothing is rationed per stage: review has to judge work against the standard implement
 wrote it to, so giving them different expertise would be arranging a disagreement. The
@@ -217,6 +218,8 @@ at all.
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |
 | `PUT /agents/:stage`, `PUT /skills/:name` | save one — `{text}`; refused if it would not load |
+| `POST /skills` | add one — `{name, text?}`; without text it starts from a file that loads |
+| `DELETE /skills/:name` | remove it, directory and all |
 | `GET /events` | server-sent events, live |
 
 Nothing here decides anything: each endpoint appends one event and lets the rules react.
