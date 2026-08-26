@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 import type { Doc, DocKind } from '../../src/api/documents.ts';
-import { COLUMNS, columnFor, needsYou, waitingForSlot } from '../../src/domain/board.ts';
+import {
+  COLUMNS,
+  columnFor,
+  DONE,
+  inColumn,
+  needsYou,
+  waitingForSlot,
+  type Order,
+} from '../../src/domain/board.ts';
 import { heldBy, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { applyBrand, isColour } from './brand.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
+import { useOrder } from './order.ts';
 import { Settings } from './Settings.tsx';
 import { Theme } from './Theme.tsx';
 import { TicketForm } from './TicketForm.tsx';
@@ -50,6 +59,12 @@ function tabInHash(hash: string): Tab {
   return TABS.find((tab) => tab.toLowerCase() === hash) ?? 'Board';
 }
 
+/** Both ends of a column, as the control names them. Newest is where Done starts. */
+const ORDERS: readonly [Order, string][] = [
+  ['newest', 'Newest'],
+  ['oldest', 'Oldest'],
+];
+
 /** Which column a ticket may be dragged into, if any. */
 function dropTarget(t: Ticket): string | null {
   if (t.status === 'backlog') return COMMITTED;
@@ -73,6 +88,8 @@ export function App() {
   // never changes — but it comes from the settings, which is also where the colour
   // of this instance is, and that does.
   const [repo, setRepo] = useState<string | null>(null);
+  // Which end of Done to read from. The browser's choice, not the workbench's.
+  const [order, chooseOrder] = useOrder();
 
   /** Anything appended redraws the board. No polling, and no refresh button. */
   useEffect(() => {
@@ -215,11 +232,7 @@ export function App() {
     <>
       <header>
         <h1>Workbench</h1>
-        {repo !== null && (
-          <span className="repo mono" title={repo}>
-            {folder(repo)}
-          </span>
-        )}
+        {repo !== null && <Repo dir={repo} />}
         <nav className="tabs">
           {TABS.map((name) => (
             <a
@@ -263,9 +276,13 @@ export function App() {
             <Column
               key={column.name}
               name={column.name}
-              tickets={tickets.filter((t) => columnFor(t) === column.name)}
+              tickets={inColumn(tickets, column.name, column.name === DONE ? order : 'oldest')}
               queued={queued}
               held={held}
+              // Only Done: the other six are the queue, and the order work is
+              // taken in is the manager's to set rather than the reader's to flip.
+              order={column.name === DONE ? order : undefined}
+              onOrder={chooseOrder}
               // The backlog is where a ticket starts, so that is where writing one
               // belongs — at the top of the column it will appear in, rather than in
               // the header beside things that are about the whole board.
@@ -298,17 +315,18 @@ export function App() {
           <h2>{from === null ? 'New ticket' : `Carrying on from ${from}`}</h2>
           <div className="meta">
             {from === null
-              ? 'It waits in the backlog until you commit to it.'
+              ? 'Put it on the backlog to decide later, or commit to it now and it starts.'
               : `It starts on ${from}'s branch, so that work is in its worktree from the ` +
                 `first stage, and its brief says what stopped ${from}. Then the backlog, as usual.`}
           </div>
           <TicketForm
-            submitLabel="Create"
+            submitLabel="Create on backlog"
+            commitLabel="Create and commit"
             askAboutApproval
             tickets={tickets}
             onCancel={() => open(null)}
-            // Straight into the ticket that was just written, which is where you
-            // decide whether to commit to it.
+            // Straight into the ticket that was just written, either way — whether
+            // you have just committed to it or are about to decide.
             onSubmit={(fields) =>
               act(
                 wb
@@ -317,7 +335,10 @@ export function App() {
                     requiresApproval: fields.requiresApproval,
                     waitsFor: fields.waitsFor,
                   })
-                  .then((t) => open(t.id)),
+                  .then(async (t) => {
+                    if (fields.commit) await wb.queue(t.id);
+                    open(t.id);
+                  }),
               )
             }
           />
@@ -349,6 +370,9 @@ function Column(props: {
   tickets: Ticket[];
   /** Something to do in this column, under its heading. Only the backlog has one. */
   action?: ReactNode;
+  /** Which end this column is read from, when it is a column that can be turned round. */
+  order?: Order;
+  onOrder: (order: Order) => void;
   /** Whether a card is next for a slot — the same judgement for every column. */
   queued: (t: Ticket) => boolean;
   /** The tickets a card is held behind. */
@@ -362,7 +386,7 @@ function Column(props: {
   onDragEnd: () => void;
   onOpen: (id: string) => void;
 }) {
-  const { name, tickets, accepts, dragging } = props;
+  const { name, tickets, accepts, dragging, order } = props;
 
   return (
     <div
@@ -378,6 +402,21 @@ function Column(props: {
       <h2>
         {name} {tickets.length > 0 && <span>({tickets.length})</span>}
       </h2>
+      {order !== undefined && (
+        <div className="order" role="group" aria-label={`${name} order`}>
+          {ORDERS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={value === order ? 'picked' : ''}
+              aria-pressed={value === order}
+              onClick={() => props.onOrder(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {props.action}
       {tickets.map((t) => (
         <Card
@@ -396,6 +435,45 @@ function Column(props: {
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * Which repository this board is working in. The badge has room for the last
+ * segment of the path and no more, and two checkouts of the same project end in
+ * the same segment — so the whole path is a press away, rather than a hover
+ * tooltip nobody knows is there.
+ */
+function Repo({ dir }: { dir: string }) {
+  const [open, setOpen] = useState(false);
+
+  // Escape closes it, the way it closes the list in Pick. Only while it is open:
+  // a listener on the document outlives the panel otherwise.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [open]);
+
+  return (
+    <span className="repo-at">
+      <button
+        type="button"
+        className="repo mono"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        {folder(dir)}
+      </button>
+      {open && (
+        <div className="repo-info">
+          <div>Workbench working folder:</div>
+          <div className="mono">{dir}</div>
+          <div className="quiet">This is the folder the workbench is working in.</div>
+        </div>
+      )}
+    </span>
   );
 }
 
