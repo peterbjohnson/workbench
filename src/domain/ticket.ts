@@ -291,6 +291,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     case 'agent_said':
     case 'tool_requested':
     case 'checks_run':
+    // Chat changes nothing about the ticket. What it proposes changes the ticket by
+    // being accepted, and that appends the ordinary event for whatever was proposed.
+    case 'chat_said':
+    case 'chat_accepted':
       return t; // record only; the board reads these
 
     case 'question_asked':

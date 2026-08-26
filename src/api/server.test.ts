@@ -8,10 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createApi } from './server.ts';
+import { createApi, type ApiDeps } from './server.ts';
 import { createClient, type Client } from './client.ts';
 import { openStore, type Store } from '../store/store.ts';
 import { CONFIG_FILE, loadConfig } from '../config.ts';
+import type { Proposal } from '../domain/events.ts';
+import type { ChatRunner } from '../run/chat.ts';
 
 /**
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
@@ -41,10 +43,13 @@ function scratchConfig() {
 }
 
 /** A real server on an ephemeral port, with a real client talking to it. */
-async function withApi(fn: (wb: Client, store: Store) => Promise<void>): Promise<void> {
+async function withApi(
+  fn: (wb: Client, store: Store) => Promise<void>,
+  deps?: ApiDeps,
+): Promise<void> {
   const store = openStore(':memory:');
   const config = scratchConfig();
-  const api = createApi(store, config);
+  const api = createApi(store, config, deps);
   const port = await api.listen(0);
   try {
     await fn(createClient(`http://127.0.0.1:${port}`), store);
@@ -428,13 +433,112 @@ test('the plan gate is asked for when the ticket is written, and kept', async ()
   });
 });
 
+/**
+ * A chat agent that never leaves this process. What it says is what it was told to
+ * say — the interesting part is what the routes do with it, not what it thinks.
+ */
+function stubChat(proposals: Proposal[] = [], costUsd = 0.03): ChatRunner {
+  return async ({ message }) => ({
+    text: `heard: ${message}`,
+    proposals,
+    costUsd,
+    sessionId: 's1',
+  });
+}
+
+test('a chat turn appends what was said and what came back', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('Add a retry', 'It gives up too early.');
+      const chat = await wb.chat('t1', 'is this ready to start?');
+
+      assert.deepEqual(
+        chat.turns.map((t) => [t.role, t.text]),
+        [
+          ['manager', 'is this ready to start?'],
+          ['agent', 'heard: is this ready to start?'],
+        ],
+      );
+      assert.equal(chat.session, 's1', 'so the next turn carries on rather than re-reading');
+
+      assert.deepEqual(
+        store.eventsFor('t1').map((e) => e.type),
+        ['ticket_created', 'chat_said', 'chat_said'],
+      );
+      // Talking about a ticket must not be able to spend it past its ceiling and
+      // stop the work being talked about.
+      assert.equal(store.ticket('t1').costUsd, 0);
+    },
+    { chat: stubChat() },
+  );
+});
+
+test('a chat with nothing wired into it says so rather than failing', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('Add a retry', '');
+    await assert.rejects(() => wb.chat('t1', 'hello?'), /no chat agent/);
+    assert.equal(store.eventsFor('t1').length, 1, 'and nothing is said on its behalf');
+  });
+});
+
+test('accepting a proposal appends the event the button would, and says it came from the chat', async () => {
+  const rename: Proposal = { action: 'edit', why: 'it says nothing', title: 'Add a retry' };
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      const chat = await wb.chat('t1', 'what should it be called?');
+      assert.deepEqual(
+        chat.turns[1]?.proposals.map((p) => [p.at, p.accepted]),
+        [[0, false]],
+      );
+
+      const after = await wb.acceptProposal('t1', 0);
+      assert.equal(after.title, 'Add a retry');
+      assert.deepEqual(
+        store.eventsFor('t1').map((e) => e.type),
+        ['ticket_created', 'chat_said', 'chat_said', 'ticket_edited', 'chat_accepted'],
+      );
+
+      // And the pane says so, rather than offering the same thing again.
+      const said = await wb.chat('t1', 'done?');
+      assert.deepEqual(
+        said.turns[1]?.proposals.map((p) => p.accepted),
+        [true],
+      );
+    },
+    { chat: stubChat([rename]) },
+  );
+});
+
+test('a proposal that breaks the rule of the action it names is refused, and appends nothing', async () => {
+  const wrong: Proposal[] = [
+    { action: 'ship', why: 'good enough' },
+    { action: 'changes', why: 'nearly', text: 'fix the retry' },
+  ];
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'anything to do?');
+      const before = store.eventsFor('t1').length;
+
+      await assert.rejects(() => wb.acceptProposal('t1', 0), /may not propose "ship"/);
+      // The same refusal `/tickets/:id/changes` gives: no plan, nothing to work from.
+      await assert.rejects(() => wb.acceptProposal('t1', 1), /nothing has been planned yet/);
+      await assert.rejects(() => wb.acceptProposal('t1', 7), /has no proposal 7/);
+
+      assert.equal(store.eventsFor('t1').length, before);
+    },
+    { chat: stubChat(wrong) },
+  );
+});
+
 test('the agents are readable, and what each declares is said with it', async () => {
   await withApi(async (wb) => {
     const agents = await wb.docs('agent');
     assert.deepEqual(
       agents.map((a) => a.name),
-      ['plan', 'implement', 'review', 'verify'],
-      'in the order they run',
+      ['plan', 'implement', 'review', 'verify', 'chat'],
+      'in the order they run, and then the one that is not in the loop at all',
     );
 
     const plan = agents[0]!;

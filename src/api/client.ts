@@ -1,4 +1,5 @@
 import type { Event } from '../domain/events.ts';
+import type { Chat } from '../domain/board.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import type { Policy } from '../domain/rules.ts';
 import type { Doc, DocKind } from './documents.ts';
@@ -98,6 +99,16 @@ export function createClient(baseUrl: string) {
     /** Offer what it has as a pull request, whatever the agents made of it. */
     ship: (id: string) => post<unknown>(`/tickets/${id}/ship`),
     cancel: (id: string, reason: string) => post<unknown>(`/tickets/${id}/cancel`, { reason }),
+
+    /**
+     * Say something to the ticket's chat, and wait for the answer. The whole
+     * conversation comes back, because a turn is only worth reading in one.
+     */
+    chat: (id: string, message: string) =>
+      post<{ chat: Chat }>(`/tickets/${id}/chat`, { message }).then((r) => r.chat),
+    /** Take a proposal up. `at` is its place in the conversation, as the chat gives it. */
+    acceptProposal: (id: string, at: number) =>
+      post<{ ticket: Ticket }>(`/tickets/${id}/chat-accept`, { at }).then((r) => r.ticket),
 
     policy: () => call<Policy>('/policy'),
     /** Change some of the limits, leaving the rest. Takes effect at once. */

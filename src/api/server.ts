@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
 import type { Config } from '../config.ts';
+import { chatTurns, proposalsMade } from '../domain/board.ts';
+import { proposalEvent } from '../domain/proposals.ts';
+import type { ChatRunner } from '../run/chat.ts';
 import { listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
 
@@ -30,13 +33,20 @@ export type Api = {
 };
 
 /**
+ * What the API needs that is not state: the one thing here that talks to a model
+ * service. Optional, and a workbench without it simply has no chat — the routes say
+ * so rather than pretending, and everything else works exactly as before.
+ */
+export type ApiDeps = { chat?: ChatRunner };
+
+/**
  * The single way in. The CLI and the board are both clients of this, so nothing
  * is reachable from one and not the other. It decides nothing: every endpoint
  * either reads derived state or appends one event and lets the rules react.
  */
-export function createApi(store: Store, config: Config): Api {
+export function createApi(store: Store, config: Config, deps: ApiDeps = {}): Api {
   const server = http.createServer((req, res) => {
-    handle(store, config, req, res).catch((error: unknown) => {
+    handle(store, config, deps, req, res).catch((error: unknown) => {
       send(res, 500, { error: error instanceof Error ? error.message : String(error) });
     });
   });
@@ -74,13 +84,14 @@ export function createApi(store: Store, config: Config): Api {
 async function handle(
   store: Store,
   config: Config,
+  deps: ApiDeps,
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname.replace(/\/+$/, '') || '/';
   const method = req.method ?? 'GET';
-  const ticketPath = /^\/tickets\/([^/]+)(\/[a-z]+)?$/.exec(route);
+  const ticketPath = /^\/tickets\/([^/]+)(\/[a-z-]+)?$/.exec(route);
   const docPath = /^\/(agents|skills)\/([\w.-]+)$/.exec(route);
 
   // Who is answering, not merely that something is. `wb serve` asks this of a port
@@ -272,6 +283,77 @@ async function handle(
         case 'cancel': {
           const reason = String(payload['reason'] ?? '').trim() || 'no reason given';
           store.append(id, { type: 'cancelled', reason });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
+
+        /**
+         * One turn of the conversation about this ticket: what the manager said,
+         * then what the agent answered, both appended as events. The manager's turn
+         * is written before the agent runs, so a run that fails still leaves what was
+         * said — losing it would mean retyping the thought as well as the request.
+         */
+        case 'chat': {
+          if (deps.chat === undefined) {
+            return send(res, 503, { error: 'this workbench has no chat agent wired into it' });
+          }
+          const message = String(payload['message'] ?? '').trim();
+          if (message === '') return send(res, 400, { error: 'say something first' });
+
+          const { session } = chatTurns(store.eventsFor(id));
+          store.append(id, { type: 'chat_said', role: 'manager', text: message });
+
+          // The manager closing the panel mid-turn stops the run rather than paying
+          // for an answer nobody is waiting for. Harmless once the reply has been sent.
+          const stop = new AbortController();
+          res.on('close', () => stop.abort());
+
+          let reply;
+          try {
+            reply = await deps.chat({
+              ticket: store.ticket(id),
+              events: store.eventsFor(id),
+              message,
+              ...(session === null ? {} : { resumeFrom: session }),
+              signal: stop.signal,
+            });
+          } catch (error: unknown) {
+            return send(res, 502, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+
+          store.append(id, {
+            type: 'chat_said',
+            role: 'agent',
+            text: reply.text,
+            // Written only when there is something to say. A turn that proposed
+            // nothing and cost nothing should read as one, not as empty fields.
+            ...(reply.proposals.length > 0 ? { proposals: reply.proposals } : {}),
+            ...(reply.costUsd > 0 ? { costUsd: reply.costUsd } : {}),
+            ...(reply.sessionId === undefined ? {} : { sessionId: reply.sessionId }),
+          });
+          return send(res, 200, { chat: chatTurns(store.eventsFor(id)) });
+        }
+
+        /**
+         * The manager took a proposal up. It appends exactly the event the equivalent
+         * button appends and is refused by exactly the same rules — the chat is a way
+         * of reaching those actions, never a way around them.
+         */
+        case 'chat-accept': {
+          const at = Number(payload['at']);
+          const proposal = Number.isInteger(at)
+            ? proposalsMade(store.eventsFor(id))[at]
+            : undefined;
+          if (proposal === undefined) {
+            return send(res, 400, { error: `${id} has no proposal ${String(payload['at'])}` });
+          }
+
+          const taken = proposalEvent(store.ticket(id), proposal);
+          if ('refused' in taken) return send(res, 400, { error: taken.refused });
+
+          store.append(id, taken.event);
+          store.append(id, { type: 'chat_accepted', proposal });
           return send(res, 200, { ticket: store.ticket(id) });
         }
       }

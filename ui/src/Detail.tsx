@@ -13,6 +13,7 @@ import {
 } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
+import { Chat } from './Chat.tsx';
 import { Pick } from './Pick.tsx';
 import { TicketForm } from './TicketForm.tsx';
 import { wb } from './wb.ts';
@@ -125,6 +126,11 @@ export function Detail(props: {
       )}
 
       <Actions ticket={t} tickets={tickets} onAct={onAct} />
+
+      {/* Thinking about the ticket out loud, with something that has already read it.
+          Keyed on the ticket, so moving to another one is another conversation rather
+          than this one's box with someone else's words half-typed in it. */}
+      <Chat key={t.id} id={t.id} events={events} onAct={onAct} />
 
       {/* What the work was asked for, above what has been made of it: the plan and
           the runs are answers to this, and reading them against anything else is
