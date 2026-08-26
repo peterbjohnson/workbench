@@ -115,6 +115,18 @@ export function createClient(baseUrl: string) {
         body: JSON.stringify({ text }),
       }).then((r) => r.doc),
 
+    /**
+     * Make one, starting from a file that loads if no text is given. Skills only —
+     * the four stages are fixed, so an agent is refused with that as the reason.
+     */
+    createDoc: (kind: DocKind, name: string, text?: string) =>
+      post<{ doc: Doc }>(`/${kind}s`, { name, ...(text === undefined ? {} : { text }) }).then(
+        (r) => r.doc,
+      ),
+    /** Remove it, directory and all. Skills only, and there is no undoing it. */
+    deleteDoc: (kind: DocKind, name: string) =>
+      call<{ deleted: string }>(`/${kind}s/${name}`, { method: 'DELETE' }).then((r) => r.deleted),
+
     /** Everything the workbench is set to, editable and not. */
     settings: () => call<{ settings: Setting[] }>('/settings').then((r) => r.settings),
     setSettings: (patch: Record<string, unknown>) =>
