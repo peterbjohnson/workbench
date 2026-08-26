@@ -86,7 +86,7 @@ export function Interrupted(props: {
               saying "none of these", and it should close the box like any other
               answer rather than leave you looking for the one button that works. */}
           <button type="button" className="go" onClick={carryOn}>
-            Restart selected
+            Carry on selected
           </button>
           <button type="button" onClick={onClose}>
             Cancel
