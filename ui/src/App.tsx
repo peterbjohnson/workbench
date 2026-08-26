@@ -289,17 +289,18 @@ export function App() {
           <h2>{from === null ? 'New ticket' : `Carrying on from ${from}`}</h2>
           <div className="meta">
             {from === null
-              ? 'It waits in the backlog until you commit to it.'
+              ? 'Put it on the backlog to decide later, or commit to it now and it starts.'
               : `It starts on ${from}'s branch, so that work is in its worktree from the ` +
                 `first stage, and its brief says what stopped ${from}. Then the backlog, as usual.`}
           </div>
           <TicketForm
-            submitLabel="Create"
+            submitLabel="Create on backlog"
+            commitLabel="Create and commit"
             askAboutApproval
             tickets={tickets}
             onCancel={() => open(null)}
-            // Straight into the ticket that was just written, which is where you
-            // decide whether to commit to it.
+            // Straight into the ticket that was just written, either way — whether
+            // you have just committed to it or are about to decide.
             onSubmit={(fields) =>
               act(
                 wb
@@ -308,7 +309,10 @@ export function App() {
                     requiresApproval: fields.requiresApproval,
                     waitsFor: fields.waitsFor,
                   })
-                  .then((t) => open(t.id)),
+                  .then(async (t) => {
+                    if (fields.commit) await wb.queue(t.id);
+                    open(t.id);
+                  }),
               )
             }
           />

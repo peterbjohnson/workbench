@@ -25,11 +25,17 @@ export function TicketForm(props: {
    */
   tickets?: Ticket[];
   submitLabel: string;
+  /**
+   * A second way to submit, which commits to the ticket as well as writing it.
+   * Only when writing one: there is nothing to commit to when rewriting.
+   */
+  commitLabel?: string;
   onSubmit: (fields: {
     title: string;
     body: string;
     requiresApproval: boolean;
     waitsFor: string[];
+    commit: boolean;
   }) => Promise<unknown>;
   onCancel: () => void;
 }) {
@@ -39,16 +45,21 @@ export function TicketForm(props: {
   const [waitsFor, setWaitsFor] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
+  const submit = (commit: boolean) => {
+    if (title.trim() === '' || saving) return;
+    setSaving(true);
+    void props
+      .onSubmit({ title: title.trim(), body, requiresApproval, waitsFor, commit })
+      .finally(() => setSaving(false));
+  };
+
   return (
     <form
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (title.trim() === '' || saving) return;
-        setSaving(true);
-        void props
-          .onSubmit({ title: title.trim(), body, requiresApproval, waitsFor })
-          .finally(() => setSaving(false));
+        // Enter submits the plain one: the safe half of the pair, when there is a pair.
+        submit(false);
       }}
     >
       <label>
@@ -102,9 +113,23 @@ export function TicketForm(props: {
       )}
 
       <div className="row">
-        <button className="go" type="submit" disabled={title.trim() === '' || saving}>
+        <button
+          className={props.commitLabel === undefined ? 'go' : ''}
+          type="submit"
+          disabled={title.trim() === '' || saving}
+        >
           {props.submitLabel}
         </button>
+        {props.commitLabel !== undefined && (
+          <button
+            className="go"
+            type="button"
+            disabled={title.trim() === '' || saving}
+            onClick={() => submit(true)}
+          >
+            {props.commitLabel}
+          </button>
+        )}
         <button type="button" onClick={props.onCancel}>
           Cancel
         </button>
