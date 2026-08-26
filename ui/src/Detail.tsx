@@ -137,6 +137,40 @@ export function Detail(props: {
         </div>
       )}
 
+      {/* Naming the files is half of it; the other half is the way out. Resolving
+          them is implement's work, so the button is the ordinary "keep the work and
+          put this right" with the paths already written into it.
+
+          Only while the ticket is actually stuck on them: the paths are what one
+          attempt found, and offering to send a ticket back is only an offer worth
+          making where there is nothing else going on. */}
+      {t.status === 'blocked' && t.conflicts.length > 0 && (
+        <div className="box">
+          <h3>Conflicts with the base</h3>
+          {t.conflicts.map((path) => (
+            <div key={path} className="mono">
+              {path}
+            </div>
+          ))}
+          <div className="row">
+            <button
+              type="button"
+              onClick={() =>
+                void onAct(
+                  wb.changes(
+                    t.id,
+                    'The base has moved on and this branch no longer merges into it. ' +
+                      `Resolve the conflicts in:\n${t.conflicts.map((p) => `- ${p}`).join('\n')}`,
+                  ),
+                )
+              }
+            >
+              Send back to resolve them
+            </button>
+          </div>
+        </div>
+      )}
+
       <Actions ticket={t} tickets={tickets} onAct={onAct} />
 
       <Earlier ticket={t} />
@@ -569,6 +603,26 @@ function Actions({
           )}
         </>
       )}
+
+      {/* Answering the offer here rather than on GitHub. It says what it does: the
+          ticket's commits become one commit on the base, which is what the branch's
+          own history — the stages arguing — is not worth putting there. */}
+      {t.status === 'awaiting_verdict' &&
+        t.prUrl !== null &&
+        (t.mergeRequested ? (
+          <div className="row">
+            <span className="quiet">merging…</span>
+          </div>
+        ) : (
+          <div className="row">
+            <button type="button" className="go" onClick={() => void onAct(wb.merge(t.id))}>
+              Squash and merge
+            </button>
+            <span className="quiet">
+              squashes this ticket&rsquo;s commits into one on the base, and accepts it
+            </span>
+          </div>
+        ))}
 
       {/* The manager's own verdict. Anything with work in it can be offered as a
           pull request, whatever the agents made of it — otherwise two of them

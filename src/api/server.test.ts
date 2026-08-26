@@ -129,6 +129,23 @@ test('answering a blocked ticket resumes it', async () => {
   });
 });
 
+test('asking for the merge records it, and only where there is an offer to merge', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('a thing', '');
+    await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
+
+    store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
+    const asked = await wb.merge('t1');
+    assert.equal(asked.mergeRequested, true, 'the orchestrator picks it up from here');
+    assert.equal(asked.status, 'awaiting_verdict', 'the API merges nothing itself');
+
+    // A ticket sent back keeps its `prUrl` and is being worked on again: merging
+    // it would land whatever the rework has got to so far.
+    store.append('t1', { type: 'changes_requested', changes: 'rename it' });
+    await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
+  });
+});
+
 test('the work-in-progress limit is readable and settable', async () => {
   await withApi(async (wb) => {
     assert.equal((await wb.policy()).wipLimit, 2);
@@ -303,6 +320,12 @@ test('offered work can be sent back, or kept and put right', async () => {
     assert.equal(fixing.prUrl, 'https://example/pr/1', 'still headed for the same pull request');
 
     await assert.rejects(() => wb.changes('t1', '  '), /say what to put right/);
+
+    // And not once it is over. This is what the conflicts box presses, and the
+    // paths outlive the clash by a moment: a merged ticket would go back to
+    // implement to resolve conflicts that the merge settled.
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    await assert.rejects(() => wb.changes('t1', 'one more thing'), /this ticket is over/);
   });
 });
 
