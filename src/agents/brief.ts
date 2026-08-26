@@ -78,7 +78,7 @@ export function buildBrief(input: BriefInput): string {
   const sections: [string, string | undefined][] = [
     ['About this project', nested(input.about)],
     ['Where you are working', whereYouAre(input)],
-    ['A merge to finish first', mergeToFinish(input.conflict)],
+    ['A merge to finish first', mergeToFinish(input)],
     ['What is in the worktree', worktreeMap(input.map)],
     ['What you know how to do', skillsHeld(input.skills)],
     ['Ticket', `${ticket.title}\n\n${ticket.body}`.trim()],
@@ -183,10 +183,10 @@ function whereYouAre({ worktree, scratch, absent, agent }: BriefInput): string {
  * completion, and a resolution that was minutes of work became a person's problem
  * a day later in another repository.
  */
-function mergeToFinish(conflict: BriefInput['conflict']): string | undefined {
+function mergeToFinish({ conflict, agent }: BriefInput): string | undefined {
   if (conflict === undefined || conflict.paths.length === 0) return undefined;
 
-  return [
+  const lines = [
     `The base moved on to ${conflict.base.slice(0, 8)} while this ticket was being worked`,
     'on, and taking it in did not go cleanly. The merge is in your worktree right now,',
     'with `MERGE_HEAD` set, and these files hold both sides:',
@@ -201,7 +201,24 @@ function mergeToFinish(conflict: BriefInput['conflict']): string | undefined {
     '',
     'This stage cannot finish until they are resolved: a run that ends with any of them',
     'still unmerged, or still holding conflict markers, is blocked and commits nothing.',
-  ].join('\n');
+  ];
+
+  // Verify is told, every time, that the workbench has already run the standing
+  // checks. It has not for this one — they cannot be asked of a tree full of
+  // markers — and a brief that leaves that claim standing sends the stage looking
+  // for output that was never produced.
+  if (agent.stage === 'verify') {
+    lines.push(
+      '',
+      'Your instructions say the standing checks have already been run. Not for this stage:',
+      'they cannot be asked of a tree that is mid-merge, so there is no `Checks already run`',
+      'section below. The workbench runs them once this stage is over, and a failure then',
+      'sends the ticket back whatever verdict you gave — so run them yourself, once the',
+      'merge is resolved, if you want to know what they are going to say.',
+    );
+  }
+
+  return lines.join('\n');
 }
 
 /**

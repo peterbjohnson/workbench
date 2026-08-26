@@ -267,6 +267,22 @@ test('a stage handed a merge is told what clashed and that it must finish it', (
   assert.ok(brief.indexOf('A merge to finish first') < brief.indexOf('## Ticket'));
 });
 
+test('verify handed a merge is told the checks it is promised were not run', () => {
+  // Its instructions say the workbench has already run them. Not for this stage —
+  // a tree full of markers fails them for the markers — and a brief that leaves the
+  // claim standing sends it looking for output nothing ever produced.
+  const brief = buildBrief({
+    ticket: ticketFrom([CREATED]),
+    agent: agents.verify,
+    worktree: '/tmp/wb/t1',
+    conflict: { base: 'abc1234def', paths: ['src/rules.ts'] },
+  });
+
+  assert.doesNotMatch(brief, /## Checks already run/, 'because they were not run');
+  assert.match(brief, /standing checks have already been run\. Not for this stage/);
+  assert.match(brief, /workbench runs them once this stage is over/, 'and who does ask them');
+});
+
 test('a stage with no merge waiting is told nothing about one', () => {
   const brief = buildBrief({
     ticket: ticketFrom([CREATED]),

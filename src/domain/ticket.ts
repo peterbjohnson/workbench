@@ -348,7 +348,12 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       const recorded = {
         ...t,
         costUsd: t.costUsd + (e.costUsd ?? 0),
-        commits: e.commit !== undefined ? [...t.commits, e.commit] : t.commits,
+        // Named twice for one commit when the stage finished a merge it was handed:
+        // by the `refreshed` that moves the base, and here by the stage that made it.
+        commits:
+          e.commit !== undefined && !t.commits.includes(e.commit)
+            ? [...t.commits, e.commit]
+            : t.commits,
         scale: e.scale ?? t.scale,
         steps: e.steps ?? t.steps,
         doneWhen: e.doneWhen ?? t.doneWhen,

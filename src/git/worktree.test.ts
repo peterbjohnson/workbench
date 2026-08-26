@@ -486,6 +486,7 @@ test('a conflict is reported, and the branch is left exactly as it was', async (
 
     assert.equal(result.kind, 'conflicted');
     assert.deepEqual(result.kind === 'conflicted' ? result.paths : [], ['project/model.py']);
+    assert.equal(result.kind === 'conflicted' && result.merging, false, 'nothing left going');
 
     const after = await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
     assert.equal(after.stdout, before.stdout, 'no half-merged branch to clean up');
@@ -511,12 +512,55 @@ test('a conflict a stage is going to resolve is left in the worktree', async () 
     const result = await refresh(cfg, 't1', true);
 
     assert.equal(result.kind, 'conflicted');
+    assert.equal(result.kind === 'conflicted' && result.merging, true, 'and left for the stage');
     const merging = await run('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: wt.path });
     assert.match(merging.stdout.trim(), /^[0-9a-f]{40}$/, 'the merge is still going');
 
     const model = await fs.readFile(path.join(wt.path, 'project', 'model.py'), 'utf8');
     assert.match(model, /the ticket said this/, 'with the stage’s own side');
     assert.match(model, /the base says this/, 'and the one it has to take in');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a merge a stopped run left behind is handed over again, not thrown away', async () => {
+  // The run given it edited the files and staged them, then asked a question and
+  // stopped, so the merge is still going. Merging on top of that fails, and the
+  // failure used to be tidied up with `merge --abort`: an hour of resolution gone,
+  // with nothing recorded to say it ever existed.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+    await commitAll(wt, 'the ticket');
+    await landOnBase(cfg, 'project/model.py', 'the base says this\n');
+    await refresh(cfg, 't1', true);
+
+    const union = 'the ticket said this\nthe base says this\n';
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), union);
+    await run('git', ['add', 'project/model.py'], { cwd: wt.path });
+
+    const result = await refresh(cfg, 't1', true);
+
+    assert.equal(result.kind, 'conflicted');
+    assert.equal(result.kind === 'conflicted' && result.merging, true, 'the same merge, still on');
+    assert.deepEqual(
+      result.kind === 'conflicted' ? result.paths : ['?'],
+      [],
+      'and nothing unmerged left to count, which is why the merge is what says so',
+    );
+    const head = await run('git', ['rev-parse', 'MERGE_HEAD'], { cwd: wt.path });
+    assert.equal(
+      result.kind === 'conflicted' ? result.base : '',
+      head.stdout.trim(),
+      'named for what the worktree is actually merging, not what it would merge today',
+    );
+    assert.equal(
+      await fs.readFile(path.join(wt.path, 'project', 'model.py'), 'utf8'),
+      union,
+      'and the work of the run that stopped is still here',
+    );
   } finally {
     await cleanUp(cfg);
   }

@@ -414,10 +414,13 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       return undefined;
     }
 
-    // A merge that failed without leaving anything unmerged is not a conflict:
-    // `refresh` has already undone it, and there is nothing to hand over. The
-    // stage runs against the base it had, and the offer will find it again.
-    if (result.paths.length === 0) return undefined;
+    // Nothing left on disk to finish: the merge failed rather than conflicted — an
+    // index that was busy, a checkout that could not be written — and `refresh` has
+    // already undone it. The stage runs against the base it had, and the offer will
+    // find it again. Asked of the merge rather than of the paths, because a run that
+    // stopped after staging its resolution leaves one with no unmerged paths at all,
+    // and that merge still has to be finished and recorded by whoever takes it on.
+    if (!result.merging) return undefined;
 
     store.append(ticket.id, { type: 'conflicted', runId, base: result.base, paths: result.paths });
     return { base: result.base, paths: result.paths };
@@ -435,7 +438,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     // Not while a merge is waiting: the checks would be run against a tree full of
     // conflict markers, fail for that and nothing else, and send the ticket back to
     // planning before the agent had so much as looked at it. Resolving the merge is
-    // the first thing this run does, and the checks are asked again next time round.
+    // the first thing this run does, and they are asked at the far end of it, once
+    // there is a tree worth asking about.
     if (stage === 'verify' && conflict === undefined) {
       const passed = await standingChecks(ticket, runId, worktree);
       if (passed === null) return; // rejected, and no agent was asked
@@ -507,6 +511,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     if (result.outcome === 'completed') {
       try {
         commit = await deps.workspace.commit(ticket, `${stage}: ${ticket.title} (${ticket.id})`);
+        // The merge handed over at the start is on the branch now, so this is where
+        // the base it brought in is recorded — `conflicted` deliberately moves
+        // nothing, because until this commit there was nothing to move. Without it
+        // the ticket keeps the base it was cut from, and every later diff is taken
+        // from there: the whole of the merged-in work read as this ticket's own.
+        if (conflict !== undefined && commit !== null) {
+          store.append(ticket.id, { type: 'refreshed', base: conflict.base, commit });
+        }
       } catch (error) {
         // The run still cost what it cost, whatever happened afterwards.
         result = {
@@ -514,6 +526,25 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           summary: `could not commit: ${describe(error)}`,
           costUsd: result.costUsd,
         };
+      }
+    }
+
+    // The checks the merge kept this run from starting with, asked now that it is
+    // resolved and committed. Nothing else will ask: the next action is `open_pr`,
+    // whose refresh finds a branch already up to date and runs them only when
+    // something merged — so the change most likely to break the suite would be the
+    // one offered without it ever being run.
+    if (stage === 'verify' && conflict !== undefined && result.outcome === 'completed') {
+      const results = await deps.checks(worktree);
+      if (results.length > 0) store.append(ticket.id, { type: 'checks_run', runId, results });
+
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length > 0) {
+        const why = failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n');
+        // Back to planning, the way a failure found before the run already goes. What
+        // the run itself objected to is kept alongside: both are reasons it is going
+        // back, and the next plan has to answer both.
+        result = { ...result, rejected: result.rejected ? `${result.rejected}\n\n${why}` : why };
       }
     }
 

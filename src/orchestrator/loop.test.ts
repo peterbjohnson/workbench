@@ -86,7 +86,9 @@ function harness(
       unresolved: async (_id, paths) => opts.unresolved?.(paths) ?? [],
       commit: async (ticket, message) => {
         committed.push(`${ticket.id}: ${message}`);
-        return 'c0ffee1';
+        // A hash of its own each time, as real commits have: a test that counts what
+        // is on the branch cannot be answered by one the fake repeats.
+        return `c0ffee${committed.length}`;
       },
       discard: async (id) => {
         tidied.push(id);
@@ -983,7 +985,12 @@ test('a pull request the manager has already answered is left alone', async () =
 
 test('work that conflicts with the base it must land on is not offered', async () => {
   const h = harness({
-    refresh: () => ({ kind: 'conflicted', base: 'newbase', paths: ['src/domain/rules.ts'] }),
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/domain/rules.ts'],
+      merging: false,
+    }),
   });
   try {
     create(h.store);
@@ -1087,7 +1094,7 @@ test('a conflict at the start of a stage is handed to the stage, not to the mana
   const h = harness({
     refresh: (id) =>
       id === 't1' && handed.length === 0
-        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'] }
+        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'], merging: true }
         : { kind: 'up-to-date' },
     runStage: async ({ stage, conflict }) => {
       if (conflict) handed.push({ stage, paths: conflict.paths });
@@ -1120,16 +1127,26 @@ test('a conflict at the start of a stage is handed to the stage, not to the mana
   }
 });
 
-test('a merge waiting at the start of verify is not judged by the standing checks', async () => {
-  // They would be run against a tree full of conflict markers, fail for that alone,
-  // and send the ticket back to planning without the agent ever seeing the merge.
+test('the checks a merge kept from running at the start of verify are run at the end', async () => {
+  // Before the run they would be asked of a tree full of conflict markers, fail for
+  // that alone, and send the ticket back to planning without the agent ever seeing
+  // the merge. After it, they are the only thing that will ask: `open_pr` refreshes
+  // a branch that is by then up to date and runs nothing.
   let refreshes = 0;
+  const order: string[] = [];
   const h = harness({
     refresh: () =>
       ++refreshes === 2
-        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'] }
+        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'], merging: true }
         : { kind: 'up-to-date' },
-    checks: () => [{ command: 'yarn test', ok: false, output: 'unexpected token <<<<<<<' }],
+    checks: () => {
+      order.push('checks');
+      return [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }];
+    },
+    runStage: async ({ stage }) => {
+      order.push(stage);
+      return ok(`${stage} done`);
+    },
   });
   try {
     create(h.store);
@@ -1137,11 +1154,60 @@ test('a merge waiting at the start of verify is not judged by the standing check
     h.store.append('t1', { type: 'plan_approved' });
     await h.orch.idle();
 
-    assert.deepEqual(h.ran, ['plan', 'implement', 'review', 'verify'], 'verify still runs');
     assert.deepEqual(
-      during(h.store, 't1', 'verify').filter((e) => e.type === 'checks_run'),
-      [],
-      'nothing was asked of a half-merged tree',
+      order.slice(0, 5),
+      ['plan', 'implement', 'review', 'verify', 'checks'],
+      'asked of the tree the stage resolved, not the one it was given',
+    );
+    assert.equal(
+      during(h.store, 't1', 'verify').filter((e) => e.type === 'checks_run').length,
+      1,
+      'and what they said is on the ticket',
+    );
+
+    assert.match(
+      h.store.ticket('t1').rejection ?? '',
+      /1 failing/,
+      'a suite the merge broke sends the work back, with the failure itself',
+    );
+    assert.deepEqual(
+      order.slice(5),
+      ['plan'],
+      'to a new plan rather than to a pull request nobody ran the suite against',
+    );
+    assert.deepEqual(h.prsOpened, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test('the base a resolved merge brought in is recorded when the stage commits it', async () => {
+  // Until the commit there is nothing on the branch to move the base to, and after
+  // it there had better be: the diff every later stage reads is taken from the
+  // ticket's base, so an old one shows the merged-in work as this ticket's own.
+  let refreshes = 0;
+  const h = harness({
+    refresh: () =>
+      refreshes++ === 0
+        ? { kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'], merging: true }
+        : { kind: 'up-to-date' },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const refreshed = during(h.store, 't1', 'implement').filter((e) => e.type === 'refreshed');
+    assert.equal(refreshed.length, 1, 'the merge is on the branch, so the base has moved');
+    assert.equal(h.store.ticket('t1').base, 'newbase');
+
+    // The merge commit is named twice — by the refresh and by the stage that made
+    // it — and is one commit.
+    const merge = refreshed[0]?.type === 'refreshed' ? refreshed[0].commit : '';
+    assert.deepEqual(
+      h.store.ticket('t1').commits.filter((c) => c === merge),
+      [merge],
     );
   } finally {
     await h.close();
@@ -1150,7 +1216,12 @@ test('a merge waiting at the start of verify is not judged by the standing check
 
 test('a stage that leaves the merge unfinished is blocked, and commits nothing', async () => {
   const h = harness({
-    refresh: () => ({ kind: 'conflicted', base: 'newbase', paths: ['src/rules.ts'] }),
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/rules.ts'],
+      merging: true,
+    }),
     unresolved: (paths) => [...paths],
     stages: { implement: ok('rewrote the retry loop') },
   });

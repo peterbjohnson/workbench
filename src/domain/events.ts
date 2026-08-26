@@ -22,10 +22,11 @@ export type Refreshed =
   | { kind: 'up-to-date' }
   | { kind: 'merged'; base: string; commit: string }
   /**
-   * Left un-merged. The branch is exactly as it was, unless the caller asked to
-   * keep the merge — then it is still going, on disk, for a stage to finish.
+   * Left un-merged. `merging` says which: the branch is exactly as it was, or the
+   * merge is still going, on disk, for a stage to finish. A caller that did not ask
+   * to keep one can still be told this, by a merge an earlier run left behind.
    */
-  | { kind: 'conflicted'; base: string; paths: string[] };
+  | { kind: 'conflicted'; base: string; paths: string[]; merging: boolean };
 
 /**
  * Everything else in the system is derived from this list.
@@ -166,7 +167,9 @@ export type EventBody =
    * is the ticket's own work, not everything the base gained while it was busy.
    *
    * Only written when something actually merged. A branch that already had the
-   * base is the ordinary case and says nothing.
+   * base is the ordinary case and says nothing. A merge handed to a stage is
+   * written here too, but not until the stage's commit concludes it: before that
+   * there is nothing on the branch for the base to be moved to.
    */
   | { type: 'refreshed'; base: string; commit: string }
   /**

@@ -358,6 +358,21 @@ export async function refresh(
   keepConflict = false,
 ): Promise<Refreshed> {
   const wt = worktreeFor(cfg, ticketId);
+
+  // A merge already going, left by a run that was handed one and stopped before it
+  // finished — it asked a question, or ran out of turns. `git merge` on top of that
+  // fails, and the failure reads exactly like a merge that could not start, so it
+  // used to be tidied away with `merge --abort`: the resolution and every
+  // uncommitted edit of that run gone, and nothing recorded to say so. The same
+  // merge is handed over again instead, and it is that merge the caller is told
+  // about — the base it is against, not the one it would have started today.
+  const merging = (
+    await git(wt.path, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD').catch(() => '')
+  ).trim();
+  if (merging !== '') {
+    return { kind: 'conflicted', base: merging, paths: await unmergedPaths(wt), merging: true };
+  }
+
   const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
 
   const has = await git(wt.path, 'merge-base', '--is-ancestor', base, 'HEAD').then(
@@ -370,18 +385,14 @@ export async function refresh(
     await git(wt.path, 'merge', '--no-edit', base);
   } catch {
     // Read the conflicting paths before aborting: the abort is what removes them.
-    const paths = await git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
-      (out) => out.split('\n').filter((line) => line !== ''),
-      () => [],
-    );
+    const paths = await unmergedPaths(wt);
     // Nothing unmerged means the merge failed rather than conflicted — an index
     // that was busy, a checkout that could not be written. There is nothing for a
     // stage to resolve, so it is undone whatever the caller asked for.
-    if (!keepConflict || paths.length === 0) {
-      await git(wt.path, 'merge', '--abort').catch(() => {});
-    }
+    const kept = keepConflict && paths.length > 0;
+    if (!kept) await git(wt.path, 'merge', '--abort').catch(() => {});
     await hideProtectedPaths(cfg, wt);
-    return { kind: 'conflicted', base, paths };
+    return { kind: 'conflicted', base, paths, merging: kept };
   }
 
   // A merge writes out whatever it had to merge, which can put a protected path
@@ -389,6 +400,14 @@ export async function refresh(
   // the workbench's own source cannot appear in a worktree by way of a merge.
   await hideProtectedPaths(cfg, wt);
   return { kind: 'merged', base, commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim() };
+}
+
+/** The paths a merge left with both sides in them, waiting on someone to decide. */
+async function unmergedPaths(wt: Worktree): Promise<string[]> {
+  return git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
+    (out) => out.split('\n').filter((line) => line !== ''),
+    () => [],
+  );
 }
 
 /**
@@ -406,12 +425,7 @@ export async function unresolved(
   paths: readonly string[],
 ): Promise<string[]> {
   const wt = worktreeFor(cfg, ticketId);
-  const unmerged = new Set(
-    await git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
-      (out) => out.split('\n').filter((line) => line !== ''),
-      () => [],
-    ),
-  );
+  const unmerged = new Set(await unmergedPaths(wt));
 
   const left: string[] = [];
   for (const p of paths) {
