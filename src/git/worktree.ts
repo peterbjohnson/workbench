@@ -16,7 +16,7 @@ const run = promisify(execFile);
 export function gitWorkspace(cfg: GitConfig): Workspace {
   return {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
-    refresh: (ticketId) => refresh(cfg, ticketId),
+    refresh: (ticketId, alsoMerge) => refresh(cfg, ticketId, alsoMerge),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
   };
@@ -334,7 +334,8 @@ function pathOf(lines: readonly string[]): string {
 }
 
 /**
- * Brings the base as the remote now has it into the ticket's branch.
+ * Brings the base as the remote now has it into the ticket's branch, and with it
+ * any other branch the caller names.
  *
  * A branch is cut from the base once and then works for hours while other tickets
  * merge, so by the time it is offered it is built on a base that no longer exists.
@@ -346,27 +347,51 @@ function pathOf(lines: readonly string[]): string {
  * already have a pull request on it, which rewrites every commit a standing review
  * was written against.
  */
-export async function refresh(cfg: GitConfig, ticketId: string): Promise<Refreshed> {
+export async function refresh(
+  cfg: GitConfig,
+  ticketId: string,
+  /**
+   * Branches to bring in as well as the base: the work this ticket waited for,
+   * which has been offered and so is not in the base yet. The commit it needs —
+   * the base with all of them on it — does not exist anywhere, so it is made here,
+   * on the ticket's own branch.
+   */
+  alsoMerge: readonly string[] = [],
+): Promise<Refreshed> {
   const wt = worktreeFor(cfg, ticketId);
   const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
 
-  const has = await git(wt.path, 'merge-base', '--is-ancestor', base, 'HEAD').then(
-    () => true,
-    () => false,
-  );
-  if (has) return { kind: 'up-to-date' };
-
-  try {
-    await git(wt.path, 'merge', '--no-edit', base);
-  } catch {
-    // Read the conflicting paths before aborting: the abort is what removes them.
-    const paths = await git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
-      (out) => out.split('\n').filter((line) => line !== ''),
-      () => [],
+  const wanted: string[] = [];
+  for (const ref of [base, ...alsoMerge]) {
+    // A dependency with no branch has no work to take: it was released by ending
+    // rather than by offering, or it never got as far as cutting one.
+    const resolves = await git(wt.path, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`).then(
+      () => true,
+      () => false,
     );
-    await git(wt.path, 'merge', '--abort').catch(() => {});
-    await hideProtectedPaths(cfg, wt);
-    return { kind: 'conflicted', base, paths };
+    const has =
+      resolves &&
+      (await git(wt.path, 'merge-base', '--is-ancestor', ref, 'HEAD').then(
+        () => true,
+        () => false,
+      ));
+    if (resolves && !has) wanted.push(ref);
+  }
+  if (wanted.length === 0) return { kind: 'up-to-date' };
+
+  for (const ref of wanted) {
+    try {
+      await git(wt.path, 'merge', '--no-edit', ref);
+    } catch {
+      // Read the conflicting paths before aborting: the abort is what removes them.
+      const paths = await git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
+        (out) => out.split('\n').filter((line) => line !== ''),
+        () => [],
+      );
+      await git(wt.path, 'merge', '--abort').catch(() => {});
+      await hideProtectedPaths(cfg, wt);
+      return { kind: 'conflicted', base, paths, with: ref };
+    }
   }
 
   // A merge writes out whatever it had to merge, which can put a protected path

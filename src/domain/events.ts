@@ -16,13 +16,17 @@ export type RunOutcome = 'completed' | 'blocked' | 'failed';
  */
 export type CheckRun = { command: string; ok: boolean; output: string };
 
-/** What bringing the base into a ticket's branch did. */
+/** What bringing the base, and whatever else was asked for, into a branch did. */
 export type Refreshed =
-  /** The branch already had the base. Nothing happened, and nothing is recorded. */
+  /** The branch already had all of it. Nothing happened, and nothing is recorded. */
   | { kind: 'up-to-date' }
   | { kind: 'merged'; base: string; commit: string }
-  /** Left un-merged, and the branch is exactly as it was. */
-  | { kind: 'conflicted'; base: string; paths: string[] };
+  /**
+   * One of them would not merge, and that one was left out. Anything merged before
+   * it stands, so the branch is as far along as it got — `with` is the ref that
+   * stopped it, which is what a person has to be told to do anything about it.
+   */
+  | { kind: 'conflicted'; base: string; paths: string[]; with: string };
 
 /**
  * Everything else in the system is derived from this list.
@@ -76,8 +80,10 @@ export type EventBody =
   | { type: 'moved'; before: string | null }
   /**
    * This ticket must not start a stage until every one of `tickets` has offered
-   * its work or ended. The whole set each time, not a difference: the manager
-   * picks what it waits for and this is what they picked. Empty is no condition.
+   * its work or ended — and whatever of it is offered is merged into this ticket's
+   * branch before that stage runs, because an offer is not a merge and the base
+   * does not have it. The whole set each time, not a difference: the manager picks
+   * what it waits for and this is what they picked. Empty is no condition.
    */
   | { type: 'waits_for'; tickets: string[] }
   /**

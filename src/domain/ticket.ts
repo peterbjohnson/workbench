@@ -32,8 +32,8 @@ export type Ticket = {
   continues: string | null;
   /**
    * Tickets this one must not start ahead of. Nothing runs while any of them is
-   * unmet — see `heldBy`, which says what meeting one takes and is the only thing
-   * that reads this.
+   * unmet — see `heldBy`, which says what meeting one takes, and `awaitedWork`,
+   * which says what of theirs this branch is then built on.
    *
    * Not the same as `continues`, and they compose: that one says where the work
    * *starts from* and is fixed when the branch is cut; these say *when*, and can

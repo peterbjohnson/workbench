@@ -102,6 +102,14 @@ every dependency behind a person. A ticket that was cancelled or given up on rel
 waits on it too: a queue held up by a ticket nobody is working on is the one failure with
 no way out.
 
+**And the work comes with it.** An offer is not a merge, so the base does not have that
+work in it — the held ticket is branched from the base as everything is, and then every
+branch it waited for is merged into its own before its first stage starts. One that was
+cancelled or given up on brings nothing, because there is nothing of it to bring; one whose
+pull request has landed brings nothing either, because the base already has it. Two
+branches that will not sit in the same tree **block** the ticket then and there, naming the
+branch and the files, rather than after it has been built on half of what it waited for.
+
 ## Steps
 
 A plan ends with a `STEPS:` list. They cost nothing extra — the plan is writing them

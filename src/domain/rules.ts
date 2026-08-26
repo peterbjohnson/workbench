@@ -40,10 +40,11 @@ const STAGE_FOR_STATUS = {
  * Whether this ticket has let go of whatever is waiting on it.
  *
  * **A pull request is the release, not the merge.** What one ticket needs of
- * another is that it stop committing — after that its branch is final, and a
- * ticket that needs the code itself starts *from* that branch (`continues`) rather
- * than from a merge that has not happened. Waiting for the merge would make every
- * dependency wait on a person, and a forgotten pull request would stop the board.
+ * another is that it stop committing — after that its branch is final, and the
+ * ticket that waited takes that branch into its own (`awaitedWork`) rather than
+ * waiting for a merge that has not happened. Waiting for the merge would make
+ * every dependency wait on a person, and a forgotten pull request would stop the
+ * board.
  *
  * A ticket that ended — cancelled, given up on — releases too. Nothing else ever
  * will, and a queue held up by a ticket nobody is working on is the one failure
@@ -71,6 +72,27 @@ export function heldBy(t: Ticket, tickets: readonly Ticket[]): Ticket[] {
   return t.waitsFor
     .map((id) => tickets.find((o) => o.id === id))
     .filter((o): o is Ticket => o !== undefined && !released(o));
+}
+
+/**
+ * The work this ticket has to be standing on when it starts: the tickets it
+ * `waitsFor` that are offered right now.
+ *
+ * The sibling of `heldBy`, and the other half of it. `heldBy` says *when* a ticket
+ * may start; this says *what must be in its branch* by then — because being
+ * released by an offer means, by definition, being released against a base that
+ * does not have that work in it yet.
+ *
+ * Offered, and nothing else. A cancelled or given-up ticket lets go without
+ * leaving any work to take, and one whose pull request has been merged has put its
+ * work in the base, where the ordinary refresh brings it in with everything else.
+ * So a dependency drops off this list on its own as it lands, and nothing has to
+ * remember what was once on it.
+ */
+export function awaitedWork(t: Ticket, tickets: readonly Ticket[]): Ticket[] {
+  return t.waitsFor
+    .map((id) => tickets.find((o) => o.id === id))
+    .filter((o): o is Ticket => o !== undefined && o.offered);
 }
 
 /**

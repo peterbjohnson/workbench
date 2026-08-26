@@ -17,7 +17,7 @@ import {
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
-import { heldBy } from './rules.ts';
+import { awaitedWork, heldBy } from './rules.ts';
 import { deriveTicket, ended, type Status, type Ticket } from './ticket.ts';
 
 const EVERY_STATUS = [
@@ -307,6 +307,38 @@ test('a pull request lets go of what waits on it, and so does an ending', () => 
   // A ticket waiting on one that is not there waits for nothing.
   assert.deepEqual(heldBy(waiting, [waiting]), []);
   assert.deepEqual(heldBy(at('queued'), [at('queued')]), []);
+});
+
+test('what a released ticket must be standing on is the work that is offered', () => {
+  const waiting = { ...at('queued'), waitsFor: ['t2', 't3'] };
+  const other = (id: string, status: Status): Ticket => ({ ...at(status), id });
+  const offering = (id: string): Ticket => ({
+    ...other(id, 'awaiting_verdict'),
+    prUrl: `http://pr/${id}`,
+    offered: true,
+  });
+  const awaited = (...tickets: Ticket[]) => awaitedWork(waiting, tickets).map((t) => t.id);
+
+  // Both, and in the order the manager named them: two dependencies offered at
+  // once is the ordinary case, and neither may be dropped.
+  assert.deepEqual(awaited(offering('t2'), offering('t3')), ['t2', 't3']);
+  assert.deepEqual(awaited(offering('t3'), offering('t2')), ['t2', 't3']);
+
+  // Released with nothing to take: nobody will finish these, and there is no
+  // branch of theirs the waiting ticket should be built on.
+  assert.deepEqual(awaited(other('t2', 'cancelled'), offering('t3')), ['t3']);
+  assert.deepEqual(awaited(other('t2', 'gave_up'), offering('t3')), ['t3']);
+
+  // Merged: the work is in the base now, and the ordinary refresh brings it in.
+  assert.deepEqual(awaited(other('t2', 'done'), offering('t3')), ['t3']);
+
+  // Still being built, so nothing is standing on it yet — `heldBy` is what stops
+  // the ticket, and this says nothing about it either way.
+  assert.deepEqual(awaited(other('t2', 'implementing'), offering('t3')), ['t3']);
+
+  // A ticket that is not on the board contributes nothing, as it holds nothing.
+  assert.deepEqual(awaited(offering('t3')), ['t3']);
+  assert.deepEqual(awaitedWork(at('queued'), [at('queued')]), []);
 });
 
 test('a ticket the limit is holding back says so; nothing else does', () => {

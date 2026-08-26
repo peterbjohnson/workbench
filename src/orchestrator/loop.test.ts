@@ -21,6 +21,8 @@ type Harness = {
   /** Every stage run that happened, in order. */
   ran: Stage[];
   prsOpened: string[];
+  /** Every branch-bringing-in that was asked for, in order. */
+  refreshed: { id: string; alsoMerge: readonly string[] }[];
   /** Tickets whose worktree was cleaned up. */
   tidied: string[];
   /** What the loop told whoever is watching. */
@@ -58,6 +60,7 @@ function harness(
   const branched = new Set<string>();
   const ran: Stage[] = [];
   const prsOpened: string[] = [];
+  const refreshed: { id: string; alsoMerge: readonly string[] }[] = [];
   const tidied: string[] = [];
   const announced: string[] = [];
   const attempts = new Map<Stage, number>();
@@ -74,7 +77,10 @@ function harness(
           base: first ? 'abc1234' : null,
         };
       },
-      refresh: async (id) => opts.refresh?.(id) ?? { kind: 'up-to-date' },
+      refresh: async (id, alsoMerge = []) => {
+        refreshed.push({ id, alsoMerge });
+        return opts.refresh?.(id) ?? { kind: 'up-to-date' };
+      },
       commit: async () => 'c0ffee1',
       discard: async (id) => {
         tidied.push(id);
@@ -110,6 +116,7 @@ function harness(
     orch,
     ran,
     prsOpened,
+    refreshed,
     tidied,
     announced,
     close: async () => {
@@ -571,6 +578,88 @@ test('a ticket held behind one that was cancelled is let go, not stranded', asyn
   }
 });
 
+/** A ticket committed to, told what it waits for, and only then queued. */
+function waiting(store: Store, id: string, tickets: string[]): void {
+  store.append(id, { type: 'ticket_created', title: `ticket ${id}`, body: 'do it' });
+  store.append(id, { type: 'waits_for', tickets });
+  store.append(id, { type: 'queued' });
+}
+
+test('a ticket let go by a pull request is branched onto that work, not without it', async () => {
+  const h = harness({ refresh: () => ({ kind: 'merged', base: 'abc1234', commit: 'merge01' }) });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't3');
+    waiting(h.store, 't2', ['t1', 't3']);
+
+    await h.orch.idle();
+
+    // Both, in the order they were waited for. An offer is not a merge, so neither
+    // of them is in the base — the commit t2 needs is made on t2's own branch.
+    assert.deepEqual(
+      h.refreshed.filter((r) => r.id === 't2')[0]?.alsoMerge,
+      ['wb/t1', 'wb/t3'],
+      'the work it waited for came with it',
+    );
+
+    // Before anything was paid for: a ticket that starts on the wrong code runs
+    // implement and verify to completion and only then finds out.
+    const events = h.store.eventsFor('t2').map((e) => e.type);
+    assert.ok(events.indexOf('branched') < events.indexOf('refreshed'), 'cut, then merged onto');
+    assert.ok(events.indexOf('refreshed') < events.indexOf('stage_started'), 'before the stage');
+  } finally {
+    await h.close();
+  }
+});
+
+test('dependencies that will not sit in one tree stop the ticket before it starts', async () => {
+  const h = harness({
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'abc1234',
+      paths: ['fea/run_characteristic.py'],
+      with: 'wb/t3',
+    }),
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't3');
+    waiting(h.store, 't2', ['t1', 't3']);
+
+    await h.orch.idle();
+
+    const ticket = h.store.ticket('t2');
+    assert.equal(ticket.status, 'blocked');
+    assert.match(ticket.question?.question ?? '', /wb\/t3/, 'says which one it could not take');
+    assert.match(ticket.question?.question ?? '', /run_characteristic\.py/, 'and where it clashed');
+    assert.deepEqual(h.ran, [], 'the cheapest moment there is to find this out');
+    assert.deepEqual(
+      h.store.eventsFor('t2').filter((e) => e.type === 'stage_started'),
+      [],
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test('a dependency that ended has no work to take, so nothing is merged', async () => {
+  const h = harness();
+  try {
+    create(h.store, 't1');
+    waiting(h.store, 't2', ['t1']);
+    h.store.append('t1', { type: 'cancelled', reason: 'not now' });
+
+    await h.orch.idle();
+
+    // Cancelling lets go of what waits, which is the point of it — but there is no
+    // branch of t1's that t2 should be standing on.
+    assert.equal(h.store.ticket('t2').status, 'plan_gate');
+    assert.deepEqual(h.refreshed, [], 'nothing to take, so nothing was asked of git');
+  } finally {
+    await h.close();
+  }
+});
+
 test('a blocked ticket gives up its slot rather than holding it', async () => {
   const h = harness({
     stages: {
@@ -970,7 +1059,12 @@ test('a pull request the manager has already answered is left alone', async () =
 
 test('work that conflicts with the base it must land on is not offered', async () => {
   const h = harness({
-    refresh: () => ({ kind: 'conflicted', base: 'newbase', paths: ['src/domain/rules.ts'] }),
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/domain/rules.ts'],
+      with: 'newbase',
+    }),
   });
   try {
     create(h.store);

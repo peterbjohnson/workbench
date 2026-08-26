@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, Scale, Stage } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
-import { heldBy, nextAction, type Action } from '../domain/rules.ts';
+import { awaitedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
 import { readStep } from '../run/protocol.ts';
@@ -87,7 +87,14 @@ export type Workspace = {
    * when it started. `up-to-date` is the ordinary answer and means nothing
    * happened at all.
    */
-  refresh: (ticketId: string) => Promise<Refreshed>;
+  refresh: (
+    ticketId: string,
+    /**
+     * Branches to bring in besides the base: the work this ticket waited for,
+     * which is offered and so is not in the base yet.
+     */
+    alsoMerge?: readonly string[],
+  ) => Promise<Refreshed>;
   /**
    * Records whatever a stage left behind, returning the commit or null when there
    * was nothing to record — normal for the stages that only read. The sha is kept:
@@ -482,10 +489,16 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     store.append(ticket.id, { type: 'pr_opened', url });
   }
 
+  /** The branches of the offered work this ticket waited for. See `awaitedWork`. */
+  function awaitedBranches(ticket: Ticket): string[] {
+    return awaitedWork(ticket, store.tickets()).map((t) => t.branch);
+  }
+
   /**
-   * Brings the base into a ticket's branch, and says whether the ticket may carry
-   * on. A clean branch is the ordinary answer: nothing merged, nothing recorded,
-   * nothing re-run, nothing spent.
+   * Brings the base — and the work this ticket waited for, which is offered and so
+   * is not in the base yet — into a ticket's branch, and says whether the ticket
+   * may carry on. A clean branch is the ordinary answer: nothing merged, nothing
+   * recorded, nothing re-run, nothing spent.
    *
    * When something did merge, the standing checks decide. They are the whole point
    * of refreshing — a merge git can do silently is exactly the change that breaks
@@ -493,19 +506,19 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * how that is found on the ticket rather than by a person at merge time.
    *
    * A conflict and a failure both park the ticket rather than starting anything:
-   * the branch is untouched, the work stands, and what to do about it is a
-   * decision — ship it, put it right, or stop it — rather than a stage.
+   * nothing half-merged is left behind, the work stands, and what to do about it
+   * is a decision — ship it, put it right, or stop it — rather than a stage.
    */
   async function refresh(ticket: Ticket, worktree: string): Promise<boolean> {
-    const result = await deps.workspace.refresh(ticket.id);
+    const result = await deps.workspace.refresh(ticket.id, awaitedBranches(ticket));
     if (result.kind === 'up-to-date') return true;
 
     if (result.kind === 'conflicted') {
       store.append(ticket.id, {
         type: 'blocked',
         reason:
-          `this branch conflicts with ${result.base.slice(0, 8)}, which the base has ` +
-          `moved on to:\n${result.paths.map((p) => `  ${p}`).join('\n')}`,
+          `this branch conflicts with ${describeRef(result.with, result.base)}:\n` +
+          result.paths.map((p) => `  ${p}`).join('\n'),
       });
       return false;
     }
@@ -586,8 +599,43 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     );
     if (base !== null) {
       store.append(ticket.id, { type: 'branched', branch: ticket.branch, base });
+      await takeAwaitedWork(ticket);
     }
     return { path, scratch };
+  }
+
+  /**
+   * Puts the work this ticket waited for into the branch just cut for it.
+   *
+   * A ticket is released the moment what it waits for is *offered*, which is the
+   * right moment — but the base does not have that work in it yet, and by
+   * definition will not until a person merges it. So the branch is cut from the
+   * base, as every branch is, and then the offered work is merged in: the commit
+   * this ticket needs is the base with all of its dependencies on it, and nowhere
+   * else in the world is there one. Without this the wait is honoured in name and
+   * defeated in fact — the ticket starts at the right time, on the wrong code.
+   *
+   * Only where the branch is cut, so a ticket pays for this once. The standing
+   * checks are not run: they judge a ticket's own work against a base that moved,
+   * and there is no work here yet.
+   *
+   * A conflict throws rather than recording anything: `perform` turns that into
+   * `blocked`, and this is reached before `stage_started`, so two dependencies that
+   * will not sit in one tree stop the ticket at the cheapest moment there is.
+   */
+  async function takeAwaitedWork(ticket: Ticket): Promise<void> {
+    const branches = awaitedBranches(ticket);
+    if (branches.length === 0) return;
+
+    const result = await deps.workspace.refresh(ticket.id, branches);
+    if (result.kind === 'up-to-date') return;
+    if (result.kind === 'conflicted') {
+      throw new Error(
+        `this branch cannot take ${describeRef(result.with, result.base)}:\n` +
+          result.paths.map((p) => `  ${p}`).join('\n'),
+      );
+    }
+    store.append(ticket.id, { type: 'refreshed', base: result.base, commit: result.commit });
   }
 
   /** Guards against a rule that keeps finding work forever. */
@@ -633,4 +681,15 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * What would not merge, said so a person can act on it: the base is a commit and
+ * is worth naming as one, and anything else is a ticket's branch, which says which
+ * ticket without anybody having to look a sha up.
+ */
+function describeRef(ref: string, base: string): string {
+  return ref === base
+    ? `${base.slice(0, 8)}, which the base has moved on to`
+    : `${ref}, whose work it waits for`;
 }

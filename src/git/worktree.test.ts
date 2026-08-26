@@ -478,6 +478,11 @@ test('a conflict is reported, and the branch is left exactly as it was', async (
 
     assert.equal(result.kind, 'conflicted');
     assert.deepEqual(result.kind === 'conflicted' ? result.paths : [], ['project/model.py']);
+    assert.equal(
+      result.kind === 'conflicted' ? result.with : '',
+      result.kind === 'conflicted' ? result.base : 'x',
+      'and what it would not merge was the base',
+    );
 
     const after = await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
     assert.equal(after.stdout, before.stdout, 'no half-merged branch to clean up');
@@ -486,6 +491,100 @@ test('a conflict is reported, and the branch is left exactly as it was', async (
       'the ticket said this\n',
       'and no conflict markers left in the work',
     );
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+/** A ticket that has offered its work: a branch with a commit on it, nothing merged. */
+async function offeredWork(cfg: GitConfig, ticketId: string, file: string, content: string) {
+  const wt = await create(cfg, ticketId);
+  await fs.mkdir(path.dirname(path.join(wt.path, file)), { recursive: true });
+  await fs.writeFile(path.join(wt.path, file), content);
+  await commitAll(wt, `${ticketId} did the work`);
+  return wt;
+}
+
+test('the work a ticket waited for is merged in, and is then on disk to build on', async () => {
+  const cfg = await scratchRepo();
+  try {
+    await offeredWork(cfg, 't1', 'project/first.py', 'what t1 wrote\n');
+    await offeredWork(cfg, 't2', 'project/second.py', 'what t2 wrote\n');
+    const wt = await create(cfg, 't3');
+
+    const result = await refresh(cfg, 't3', ['wb/t1', 'wb/t2']);
+
+    assert.equal(result.kind, 'merged');
+    // Both of them: two dependencies offered at once is the ordinary case, and a
+    // ticket that got only the first would be built on half of what it waited for.
+    assert.equal(
+      await fs.readFile(path.join(wt.path, 'project', 'first.py'), 'utf8'),
+      'what t1 wrote\n',
+    );
+    assert.equal(
+      await fs.readFile(path.join(wt.path, 'project', 'second.py'), 'utf8'),
+      'what t2 wrote\n',
+    );
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('work that already landed in the base is not merged a second time', async () => {
+  const cfg = await scratchRepo();
+  try {
+    // t1 offered, and then its pull request was merged — so its branch is in the
+    // base, and a ticket cut afterwards already has everything it waited for.
+    await offeredWork(cfg, 't1', 'project/first.py', 'what t1 wrote\n');
+    await run('git', ['merge', '--no-edit', 'wb/t1'], { cwd: cfg.repoRoot });
+    await create(cfg, 't2');
+
+    assert.deepEqual(await refresh(cfg, 't2', ['wb/t1']), { kind: 'up-to-date' });
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a dependency that will not merge is named, and what merged before it stands', async () => {
+  const cfg = await scratchRepo();
+  try {
+    await offeredWork(cfg, 't1', 'project/shared.py', 'what t1 wrote\n');
+    await offeredWork(cfg, 't2', 'project/shared.py', 'what t2 wrote, differently\n');
+    const wt = await create(cfg, 't3');
+    const before = await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
+
+    const result = await refresh(cfg, 't3', ['wb/t1', 'wb/t2']);
+
+    assert.equal(result.kind, 'conflicted');
+    assert.equal(result.kind === 'conflicted' ? result.with : '', 'wb/t2');
+    assert.deepEqual(result.kind === 'conflicted' ? result.paths : [], ['project/shared.py']);
+
+    // t1 merged cleanly first and is left where it is: the ticket is as far along
+    // as it got, and throwing that away would be work redone for nothing.
+    assert.equal(
+      await fs.readFile(path.join(wt.path, 'project', 'shared.py'), 'utf8'),
+      'what t1 wrote\n',
+      'no conflict markers, and t1 still merged',
+    );
+    const after = await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
+    assert.notEqual(after.stdout, before.stdout, 'the first merge is a commit on the branch');
+    await assert.rejects(
+      run('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: wt.path }),
+      'and no merge is left in progress',
+    );
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a dependency with no branch of its own is nothing to merge', async () => {
+  const cfg = await scratchRepo();
+  try {
+    await create(cfg, 't2');
+
+    // Released by being cancelled before it ever cut a branch. Asking git to merge
+    // a ref that is not there would read as a conflict, which it is not.
+    assert.deepEqual(await refresh(cfg, 't2', ['wb/t1']), { kind: 'up-to-date' });
   } finally {
     await cleanUp(cfg);
   }
