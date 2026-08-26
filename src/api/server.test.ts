@@ -17,9 +17,10 @@ import { CONFIG_FILE, loadConfig } from '../config.ts';
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
  * own agents copied in, and a skill of the project's own.
  *
- * The skill is written here rather than copied from the workbench, which ships none —
- * how a repository writes Python is that repository's to say. Copying them was what
- * tied these tests to this directory being the workbench's own.
+ * The skill is written here rather than copied from the workbench, whose one shipped
+ * skill is about naming a ticket — how a repository writes Python is that repository's
+ * to say. Copying them was what tied these tests to this directory being the
+ * workbench's own.
  */
 function scratchConfig() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-api-'));

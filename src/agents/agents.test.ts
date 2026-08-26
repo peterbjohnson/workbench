@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { forScale, loadAgent, loadAgents, loadSkills, STAGES } from './load.ts';
+import { forScale, loadAgent, loadAgents, loadSkills, parseSkill, STAGES } from './load.ts';
 import { buildBrief, whatHappenedTo } from './brief.ts';
 import { deriveTicket } from '../domain/ticket.ts';
+import { PACKAGE_ROOT } from '../config.ts';
 import type { Event, EventBody } from '../domain/events.ts';
 
 const AGENTS_DIR = fileURLToPath(new URL('../../agents', import.meta.url));
@@ -15,9 +16,9 @@ const agents = loadAgents([AGENTS_DIR]);
 
 /**
  * A plugin of the shape a project's `.workbench/` holds: a manifest naming it, and a
- * skill under it. Built here rather than read from the workbench's own directory,
- * because the workbench ships no skills — how a repository writes Python is that
- * repository's to say, not something a tool can bring with it.
+ * skill under it. Built here rather than read from the workbench's own directory: the
+ * one skill that ships is about naming a ticket, and how a repository writes Python is
+ * that repository's to say, not something a tool can bring with it.
  */
 function scratchPlugin(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-plugin-'));
@@ -98,6 +99,16 @@ test('every stage can ask the manager a question', () => {
   }
 });
 
+test('the shipped skill loads and validates', () => {
+  // Broken frontmatter here surfaces in every home `wb init` has written, at the start
+  // of every stage run, rather than in this suite.
+  const description = parseSkill(
+    fs.readFileSync(path.join(PACKAGE_ROOT, 'skills', 'naming-a-ticket', 'SKILL.md'), 'utf8'),
+    'naming-a-ticket',
+  );
+  assert.ok(description.length > 20, 'naming-a-ticket needs a description worth deciding on');
+});
+
 test("a project's skills load, qualified by the plugin that carries them", () => {
   assert.ok(skills.length > 0, 'the fixture has skills, or none of this matters');
   for (const { name, description } of skills) {
@@ -107,8 +118,8 @@ test("a project's skills load, qualified by the plugin that carries them", () =>
 });
 
 test('a project that has declared no skills is not a broken one', () => {
-  // The workbench itself is now such a project, and so is every repository the moment
-  // `wb init` finishes. Reading the manifest first made an empty `skills/` a crash.
+  // A home written before `wb init` copied the shipped skill in, or one whose skills
+  // have all been deleted. Reading the manifest first made an empty `skills/` a crash.
   const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-bare-'));
   assert.deepEqual(loadSkills(bare), []);
   fs.rmSync(bare, { recursive: true, force: true });

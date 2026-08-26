@@ -303,7 +303,7 @@ async function init(where: string | undefined): Promise<number> {
   write('.gitignore', ['data/', '.worktrees/', '.env', '.env.*', ''].join('\n'));
 
   // Skills reach an agent as a local plugin, and a plugin is its manifest. Written
-  // now, empty of skills, so the first one anyone adds simply works.
+  // before any skill is, so both what ships and the first one anyone adds work.
   write(
     '.claude-plugin/plugin.json',
     `${JSON.stringify(
