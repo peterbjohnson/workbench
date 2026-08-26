@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { HookInput, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import { createChatRunner, type ChatReply, type ChatRunnerDeps } from './chat.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
@@ -100,6 +100,37 @@ function chatting(scripts: Script[]): {
       }),
   };
 }
+
+test('the chat reads only where it was pointed', async () => {
+  // `Read` is granted, and a granted tool is auto-approved before `canUseTool` is
+  // ever consulted, so the hook is the only thing between a chat and the rest of
+  // this machine — and whatever it read would come back in the reply, which is
+  // appended to the ticket and kept. It matters most on a ticket that has not
+  // started, where there is no worktree yet and the chat is reading the repository.
+  const chat = chatting([{ text: 'had a look' }]);
+  await chat.say();
+
+  const hook = chat.calls[0]?.options.hooks?.PreToolUse?.[0]?.hooks?.[0];
+  assert.ok(hook, 'every turn watches its tool calls');
+
+  const reading = (file_path: string) =>
+    hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path } } as HookInput,
+      undefined,
+      { signal: new AbortController().signal },
+    ) as Promise<{
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    }>;
+
+  assert.deepEqual(await reading('src/run/chat.ts'), {}, 'where it is reading is its business');
+
+  const refused = await reading('~/.aws/credentials');
+  assert.equal(refused.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(
+    refused.hookSpecificOutput?.permissionDecisionReason ?? '',
+    /outside this ticket's workspace/,
+  );
+});
 
 test('a turn that could not pick its session up starts the conversation again', async () => {
   // The session lives in ~/.claude/projects under the path it was started from, so

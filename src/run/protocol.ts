@@ -1,3 +1,4 @@
+import { PROPOSAL_BLOCK } from '../domain/board.ts';
 import type { Proposal, Scale, Stage } from '../domain/events.ts';
 
 /**
@@ -105,13 +106,6 @@ export function readStep(text: string): number | undefined {
 }
 
 /**
- * Where a proposal is written: a fenced block of JSON, tagged `wb-propose`. JSON
- * rather than a marker line like every other reader here, because a proposed ticket
- * description is a paragraph and a marker line is a line.
- */
-const PROPOSAL = /^```wb-propose[^\n]*\n([\s\S]*?)^```/gm;
-
-/**
  * What the chat agent offered to do to the ticket, as blocks at the end of a reply.
  * Zero or more: a conversation that only answers a question proposes nothing, which
  * is the ordinary case.
@@ -121,7 +115,7 @@ const PROPOSAL = /^```wb-propose[^\n]*\n([\s\S]*?)^```/gm;
  * a chat is not a stage: there is no verdict to fall back to and nothing to send back.
  */
 export function readProposals(text: string): Proposal[] {
-  return [...text.matchAll(PROPOSAL)].flatMap((block) => {
+  return [...text.matchAll(PROPOSAL_BLOCK)].flatMap((block) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(block[1] ?? '');
@@ -131,15 +125,6 @@ export function readProposals(text: string): Proposal[] {
     const proposal = asProposal(parsed);
     return proposal === undefined ? [] : [proposal];
   });
-}
-
-/**
- * What the agent said, without the blocks. The pane draws those as buttons, and the
- * JSON that made them is the same thing said twice — once for the manager and once
- * for the workbench, and only one of the two is worth reading.
- */
-export function withoutProposals(text: string): string {
-  return text.replace(PROPOSAL, '').trim();
 }
 
 function asProposal(value: unknown): Proposal | undefined {

@@ -267,6 +267,27 @@ export function chatTurns(events: readonly Event[]): Chat {
 }
 
 /**
+ * Where a proposal is written: a fenced block of JSON, tagged `wb-propose`. JSON
+ * rather than a marker line like everything else a stage announces, because a
+ * proposed ticket description is a paragraph and a marker line is a line.
+ *
+ * Here rather than beside the reader in `run/protocol.ts` because the pane needs
+ * it, and the board may not import anything from `run/`: those files talk to the
+ * SDK and to this machine, and the browser bundle would carry the first one that
+ * grew a `node:` import.
+ */
+export const PROPOSAL_BLOCK = /^```wb-propose[^\n]*\n([\s\S]*?)^```/gm;
+
+/**
+ * What the agent said, without the blocks. The pane draws those as buttons, and the
+ * JSON that made them is the same thing said twice — once for the manager and once
+ * for the workbench, and only one of the two is worth reading.
+ */
+export function withoutProposals(text: string): string {
+  return text.replace(PROPOSAL_BLOCK, '').trim();
+}
+
+/**
  * The proposals made on this ticket, in the order they were made — so the `at` a
  * pane sends back names the same one the server acts on. One list, read the same
  * way at both ends, rather than a position that means something different here.

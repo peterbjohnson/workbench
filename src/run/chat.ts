@@ -1,10 +1,16 @@
-import { query, type Options, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type HookCallback,
+  type Options,
+  type PermissionResult,
+} from '@anthropic-ai/claude-agent-sdk';
 
 import type { Event, Proposal } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import { runs, statusOf } from '../domain/board.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
 import { wbServer } from '../tools/server.ts';
+import { guard, type GuardContext } from './guard.ts';
 import { readProposals } from './protocol.ts';
 
 /**
@@ -56,9 +62,10 @@ export type ChatRunnerDeps = {
 };
 
 /**
- * The chat agent, as a runner. It reads and it talks; it has no tool that writes and
- * no guard hook, because there is nothing for a guard to stop — the wall is the tool
- * grant, and anything the grant did not name is denied outright.
+ * The chat agent, as a runner. It reads and it talks: the tool grant says what it may
+ * do at all, and the same guard every stage runs under says where — a read is confined
+ * to where the chat is reading like any other tool call, which for a ticket that has
+ * not started is the repository itself.
  *
  * What it costs is reported and recorded on the turn, and never added to the ticket's
  * own spend: talking about a ticket must not be able to push it past `maxTicketUsd`
@@ -117,6 +124,19 @@ export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
         ),
         strictMcpConfig: true,
         env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                toolHook({
+                  worktree: cwd,
+                  allowedTools: agent.allowedTools,
+                  protectedPaths: deps.protectedPaths,
+                }),
+              ],
+            },
+          ],
+        },
         canUseTool: async (toolName): Promise<PermissionResult> => ({
           behavior: 'deny',
           message: `${toolName} is not available to the chat`,
@@ -159,6 +179,32 @@ export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
         ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
       };
     }
+  };
+}
+
+/**
+ * Where the chat may read, decided before every tool call. A hook rather than
+ * `canUseTool` for the reason the stages use one: a tool named in `allowedTools` is
+ * auto-approved before that callback is ever consulted, so `Read` would otherwise
+ * reach anywhere on the machine — and whatever it read would come back in a reply
+ * the workbench stores on the ticket.
+ *
+ * Nothing is recorded, unlike a stage's: a chat has no run to record against, and
+ * the manager is sitting in front of the refusal as it happens.
+ */
+function toolHook(ctx: GuardContext): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return {};
+
+    const verdict = guard(ctx, input.tool_name, input.tool_input);
+    if (verdict.allow) return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse' as const,
+        permissionDecision: 'deny' as const,
+        permissionDecisionReason: verdict.reason,
+      },
+    };
   };
 }
 

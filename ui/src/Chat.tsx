@@ -1,8 +1,7 @@
 import { useState } from 'react';
 
-import { chatTurns, type Offered } from '../../src/domain/board.ts';
+import { chatTurns, withoutProposals, type Offered } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
-import { withoutProposals } from '../../src/run/protocol.ts';
 import { wb } from './wb.ts';
 
 /**

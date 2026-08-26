@@ -25,17 +25,6 @@ export type Refreshed =
   | { kind: 'conflicted'; base: string; paths: string[] };
 
 /**
- * Everything else in the system is derived from this list.
- * Events are appended and never updated or deleted.
- *
- * `runId` means one thing wherever it appears: the stage run this belongs to, as
- * the orchestrator made it for `stage_started`. Grouping by it gives you a stage.
- * The runners are told theirs rather than inventing one — they used to put a
- * per-message id here, which meant a run's own events all claimed to be different
- * runs. The one exception is deliberate and reads as itself: a `stage_finished`
- * written by `reconcile` says `interrupted`, because no run is answering it.
- */
-/**
  * Something the chat agent thinks should be done to the ticket, offered for the
  * manager to accept with a click. Never one of its own powers: every proposal is
  * an action the manager already had, so accepting one appends exactly the event
@@ -57,6 +46,17 @@ export type Proposal = {
   text?: string;
 };
 
+/**
+ * Everything else in the system is derived from this list.
+ * Events are appended and never updated or deleted.
+ *
+ * `runId` means one thing wherever it appears: the stage run this belongs to, as
+ * the orchestrator made it for `stage_started`. Grouping by it gives you a stage.
+ * The runners are told theirs rather than inventing one — they used to put a
+ * per-message id here, which meant a run's own events all claimed to be different
+ * runs. The one exception is deliberate and reads as itself: a `stage_finished`
+ * written by `reconcile` says `interrupted`, because no run is answering it.
+ */
 export type EventBody =
   | {
       type: 'ticket_created';

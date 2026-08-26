@@ -17,6 +17,7 @@ import {
   suggestion,
   toneOf,
   waitingForSlot,
+  withoutProposals,
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
@@ -462,6 +463,29 @@ test('the chat has no session until the agent has said something', () => {
     ),
   );
   assert.equal(later.session, 's2');
+});
+
+test('what the chat said is shown without the blocks that became buttons', () => {
+  // The manager reads this. A proposal is already on screen as the thing it offers
+  // to do, and the JSON that made it is the same offer written for the workbench.
+  const said = [
+    'Two things.',
+    '```wb-propose',
+    '{"action": "queue", "why": "it is ready"}',
+    '```',
+    'The second can wait.',
+    '```wb-propose',
+    '{"action": "edit", "why": "the title says nothing", "title": "Add a retry"}',
+    '```',
+  ].join('\n\n');
+
+  const shown = withoutProposals(said);
+  assert.match(shown, /^Two things\./);
+  assert.match(shown, /The second can wait\./);
+  assert.doesNotMatch(shown, /wb-propose|"action"/);
+
+  // A reply that proposed nothing is left exactly as it was written.
+  assert.equal(withoutProposals('  I would leave it as it is.  '), 'I would leave it as it is.');
 });
 
 test('proposals are numbered the same way at both ends', () => {
