@@ -347,6 +347,30 @@ test('a merge that cannot happen names the files and stops asking', () => {
   assert.deepEqual(started.conflicts, []);
 });
 
+test('the conflicting paths last no longer than the clash does', () => {
+  // A stage starting was once the only thing that cleared them, so a ticket that
+  // got past the clash any other way went on listing files it no longer disagreed
+  // about — a merged one included, where the panel offered to send it back.
+  const stuck = (): Journal => {
+    const j = offeredTicket();
+    j.add({ type: 'merge_requested' });
+    j.add({ type: 'blocked', reason: 'it conflicts', conflicts: ['src/api/server.ts'] });
+    return j;
+  };
+
+  const merged = stuck().add({ type: 'verdict', verdict: 'accepted' });
+  assert.deepEqual(merged.conflicts, [], 'the merge is what settled them');
+
+  const answered = stuck().add({ type: 'question_answered', answer: 'merged it by hand' });
+  assert.deepEqual(answered.conflicts, [], 'back to the wait, with the clash dealt with');
+
+  const restarted = stuck().add({ type: 'stage_restarted' });
+  assert.deepEqual(restarted.conflicts, []);
+
+  const refreshed = stuck().add({ type: 'refreshed', base: 'aaaa111', commit: 'bbbb222' });
+  assert.deepEqual(refreshed.conflicts, [], 'the base went in cleanly this time');
+});
+
 test('restarting a ticket whose pull request is open resumes the verdict, not the stages', () => {
   // t32: the poll failed while the work sat in a pull request, and the restart put
   // the ticket back into verify. It came round to `ready_for_pr` a second time and

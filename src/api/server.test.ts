@@ -319,6 +319,12 @@ test('offered work can be sent back, or kept and put right', async () => {
     assert.equal(fixing.prUrl, 'https://example/pr/1', 'still headed for the same pull request');
 
     await assert.rejects(() => wb.changes('t1', '  '), /say what to put right/);
+
+    // And not once it is over. This is what the conflicts box presses, and the
+    // paths outlive the clash by a moment: a merged ticket would go back to
+    // implement to resolve conflicts that the merge settled.
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    await assert.rejects(() => wb.changes('t1', 'one more thing'), /this ticket is over/);
   });
 });
 

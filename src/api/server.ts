@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
+import { ended } from '../domain/ticket.ts';
 import type { Config } from '../config.ts';
 import { listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
@@ -266,9 +267,16 @@ async function handle(
         case 'changes': {
           const changes = String(payload['changes'] ?? '').trim();
           if (changes === '') return send(res, 400, { error: 'say what to put right' });
+          const ticket = store.ticket(id);
+          // A ticket that has ended is not being worked on any more, and this is
+          // the one route that would start it again — pressed on a merged ticket,
+          // it would drop finished work back into implement.
+          if (ended(ticket)) {
+            return send(res, 400, { error: 'this ticket is over — there is nothing to put right' });
+          }
           // Nothing to put right before there is a plan, and no plan means the
           // stage this sends the ticket to has nothing to work from.
-          if (store.ticket(id).plan === null) {
+          if (ticket.plan === null) {
             return send(res, 400, { error: 'nothing has been planned yet — send it back instead' });
           }
           store.append(id, { type: 'changes_requested', changes });

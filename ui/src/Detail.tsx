@@ -126,8 +126,12 @@ export function Detail(props: {
 
       {/* Naming the files is half of it; the other half is the way out. Resolving
           them is implement's work, so the button is the ordinary "keep the work and
-          put this right" with the paths already written into it. */}
-      {t.conflicts.length > 0 && (
+          put this right" with the paths already written into it.
+
+          Only while the ticket is actually stuck on them: the paths are what one
+          attempt found, and offering to send a ticket back is only an offer worth
+          making where there is nothing else going on. */}
+      {t.status === 'blocked' && t.conflicts.length > 0 && (
         <div className="box">
           <h3>Conflicts with the base</h3>
           {t.conflicts.map((path) => (

@@ -125,7 +125,10 @@ export type Ticket = {
   /**
    * The files the base and this branch disagree about, as the last attempt to
    * bring the base in found them. Empty when there is no clash — which is the
-   * ordinary state, and what a stage starting puts it back to.
+   * ordinary state, and what anything that moves the ticket on puts it back to:
+   * a stage starting, a base merged in, the ticket carrying on from being stuck,
+   * or a verdict ending it. They are a fact about one attempt, not a property of
+   * the ticket, so nothing may go on listing them once that attempt is history.
    */
   conflicts: string[];
   /**
@@ -259,7 +262,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // that is already going.
     case 'stage_restarted': {
       if (t.status !== 'blocked') return t;
-      const resumed = { ...t, question: null, answer: null, session: null };
+      const resumed = { ...t, question: null, answer: null, session: null, conflicts: [] };
 
       // Unless an offer is standing, in which case there is no stage to put it back
       // into: the last one finished before the pull request was opened, and what
@@ -314,7 +317,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       return { ...t, question: { question: e.question, reasoning: e.reasoning } };
 
     case 'question_answered': {
-      const answered = { ...t, question: null, running: false };
+      const answered = { ...t, question: null, running: false, conflicts: [] };
 
       // An offer standing means the stages are over: what stopped was the wait for
       // a verdict, and there is no stage to put the ticket back into. t61 paid for
@@ -352,6 +355,9 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         ...t,
         base: t.continues === null ? e.base : t.base,
         commits: [...t.commits, e.commit],
+        // The base went in, and it went in cleanly. Whatever the branch last
+        // clashed with is settled by that.
+        conflicts: [],
       };
 
     case 'stage_finished': {
@@ -425,21 +431,26 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     case 'gave_up':
       return { ...t, status: 'gave_up', running: false, question: null };
 
+    case 'merge_requested':
+      return { ...t, mergeRequested: true };
+
     // A rejection ends the offer as well as the round: the reworked ticket is
     // offered again, on the same branch and so on the same pull request — which is
     // why `prUrl` stays. It is `offered` that ends, so the ticket can be shipped
     // and its stages restarted while it is being put right.
-    case 'merge_requested':
-      return { ...t, mergeRequested: true };
-
+    //
+    // Either way the wait is over, so a clash found during it stops being news: a
+    // merged ticket that still listed conflicting paths would be offering to send
+    // finished work back to resolve them.
     case 'verdict':
       return e.verdict === 'accepted'
-        ? { ...t, status: 'done', offered: false, mergeRequested: false }
+        ? { ...t, status: 'done', offered: false, mergeRequested: false, conflicts: [] }
         : {
             ...t,
             status: 'planning',
             offered: false,
             mergeRequested: false,
+            conflicts: [],
             rejection: e.reason ?? null,
           };
   }
