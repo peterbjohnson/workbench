@@ -510,7 +510,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * is a decision — ship it, put it right, or stop it — rather than a stage.
    */
   async function refresh(ticket: Ticket, worktree: string): Promise<boolean> {
-    const result = await deps.workspace.refresh(ticket.id, awaitedBranches(ticket));
+    const took = awaitedBranches(ticket);
+    const result = await deps.workspace.refresh(ticket.id, took);
     if (result.kind === 'up-to-date') return true;
 
     if (result.kind === 'conflicted') {
@@ -523,7 +524,15 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       return false;
     }
 
-    store.append(ticket.id, { type: 'refreshed', base: result.base, commit: result.commit });
+    // What came in with the base is recorded along with it, because a branch
+    // standing on work the base has not got cannot be measured from the base: see
+    // `refreshed` in events.ts.
+    store.append(ticket.id, {
+      type: 'refreshed',
+      base: result.base,
+      commit: result.commit,
+      took,
+    });
 
     const failed = (await deps.checks(worktree)).filter((r) => !r.ok);
     if (failed.length === 0) return true;
@@ -640,7 +649,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     // `base...HEAD`, so leaving the base behind the dependencies hands every stage —
     // and then the reviewer — their work as though this ticket had written it. The
     // failure `refreshed` moves the base to prevent, arriving by the other door.
-    store.append(ticket.id, { type: 'refreshed', base: result.commit, commit: result.commit });
+    store.append(ticket.id, {
+      type: 'refreshed',
+      base: result.commit,
+      commit: result.commit,
+      took: branches,
+    });
   }
 
   /** Guards against a rule that keeps finding work forever. */

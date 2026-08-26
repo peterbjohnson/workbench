@@ -616,6 +616,44 @@ test('a ticket let go by a pull request is branched onto that work, not without 
   }
 });
 
+test('a branch standing on work it waited for keeps its base as the base moves on', async () => {
+  // Two merges: the one that takes t1's work as t2's branch is cut, and one at the
+  // pull request, by when the base had moved on again.
+  const merges: string[] = [];
+  const h = harness({
+    refresh: (id) => {
+      merges.push(id);
+      return merges.length === 1
+        ? { kind: 'merged', base: 'abc1234', commit: 'merge01' }
+        : { kind: 'merged', base: 'newbase', commit: 'merge02' };
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    waiting(h.store, 't2', ['t1']);
+
+    await h.orch.idle();
+    h.store.append('t2', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      h.refreshed.map((r) => r.id),
+      ['t2', 't2'],
+      'refreshed as it was cut, and again to be offered',
+    );
+
+    // t1 is still offered, so its work is in t2's branch and in no commit the base
+    // has. Measuring from newbase would hand review, verify and then the reviewer
+    // the whole of t1's change as t2's own — the failure the merge exists to stop,
+    // arriving one refresh later.
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.base, 'merge01', 'the base stands where the merge that took t1 put it');
+    assert.equal(t2.commits.at(-1), 'merge02', 'the new base is in the branch all the same');
+  } finally {
+    await h.close();
+  }
+});
+
 test('dependencies that will not sit in one tree stop the ticket before it starts', async () => {
   const h = harness({
     refresh: () => ({

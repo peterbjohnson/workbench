@@ -170,8 +170,13 @@ export type EventBody =
    *
    * Only written when something actually merged. A branch that already had the
    * base is the ordinary case and says nothing.
+   *
+   * `took` is the offered work this ticket waited for that came in with the base —
+   * `awaitedWork`'s branches. Recorded because it decides where the base may move
+   * to: that work is in no commit of the base, so measuring from one would show
+   * the dependency's whole change as this ticket's.
    */
-  | { type: 'refreshed'; base: string; commit: string }
+  | { type: 'refreshed'; base: string; commit: string; took?: string[] }
   | { type: 'plan_approved' }
   /**
    * The manager says the approach is wrong: back to planning, and the reason is

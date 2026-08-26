@@ -330,12 +330,23 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Except for a ticket carrying on from another: its base is that ticket's
     // branch, and moving it to the base proper is the same mistake the other way
     // round — the earlier ticket's work would read as this one's.
-    case 'refreshed':
+    //
+    // And except while the branch is standing on work it waited for, which is
+    // offered and so is in no commit of the base: moving there would hand every
+    // stage the dependency's change as this ticket's. The merge that took that work
+    // is what the ticket is measured from instead — and it can be, but only while
+    // the branch has nothing of its own on it. Where the branch is cut that merge is
+    // the base plus the dependencies and nothing else, which is the commit this
+    // ticket needs and the only one anywhere that is; after any stage has committed
+    // there is no such commit, and the base stands where that merge put it.
+    case 'refreshed': {
+      const held = t.continues !== null || ((e.took ?? []).length > 0 && t.commits.length > 0);
       return {
         ...t,
-        base: t.continues === null ? e.base : t.base,
+        base: held ? t.base : e.base,
         commits: [...t.commits, e.commit],
       };
+    }
 
     case 'stage_finished': {
       // The spend counts whatever the outcome: a failed run still cost money, and
