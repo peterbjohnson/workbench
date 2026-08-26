@@ -954,6 +954,8 @@ function detail(e: Event): string {
       return e.branch;
     case 'refreshed':
       return `merged the base at ${e.base.slice(0, 8)}`;
+    case 'conflicted':
+      return `the base at ${e.base.slice(0, 8)} conflicts: ${e.paths.join(', ')}`;
     default:
       return '';
   }
