@@ -68,10 +68,11 @@ export function TicketForm(props: {
    * someone spends on the rest of the form — including one that came back with a
    * suggestion that was then dismissed, and the suggestion itself once taken.
    *
-   * The name a ticket already has starts in it: opening the form to rewrite the
+   * The name a ticket already has starts in it, as the box holds it — with the
+   * prefix taken off — as well as whole: opening the form to rewrite the
    * instructions is not someone asking what the ticket should be called.
    */
-  const asked = useRef(new Set<string>([(props.title ?? '').trim()]));
+  const asked = useRef(new Set<string>([written.rest.trim(), (props.title ?? '').trim()]));
   // Sent as context, but never what starts a question: typing the instructions
   // would otherwise keep pushing the one about the title further away.
   const bodyNow = useRef(body);
