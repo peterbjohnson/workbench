@@ -22,6 +22,8 @@ export type Action =
   | { kind: 'run_stage'; stage: Stage }
   | { kind: 'open_pr' }
   | { kind: 'poll_verdict' }
+  /** The manager asked for the merge here rather than on the code host. */
+  | { kind: 'merge_pr' }
   /** Stop the ticket: it has gone round too many times, or cost too much. */
   | { kind: 'give_up'; reason: string }
   /** Stop and ask the manager to decide. The work stands; the agents cannot agree. */
@@ -144,7 +146,8 @@ export function nextAction(t: Ticket, running: number, p: Policy, held = false):
       return { kind: 'wait' };
 
     case 'awaiting_verdict':
-      return { kind: 'poll_verdict' };
+      // A merge asked for is an answer already given, so there is nothing to poll for.
+      return t.mergeRequested ? { kind: 'merge_pr' } : { kind: 'poll_verdict' };
 
     case 'ready_for_pr':
       return { kind: 'open_pr' };

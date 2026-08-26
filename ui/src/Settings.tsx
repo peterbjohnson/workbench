@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import type { Setting } from '../../src/api/settings.ts';
+import { applyBrand, isColour } from './brand.ts';
 import { wb } from './wb.ts';
 
 /**
@@ -28,6 +29,17 @@ export function Settings({ onSaved }: { onSaved: () => void }) {
       live = false;
     };
   }, []);
+
+  // The header takes the colour as the picker moves, so it is seen where it will be
+  // rather than in a swatch beside a bar that is still the old one. Leaving with an
+  // unsaved draft puts the saved colour back: nothing was saved, so nothing changed.
+  const colour = settings?.find((s) => s.key === 'colour');
+  const showing = colour === undefined ? null : (drafts[colour.key] ?? show(colour));
+  useEffect(() => {
+    if (colour === undefined || showing === null) return;
+    applyBrand(isColour(showing) ? showing : null);
+    return () => applyBrand(isColour(colour.value) ? colour.value : null);
+  }, [colour, showing]);
 
   if (settings === null) return <div className="empty">{error ?? 'Reading…'}</div>;
 
@@ -130,6 +142,26 @@ function Field(props: { setting: Setting; value: string; onChange: (value: strin
           <option key={choice}>{choice}</option>
         ))}
       </select>
+    );
+  }
+
+  // The machine's own colour picker, because "any colour" is what was asked for and
+  // a list of six would not be it. The hex beside it is what was chosen, and "None"
+  // is the way back out — a picker has no empty position to return the bar to.
+  if (setting.type === 'colour') {
+    return (
+      <span className="swatch">
+        <input
+          id={id}
+          type="color"
+          value={isColour(value) ? value : '#808080'}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+        <span className="mono">{value || 'none'}</span>
+        <button type="button" disabled={value === ''} onClick={() => props.onChange('')}>
+          None
+        </button>
+      </span>
     );
   }
 

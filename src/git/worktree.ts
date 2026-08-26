@@ -16,7 +16,8 @@ const run = promisify(execFile);
 export function gitWorkspace(cfg: GitConfig): Workspace {
   return {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
-    refresh: (ticketId, alsoMerge) => refresh(cfg, ticketId, alsoMerge),
+    refresh: (ticketId, alsoMerge, keepConflict) => refresh(cfg, ticketId, alsoMerge, keepConflict),
+    unresolved: (ticketId, paths) => unresolved(cfg, ticketId, paths),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
   };
@@ -179,7 +180,15 @@ export async function remove(cfg: GitConfig, ticketId: string): Promise<void> {
 export async function commitAll(wt: Worktree, message: string): Promise<string | null> {
   await git(wt.path, 'add', '-A');
   const staged = await git(wt.path, 'diff', '--cached', '--name-only');
-  if (staged.trim() === '') return null;
+  // A merge handed to a stage is concluded even when it staged nothing, which happens
+  // whenever the resolution came out as our side and the base's only change was in the
+  // conflicted file. Returning null there would leave `MERGE_HEAD` set and the base
+  // uncommitted, and the ticket would carry on believing it had taken it in.
+  const merging = await git(wt.path, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD').then(
+    (out) => out.trim() !== '',
+    () => false,
+  );
+  if (staged.trim() === '' && !merging) return null;
   await git(wt.path, 'commit', '-m', message);
   return (await git(wt.path, 'rev-parse', 'HEAD')).trim();
 }
@@ -361,8 +370,39 @@ export async function refresh(
    * on the ticket's own branch.
    */
   alsoMerge: readonly string[] = [],
+  /**
+   * Leave a conflicted merge where it is rather than undoing it, so the stage
+   * about to run can finish it. Off by default, because at ship time there is
+   * nobody left to resolve it and an untouched branch is the kinder answer.
+   */
+  keepConflict = false,
 ): Promise<Refreshed> {
   const wt = worktreeFor(cfg, ticketId);
+
+  // A merge already going, left by a run that was handed one and stopped before it
+  // finished — it asked a question, or ran out of turns. `git merge` on top of that
+  // fails, and the failure reads exactly like a merge that could not start, so it
+  // used to be tidied away with `merge --abort`: the resolution and every
+  // uncommitted edit of that run gone, and nothing recorded to say so. The same
+  // merge is handed over again instead, and it is that merge the caller is told
+  // about — the base it is against, not the one it would have started today.
+  const merging = (
+    await git(wt.path, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD').catch(() => '')
+  ).trim();
+  if (merging !== '') {
+    return {
+      kind: 'conflicted',
+      base: merging,
+      paths: await unmergedPaths(wt),
+      merging: true,
+      // Nothing was brought in this time round: the merge on disk is the one that
+      // stopped, and the branch is standing where the run that was handed it left it.
+      with: merging,
+      merged: [],
+      commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim(),
+    };
+  }
+
   const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
 
   const wanted: string[] = [];
@@ -388,18 +428,31 @@ export async function refresh(
     try {
       await git(wt.path, 'merge', '--no-edit', ref);
     } catch {
-      // Read the conflicting paths before aborting: the abort is what removes them.
-      const paths = await git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
-        (out) => out.split('\n').filter((line) => line !== ''),
-        () => [],
-      );
-      await git(wt.path, 'merge', '--abort').catch(() => {});
-      await hideProtectedPaths(cfg, wt);
-      // The HEAD after the abort, which is the one the earlier merges left. Read
-      // here rather than assumed: what the caller records against the branch has to
-      // be a commit the branch is actually standing on.
+      // Read the conflicting paths before anything is undone: an abort is what
+      // removes them.
+      const paths = await unmergedPaths(wt);
+      // Nothing unmerged means the merge failed rather than conflicted — an index
+      // that was busy, a checkout that could not be written. There is nothing for a
+      // stage to resolve, so it is undone whatever the caller asked for.
+      let kept = keepConflict && paths.length > 0;
+      if (!kept) await git(wt.path, 'merge', '--abort').catch(() => {});
+      // Hiding the protected paths rewrites the index, which is the one thing git may
+      // refuse to do while the index is unmerged. Neither the workbench's own source on
+      // disk nor a throw is an acceptable answer: a throw here parks the ticket around a
+      // `MERGE_HEAD` that no stage can abort any more. So the merge goes instead.
+      try {
+        await hideProtectedPaths(cfg, wt);
+      } catch (error) {
+        if (!kept) throw error;
+        await git(wt.path, 'merge', '--abort').catch(() => {});
+        await hideProtectedPaths(cfg, wt);
+        kept = false;
+      }
+      // The HEAD the earlier merges left, which a merge kept on disk has not moved
+      // either. Read here rather than assumed: what the caller records against the
+      // branch has to be a commit the branch is actually standing on.
       const commit = (await git(wt.path, 'rev-parse', 'HEAD')).trim();
-      return { kind: 'conflicted', base, paths, with: ref, merged, commit };
+      return { kind: 'conflicted', base, paths, with: ref, merged, commit, merging: kept };
     }
     merged.push(ref);
   }
@@ -414,4 +467,46 @@ export async function refresh(
     commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim(),
     merged,
   };
+}
+
+/** The paths a merge left with both sides in them, waiting on someone to decide. */
+async function unmergedPaths(wt: Worktree): Promise<string[]> {
+  return git(wt.path, 'diff', '--name-only', '--diff-filter=U').then(
+    (out) => out.split('\n').filter((line) => line !== ''),
+    () => [],
+  );
+}
+
+/**
+ * Of the paths a stage was handed to resolve, the ones it did not: still unmerged
+ * in the index, or still holding the markers git wrote into them.
+ *
+ * Both halves are needed. A stage that edits a file without staging it leaves the
+ * index unmerged; one that stages the file with the markers still in it leaves the
+ * index clean and the work unusable. Scoped to the paths that were handed over, so
+ * a marker that a test fixture has always contained cannot fail a stage.
+ */
+export async function unresolved(
+  cfg: GitConfig,
+  ticketId: string,
+  paths: readonly string[],
+): Promise<string[]> {
+  const wt = worktreeFor(cfg, ticketId);
+  const unmerged = new Set(await unmergedPaths(wt));
+
+  const left: string[] = [];
+  for (const p of paths) {
+    if (unmerged.has(p) || (await hasMarkers(path.join(wt.path, p)))) left.push(p);
+  }
+  return left;
+}
+
+/**
+ * Written as counts rather than as the markers themselves: a source file holding
+ * one would be a file git could not merge, and this one is merged like any other.
+ * A path that cannot be read was resolved by deleting it, which is a resolution.
+ */
+async function hasMarkers(file: string): Promise<boolean> {
+  const text = await fs.readFile(file, 'utf8').catch(() => '');
+  return /^<{7} /m.test(text) || /^>{7} /m.test(text);
 }
