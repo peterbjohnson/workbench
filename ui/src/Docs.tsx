@@ -117,6 +117,12 @@ export function Docs(props: {
     wb.deleteDoc(kind, doc.name)
       .then((gone) => {
         props.onDeleted?.(gone);
+        // Its draft goes with it. A skill made again under the same name is a new one,
+        // and keeping the text would open it dirty with the dead skill's words — and
+        // Save would write them over the starter.
+        const rest = { ...drafts };
+        delete rest[gone];
+        setDrafts(rest);
         setConfirming(false);
         setName(null);
         setError(null);

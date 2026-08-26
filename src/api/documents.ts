@@ -72,7 +72,10 @@ export function writeDoc(config: Config, kind: DocKind, name: string, text: stri
  * Agents are the four stages, which are fixed, so there is nothing here to make.
  */
 export function createDoc(config: Config, kind: DocKind, name: string, text?: string): Doc {
-  const dir = skillDirFor(config, kind, name);
+  onlySkills(kind);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    throw new Error(`"${name}" is not a skill name — lowercase letters, digits and dashes`);
+  }
   if (names(config, kind).includes(name))
     throw new Error(`there is already a skill called ${name}`);
 
@@ -80,6 +83,7 @@ export function createDoc(config: Config, kind: DocKind, name: string, text?: st
   describe(kind, name, body);
 
   ensurePluginManifest(config);
+  const dir = path.join(skillsDir(config), name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'SKILL.md'), body.endsWith('\n') ? body : `${body}\n`);
   return readDoc(config, kind, name);
@@ -88,32 +92,37 @@ export function createDoc(config: Config, kind: DocKind, name: string, text?: st
 /**
  * Gone, directory and all — a skill is its directory, so leaving the rest of it behind
  * would leave a half-skill on disk that nothing lists and nobody can edit.
+ *
+ * What may be removed is what is listed, not what `createDoc` would allow as a new name:
+ * a skill directory made by hand can be called `writing_python`, and one the board shows,
+ * saves and offers a Delete button for has to be one Delete removes. Being in the list is
+ * also what makes the join safe — the only names there are directories in `skills/` — so
+ * all that is left to check is a name that never came from the list at all.
  */
 export function deleteDoc(config: Config, kind: DocKind, name: string): void {
-  const dir = skillDirFor(config, kind, name);
+  onlySkills(kind);
+  if (/[/\\]/.test(name) || name === '.' || name === '..') {
+    throw new Error(`"${name}" is not a skill name — it is a path`);
+  }
   if (!names(config, kind).includes(name)) throw new Error(`no ${kind} called ${name}`);
-  fs.rmSync(dir, { recursive: true });
+  fs.rmSync(path.join(skillsDir(config), name), { recursive: true });
+}
+
+function onlySkills(kind: DocKind): void {
+  if (kind === 'agent')
+    throw new Error('the four stages are fixed — an agent is not yours to add or remove');
 }
 
 /**
- * Where a skill of that name would live. The name is checked against what a directory
- * may be called before it is joined to anything, so a name carrying a separator or `..`
- * is refused as a name rather than resolving to somewhere outside `skills/`.
+ * A first draft that loads: the name it answers to, and a description to replace. The
+ * name is quoted because a directory called `2024` or `null` is a name YAML would
+ * otherwise read as a number or nothing, and the skill would refuse to load as one
+ * calling itself something other than where it lives.
  */
-function skillDirFor(config: Config, kind: DocKind, name: string): string {
-  if (kind === 'agent')
-    throw new Error('the four stages are fixed — an agent is not yours to add or remove');
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-    throw new Error(`"${name}" is not a skill name — lowercase letters, digits and dashes`);
-  }
-  return path.join(skillsDir(config), name);
-}
-
-/** A first draft that loads: the name it answers to, and a description to replace. */
 function starter(name: string): string {
   return [
     '---',
-    `name: ${name}`,
+    `name: "${name}"`,
     `description: What ${name} covers, and when a stage should read it. Replace this — it is the whole trigger.`,
     '---',
     '',

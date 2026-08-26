@@ -537,6 +537,33 @@ test('a skill deleted from the board takes its whole directory with it', async (
   });
 });
 
+test('a skill directory the board would not have named that way is still removable', async () => {
+  await withApi(async (wb, _store, config) => {
+    const dir = path.join(config.home, 'skills', 'Writing_Python');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\ndescription: An older one.\n---\n\n# Old\n');
+
+    assert.deepEqual(
+      (await wb.docs('skill')).map((d) => d.name),
+      ['Writing_Python', 'writing-python'],
+      'listed and saveable, so what the Delete button offers has to be a deletion',
+    );
+    assert.equal(await wb.deleteDoc('skill', 'Writing_Python'), 'Writing_Python');
+    assert.equal(fs.existsSync(dir), false);
+  });
+});
+
+test('a skill whose name YAML would read as a number still loads as its own name', async () => {
+  await withApi(async (wb) => {
+    const made = await wb.createDoc('skill', '2024');
+    assert.equal(
+      parseSkill(made.text, '2024'),
+      made.about,
+      'unquoted, its frontmatter would call it the number 2024 and refuse to load',
+    );
+  });
+});
+
 test('adding and removing are refused for anything that is not a skill of its own', async () => {
   await withApi(async (wb, _store, config) => {
     const skills = path.join(config.home, 'skills');
