@@ -39,6 +39,15 @@ wb approve t1      # let implementation start
 wb show t1         # the plan, and everything that happened
 ```
 
+There is nothing to release and no version to track: `npm install` resolves the branch
+to a commit and writes it into your lock file, and `wb update` asks the same question
+again later. `wb serve` says at startup when something newer has been pushed, and never
+does anything about it — restarting is yours to time.
+
+```bash
+wb update          # fetch whatever has been pushed since; then restart wb serve
+```
+
 `wb --help` lists every command. Everything the command line does, the board does too —
 they are both clients of `wb serve`, which is the only process that touches the database
 or calls an agent.
