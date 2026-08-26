@@ -18,6 +18,7 @@ workbench — a board of tickets that agents work through
 
   wb init [dir]                start a workbench in a repository, in .workbench/
   wb auth                      whether the workbench can reach the model service
+  wb update                    fetch whatever has been pushed since this copy was installed
   wb serve                     run the workbench: the API and the orchestrator
   wb new <title> [body]        write a ticket down, in the backlog
   wb new --from <id> <title> [body]
@@ -42,8 +43,9 @@ workbench — a board of tickets that agents work through
   wb cancel <id> [why]         stop a ticket, including one that is running
   wb wip <n>                   how many tickets may run at once
 
-Every command except "serve" talks to a running workbench over HTTP, so the
-board and this command line can do exactly the same things.
+Every command except "init", "auth", "update" and "serve" talks to a running
+workbench over HTTP, so the board and this command line can do exactly the same
+things.
 
 "wb serve" calls real agents and spends real money.
 ```

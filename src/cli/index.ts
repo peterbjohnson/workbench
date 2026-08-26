@@ -12,6 +12,7 @@ import { startWorkbench } from '../workbench.ts';
 import { createClient, type Client } from '../api/client.ts';
 import { UI_DIST } from '../api/server.ts';
 import { nextFree, occupantOf } from '../api/port.ts';
+import { commitIn, compareUrl, install, installed, newest, short } from '../update.ts';
 import { writeConfigFile } from '../api/settings.ts';
 import { heldBy } from '../domain/rules.ts';
 import type { Ticket } from '../domain/ticket.ts';
@@ -74,6 +75,7 @@ async function main(argv: string[]): Promise<number> {
 
   const config = loadConfig(home);
   if (command === 'serve') return serve(config);
+  if (command === 'update') return update(config);
 
   const wb = createClient(`http://127.0.0.1:${config.port}`);
 
@@ -387,6 +389,83 @@ async function show(wb: Client, config: Config, id: string | undefined): Promise
 }
 
 /**
+ * Fetches whatever the project's dependency resolves to now.
+ *
+ * There is nothing to release: a project depends on the repository, npm writes down
+ * the commit it resolved that to, and that commit is the version. So this predicts
+ * nothing. It asks for the same dependency again and reads the lock file afterwards,
+ * which is the one account of what actually changed — and which works the same for a
+ * branch, a tag, a commit, or a semver range over tags, none of which this then has
+ * to know anything about.
+ *
+ * It does not restart the workbench. A running one is holding tickets mid-stage, and
+ * which moment to interrupt them is not this command's to pick.
+ */
+async function update(config: Config): Promise<number> {
+  const here = installed(config);
+  if (here === undefined) {
+    console.error(
+      'this workbench is not an installed copy, so there is nothing for npm to fetch.\n' +
+        'Running from a checkout? Then the checkout is what to update.',
+    );
+    return 1;
+  }
+
+  console.log(`asking npm for ${here.name}@${here.spec}...`);
+  try {
+    await install(config, here);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
+  const now = commitIn(config.repoRoot, here.key);
+  if (now === undefined) {
+    console.error(`installed, but the lock file no longer says what ${here.name} resolved to.`);
+    return 1;
+  }
+  if (now === here.commit) {
+    console.log(`already on the newest workbench (${short(now)}).`);
+    return 0;
+  }
+
+  console.log(`\n${short(here.commit)} → ${short(now)}`);
+  const changes = compareUrl(here.url, here.commit, now);
+  if (changes !== undefined) console.log(changes);
+  console.log('\nRestart "wb serve" to run it.');
+  return 0;
+}
+
+/**
+ * Whether something newer has been pushed, said once at startup and never acted on.
+ *
+ * The workbench is what the agents run under, and code that governs them arriving
+ * without anyone asking is the thing the whole design is against. So this only ever
+ * mentions it. Anything that goes wrong — offline, no such remote, taking too long,
+ * or a dependency whose ref cannot be worked out — means saying nothing: a workbench
+ * that will not start because it could not check for an update would be a worse tool
+ * than one that is out of date.
+ *
+ * A pinned dependency is therefore silent by construction rather than by rule. Nothing
+ * here knows what pinning is: it asks what the spec's own ref points at, and a tag
+ * points where it always did.
+ */
+async function updateWaiting(config: Config): Promise<string | undefined> {
+  const here = installed(config);
+  if (here === undefined) return undefined;
+  try {
+    const latest = await newest(here.url, here.spec);
+    if (latest === undefined || latest === here.commit) return undefined;
+    return (
+      `an update is waiting: ${short(here.commit)} → ${short(latest)}.\n` +
+      '    Run "wb update", then start again.'
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The port to serve on, having found out who is on the configured one.
  *
  * A workbench per repository is how this is meant to be run, and the only thing in
@@ -478,6 +557,9 @@ async function serve(config: Config): Promise<number> {
         '    not that anything passes. Set "checks" in workbench.config.json.\n',
     );
   }
+
+  const waiting = await updateWaiting(running);
+  if (waiting !== undefined) console.log(`⬆️  ${waiting}\n`);
 
   wb.store.subscribe((e) => console.log(`${e.ticketId}  ${e.type}${describe(e)}`));
   wb.orchestrator.start();
