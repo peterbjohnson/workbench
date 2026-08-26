@@ -673,6 +673,26 @@ test('the instance colour is kept in the config file, and clearing it takes the 
   });
 });
 
+test('the ticket prefixes are a list in the config file, and the default is taken back out', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    const prefixes = (all: Setting[]) => all.find((s) => s.key === 'ticketPrefixes');
+    assert.deepEqual(prefixes(await wb.settings())?.value, ['feature', 'fix', 'chore', 'docs']);
+
+    const after = await wb.setSettings({ ticketPrefixes: 'spike\n\n  refactor  ' });
+    assert.deepEqual(prefixes(after)?.value, ['spike', 'refactor']);
+    // The form reads it every time it opens, so saying "next start" would be a lie.
+    assert.equal(prefixes(after)?.restart, false);
+    assert.deepEqual(file()['ticketPrefixes'], ['spike', 'refactor']);
+
+    await wb.setSettings({ ticketPrefixes: 'feature\nfix\nchore\ndocs' });
+    assert.equal('ticketPrefixes' in file(), false);
+  });
+});
+
 test('something that is not a colour is refused, and nothing is written', async () => {
   await withApi(async (wb) => {
     const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;

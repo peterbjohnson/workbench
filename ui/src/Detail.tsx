@@ -26,10 +26,12 @@ export function Detail(props: {
   version: number;
   /** Every ticket on the board, which is where a suggestion's fate is written. */
   tickets: Ticket[];
+  /** What the form offers in front of a title, for when this one's is rewritten. */
+  prefixes: string[];
   onAct: (work: Promise<unknown>) => Promise<void>;
   onClose: () => void;
 }) {
-  const { id, version, tickets, onAct, onClose } = props;
+  const { id, version, tickets, prefixes, onAct, onClose } = props;
   const [state, setState] = useState<{ ticket: Ticket; events: Event[] } | null>(null);
   const [editing, setEditing] = useState(false);
   /**
@@ -188,6 +190,7 @@ export function Detail(props: {
           <TicketForm
             title={t.title}
             body={t.body}
+            prefixes={prefixes}
             submitLabel="Save"
             onCancel={() => setEditing(false)}
             // Title and body only. The gate was settled when the ticket was written,
@@ -951,6 +954,8 @@ function detail(e: Event): string {
       return e.branch;
     case 'refreshed':
       return `merged the base at ${e.base.slice(0, 8)}`;
+    case 'conflicted':
+      return `the base at ${e.base.slice(0, 8)} conflicts: ${e.paths.join(', ')}`;
     default:
       return '';
   }
