@@ -289,6 +289,37 @@ test('continuing an interrupted stage keeps its conversation', () => {
   assert.equal(j.add({ type: 'stage_continued' }).running, true, 'left alone while it runs');
 });
 
+test('a ticket blocked on a question is not one to carry on', () => {
+  // `blocked` is two states and this is the other one: nothing was interrupted,
+  // there is a question waiting for an answer. Carrying it on would clear the
+  // question and resume the agent into its own unanswered one, told nothing was
+  // wrong — the question, the box the manager types into, and the reply all lost.
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  j.add({
+    type: 'question_asked',
+    runId: 'r1',
+    question: 'which config is live?',
+    reasoning: 'two disagree',
+  });
+  const asked = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+    sessionId: 'sess-abc',
+  });
+  assert.equal(asked.status, 'blocked');
+  assert.equal(asked.interrupted, false, 'stopped by its own question, not by the workbench');
+
+  const unmoved = j.add({ type: 'stage_continued' });
+  assert.deepEqual(unmoved, asked, 'so the move leaves it exactly as it was');
+  assert.equal(unmoved.question?.question, 'which config is live?', 'still to be answered');
+  assert.equal(unmoved.status, 'blocked');
+  assert.equal(unmoved.session, 'sess-abc', 'and still there for the answer to resume');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'nothing runs it in the meantime');
+});
+
 test('restarting an interrupted stage still throws the conversation away', () => {
   const j = newTicket();
   stoppedMidStage(j, 'implement', 'sess-abc');

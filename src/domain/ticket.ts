@@ -289,15 +289,19 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     }
 
     // The same move, keeping the conversation: the stage picks up where it got to
-    // rather than paying for the whole thing again. Guarded exactly like the
-    // restart above, and reading `offered` for the same reason.
+    // rather than paying for the whole thing again. Guarded like the restart above
+    // and reading `offered` for the same reason, but on `interrupted` as well:
+    // `blocked` is two states, and only this one has a run to carry on. The other
+    // is holding a question, and carrying that on would clear it and resume the
+    // agent into its own unanswered question — the loss `movedOn` exists to
+    // prevent, reached through the other door.
     //
-    // `session` is what it does not clear, and there may be none — a run killed
-    // before the model service named its conversation leaves nothing to resume.
-    // That is not a reason to refuse: the stage simply starts from the top, which
-    // is what a restart would have done anyway.
+    // `interrupted` rather than a `session`, because there may be none — a run
+    // killed before the model service named its conversation leaves nothing to
+    // resume. That is not a reason to refuse: the stage simply starts from the
+    // top, which is what a restart would have done anyway.
     case 'stage_continued': {
-      if (t.status !== 'blocked') return t;
+      if (t.status !== 'blocked' || !t.interrupted) return t;
       const carrying = { ...t, question: null, answer: null, interrupted: false };
       if (t.offered) return { ...carrying, status: 'awaiting_verdict' };
       return t.stage === null ? t : { ...carrying, status: STATUS_FOR_STAGE[t.stage] };

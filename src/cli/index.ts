@@ -243,6 +243,16 @@ async function main(argv: string[]): Promise<number> {
 
     case 'continue': {
       if (!args[0]) return fail('which ticket?');
+      // Said here as well as by the server, so the person is told which of the two
+      // moves they wanted rather than watching this one quietly do nothing.
+      const { ticket: t } = await wb.ticket(args[0]);
+      if (!t.interrupted) {
+        return fail(
+          t.question
+            ? `${t.id} is waiting on an answer, not on being picked up — "wb answer ${t.id}" instead`
+            : `${t.id} was not stopped mid-stage — there is no run to carry on, so "wb restart ${t.id}"`,
+        );
+      }
       await wb.carryOn(args[0]);
       console.log(`${args[0]} carrying on from where it stopped`);
       return 0;
