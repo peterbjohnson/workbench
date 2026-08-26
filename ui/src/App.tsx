@@ -206,11 +206,7 @@ export function App() {
     <>
       <header>
         <h1>Workbench</h1>
-        {repo !== null && (
-          <span className="repo mono" title={repo}>
-            {folder(repo)}
-          </span>
-        )}
+        {repo !== null && <Repo dir={repo} />}
         <nav className="tabs">
           {TABS.map((name) => (
             <a
@@ -387,6 +383,45 @@ function Column(props: {
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * Which repository this board is working in. The badge has room for the last
+ * segment of the path and no more, and two checkouts of the same project end in
+ * the same segment — so the whole path is a press away, rather than a hover
+ * tooltip nobody knows is there.
+ */
+function Repo({ dir }: { dir: string }) {
+  const [open, setOpen] = useState(false);
+
+  // Escape closes it, the way it closes the list in Pick. Only while it is open:
+  // a listener on the document outlives the panel otherwise.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [open]);
+
+  return (
+    <span className="repo-at">
+      <button
+        type="button"
+        className="repo mono"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        {folder(dir)}
+      </button>
+      {open && (
+        <div className="repo-info">
+          <div>Workbench working folder:</div>
+          <div className="mono">{dir}</div>
+          <div className="quiet">This is the folder the workbench is working in.</div>
+        </div>
+      )}
+    </span>
   );
 }
 
