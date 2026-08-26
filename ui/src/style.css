@@ -161,13 +161,39 @@ header h1 {
 }
 
 /* Which repository this board is working in. Quiet, because it is the answer to a
-   question you only ask when more than one of these is open. */
+   question you only ask when more than one of these is open — but pressable,
+   because the whole path is behind it. */
+.repo-at {
+  position: relative;
+  display: inline-flex;
+}
+
 header .repo {
   color: var(--dim);
   font-size: 0.75rem;
   padding: 0.1rem 0.4rem;
   border: 1px solid var(--line);
   border-radius: 4px;
+  background: none;
+}
+
+header .repo:hover {
+  color: inherit;
+}
+
+.repo-info {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 0.2rem);
+  left: 0;
+  max-width: 26rem;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
 }
 
 header form {
