@@ -371,6 +371,30 @@ test('the conflicting paths last no longer than the clash does', () => {
   assert.deepEqual(refreshed.conflicts, [], 'the base went in cleanly this time');
 });
 
+test('merged work can be sent back to be tweaked, and buys a plan for the tweak', () => {
+  // Done was the end of the road: a ticket that merged and then wanted a small
+  // change had to be written out again as a new one, describing the old one first.
+  const j = offeredTicket();
+  const done = j.add({ type: 'verdict', verdict: 'accepted' });
+  assert.equal(done.status, 'done');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'nothing picks it up again by itself');
+
+  const tweaking = j.add({ type: 'plan_rejected', reason: 'the summary line should be shorter' });
+  assert.equal(tweaking.status, 'planning');
+  assert.equal(tweaking.rejection, 'the summary line should be shorter');
+  // The offer is over, so nothing polls the pull request the work already merged
+  // through and reads that merge as a verdict on the tweak.
+  assert.equal(tweaking.offered, false);
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'plan' });
+
+  // And the tweak survives into the run that has to act on it — which is what the
+  // brief reads, the same as for any other objection.
+  assert.equal(
+    j.add({ type: 'stage_started', stage: 'plan', runId: 'r-plan-2' }).rejection,
+    'the summary line should be shorter',
+  );
+});
+
 test('restarting a ticket whose pull request is open resumes the verdict, not the stages', () => {
   // t32: the poll failed while the work sat in a pull request, and the restart put
   // the ticket back into verify. It came round to `ready_for_pr` a second time and

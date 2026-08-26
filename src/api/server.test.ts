@@ -329,6 +329,23 @@ test('offered work can be sent back, or kept and put right', async () => {
   });
 });
 
+test('merged work can be sent back to be tweaked', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('a thing', '');
+    store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    assert.equal((await wb.ticket('t1')).ticket.status, 'done');
+
+    // The expensive no was never gated on the ticket being live; the panel is what
+    // had no way of reaching it once the work had merged.
+    await wb.reject('t1', 'shorten the summary line');
+    const tweaking = (await wb.ticket('t1')).ticket;
+    assert.equal(tweaking.status, 'planning');
+    assert.equal(tweaking.rejection, 'shorten the summary line');
+    assert.equal(tweaking.offered, false);
+  });
+});
+
 test('a ticket can be written already waiting for others', async () => {
   await withApi(async (wb) => {
     await wb.create('the dependency', '');

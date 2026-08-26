@@ -116,13 +116,31 @@ export async function openPr(
   return url;
 }
 
-/** The pull request this branch already has, or null when it has none. */
+/**
+ * The pull request to offer this branch on again, out of what `gh pr view` says
+ * about the one it has. Its own function, like `mergeArgs`, so the decision can be
+ * tested without a network.
+ *
+ * A merged one is not one to reuse. A ticket sent back to be tweaked comes through
+ * here on the branch its work already merged from — reusing that pull request
+ * would have the workbench record it, poll it, read `MERGED` as an acceptance and
+ * mark the ticket done with the tweak never merged.
+ *
+ * `OPEN` and `CLOSED` are reused, and must be: a ticket reworked after an
+ * objection has to come back to the pull request that objection was written on.
+ */
+export function reusablePr(stdout: string): string | null {
+  const pr = JSON.parse(stdout) as { url?: string; state?: string };
+  return pr.state === 'MERGED' ? null : (pr.url ?? null);
+}
+
+/** The pull request this branch already has, or null when it has none to reuse. */
 async function prFor(wt: Worktree): Promise<string | null> {
   try {
-    const { stdout } = await run('gh', ['pr', 'view', wt.branch, '--json', 'url'], {
+    const { stdout } = await run('gh', ['pr', 'view', wt.branch, '--json', 'url,state'], {
       cwd: wt.path,
     });
-    return (JSON.parse(stdout) as { url?: string }).url ?? null;
+    return reusablePr(stdout);
   } catch {
     // `gh` fails when there is no pull request to view, which is the ordinary case.
     return null;
