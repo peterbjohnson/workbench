@@ -524,6 +524,62 @@ test('a conflict a stage is going to resolve is left in the worktree', async () 
   }
 });
 
+test('a conflict kept for a stage still keeps the workbench off disk', async () => {
+  // Every real config protects a path, so this is the shape every conflict handed to a
+  // stage in earnest has: hiding them again rewrites the index, and here it is an
+  // unmerged one. Both halves have to survive that — the merge is the whole point of
+  // keeping it, and the workbench being on disk would put it in reach of every tool.
+  const cfg = await scratchRepo(['workbench']);
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+    await commitAll(wt, 'the ticket');
+    await landOnBase(cfg, 'project/model.py', 'the base says this\n');
+    // And the same commit touches a protected path, so the merge has to write one out.
+    await landOnBase(cfg, 'workbench/src/rules.ts', 'the guardrails, revised\n');
+
+    const result = await refresh(cfg, 't1', true);
+
+    assert.equal(result.kind, 'conflicted');
+    assert.equal(result.kind === 'conflicted' && result.merging, true, 'left for the stage');
+    const merging = await run('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: wt.path });
+    assert.match(merging.stdout.trim(), /^[0-9a-f]{40}$/, 'and the merge really is still going');
+
+    assert.equal(
+      await present(path.join(wt.path, 'workbench')),
+      false,
+      'still beyond every tool an agent has',
+    );
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a merge resolved to our own side is still concluded', async () => {
+  // The stage read both sides and decided ours already said it, so nothing is staged
+  // and the tree is unchanged. The merge commit is still owed: without it `MERGE_HEAD`
+  // stays set, no base is recorded, and the ticket believes it took in work it did not.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+    await commitAll(wt, 'the ticket');
+    await landOnBase(cfg, 'project/model.py', 'the base says this\n');
+    await refresh(cfg, 't1', true);
+
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+
+    assert.match(
+      (await commitAll(wt, 'implement: the ticket (t1)')) ?? '',
+      /^[0-9a-f]{40}$/,
+      'a commit, though it changes not one line',
+    );
+    assert.deepEqual(await refresh(cfg, 't1'), { kind: 'up-to-date' }, 'and the base is in');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
 test('a merge a stopped run left behind is handed over again, not thrown away', async () => {
   // The run given it edited the files and staged them, then asked a question and
   // stopped, so the merge is still going. Merging on top of that fails, and the

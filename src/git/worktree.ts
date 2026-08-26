@@ -180,7 +180,15 @@ export async function remove(cfg: GitConfig, ticketId: string): Promise<void> {
 export async function commitAll(wt: Worktree, message: string): Promise<string | null> {
   await git(wt.path, 'add', '-A');
   const staged = await git(wt.path, 'diff', '--cached', '--name-only');
-  if (staged.trim() === '') return null;
+  // A merge handed to a stage is concluded even when it staged nothing, which happens
+  // whenever the resolution came out as our side and the base's only change was in the
+  // conflicted file. Returning null there would leave `MERGE_HEAD` set and the base
+  // uncommitted, and the ticket would carry on believing it had taken it in.
+  const merging = await git(wt.path, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD').then(
+    (out) => out.trim() !== '',
+    () => false,
+  );
+  if (staged.trim() === '' && !merging) return null;
   await git(wt.path, 'commit', '-m', message);
   return (await git(wt.path, 'rev-parse', 'HEAD')).trim();
 }
@@ -389,9 +397,20 @@ export async function refresh(
     // Nothing unmerged means the merge failed rather than conflicted — an index
     // that was busy, a checkout that could not be written. There is nothing for a
     // stage to resolve, so it is undone whatever the caller asked for.
-    const kept = keepConflict && paths.length > 0;
+    let kept = keepConflict && paths.length > 0;
     if (!kept) await git(wt.path, 'merge', '--abort').catch(() => {});
-    await hideProtectedPaths(cfg, wt);
+    // Hiding the protected paths rewrites the index, which is the one thing git may
+    // refuse to do while the index is unmerged. Neither the workbench's own source on
+    // disk nor a throw is an acceptable answer: a throw here parks the ticket around a
+    // `MERGE_HEAD` that no stage can abort any more. So the merge goes instead.
+    try {
+      await hideProtectedPaths(cfg, wt);
+    } catch (error) {
+      if (!kept) throw error;
+      await git(wt.path, 'merge', '--abort').catch(() => {});
+      await hideProtectedPaths(cfg, wt);
+      kept = false;
+    }
     return { kind: 'conflicted', base, paths, merging: kept };
   }
 

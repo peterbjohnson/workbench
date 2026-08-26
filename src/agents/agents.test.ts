@@ -262,6 +262,7 @@ test('a stage handed a merge is told what clashed and that it must finish it', (
   assert.match(brief, /A merge to finish first/);
   assert.match(brief, /`src\/rules\.ts`[\s\S]*`src\/rules\.test\.ts`/, 'both of them, by name');
   assert.match(brief, /abc1234d/, 'and what it is merging in');
+  assert.match(brief, /`git add`/, 'and how to settle a path, which nothing else here can');
   assert.match(brief, /blocked and commits nothing/, 'the stage cannot walk away from it');
   // Before the ticket, because it is the first thing the stage does.
   assert.ok(brief.indexOf('A merge to finish first') < brief.indexOf('## Ticket'));
