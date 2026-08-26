@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import {
+  changesStand,
   details,
+  headline,
   madeInto,
+  rejectionStands,
   runs,
   salvageable,
   sendableBack,
@@ -64,6 +67,15 @@ export function Detail(props: {
       </button>
 
       <h2>{t.title}</h2>
+
+      {/* Where it is and what it is waiting for, in words, before anything else. */}
+      <Headline ticket={t} />
+
+      {/* Which stages there were and how each ended. The blocks per stage are
+          further down for when you want them. */}
+      {stages.length > 0 && <Pipeline stages={stages} step={t.step} steps={t.steps} />}
+
+      {/* Identification rather than status, so it sits under both. */}
       <div className="meta">
         <span className="mono">{t.id}</span> · {t.status.replace(/_/g, ' ')}
         {t.running && ' · running'}
@@ -95,11 +107,6 @@ export function Detail(props: {
         )}
       </div>
 
-      {/* Where it has got to, in one line. The blocks per stage are further down
-          for when you want them; this is the answer to "what is happening", which
-          is what the panel is opened for. */}
-      {stages.length > 0 && <Pipeline stages={stages} step={t.step} steps={t.steps} />}
-
       {t.question !== null && (
         <div className="box ask">
           <h3>Waiting on you</h3>
@@ -108,14 +115,18 @@ export function Detail(props: {
         </div>
       )}
 
-      {t.rejection !== null && (
+      {/* Only while the ticket is acting on it. Neither is ever cleared, so at the
+          top unconditionally they went on shouting long after the stage that
+          answered them — a ticket in a pull request led with why it was sent back
+          three stages ago. Off duty they are history, and fold away below. */}
+      {t.rejection !== null && rejectionStands(t) && (
         <div className="box">
           <h3>Sent back because</h3>
           {t.rejection}
         </div>
       )}
 
-      {t.changes !== null && (
+      {t.changes !== null && changesStand(t) && (
         <div className="box">
           {/* Only when a round of agent comments is what put it there. Yours count
               none, so the heading would otherwise say "revision 0". */}
@@ -125,6 +136,8 @@ export function Detail(props: {
       )}
 
       <Actions ticket={t} tickets={tickets} onAct={onAct} />
+
+      <Earlier ticket={t} />
 
       {/* What the work was asked for, above what has been made of it: the plan and
           the runs are answers to this, and reading them against anything else is
@@ -203,6 +216,52 @@ export function Detail(props: {
         </div>
       </details>
     </aside>
+  );
+}
+
+/**
+ * What the ticket is doing and what it is waiting for, in words, at the top of the
+ * panel. The status was only ever a word in the chip line, so nothing here said the
+ * state plainly and whatever box happened to be set said it instead.
+ */
+function Headline({ ticket: t }: { ticket: Ticket }) {
+  const { state, detail, tone } = headline(t);
+
+  return (
+    <div className={`headline ${tone}`}>
+      <div className="state">{state}</div>
+      <div className="detail">{detail}</div>
+    </div>
+  );
+}
+
+/**
+ * A rejection or a change request the ticket is no longer acting on. Nothing is
+ * lost by demoting them — they are still here, in full, and still the thing to read
+ * when you want to know how the ticket got where it is. They are just no longer
+ * news, and news is what the top of the panel is for.
+ */
+function Earlier({ ticket: t }: { ticket: Ticket }) {
+  const rejection = rejectionStands(t) ? null : t.rejection;
+  const changes = changesStand(t) ? null : t.changes;
+  if (rejection === null && changes === null) return null;
+
+  return (
+    <details>
+      <summary>Earlier</summary>
+      {rejection !== null && (
+        <div className="box">
+          <h3>Why it was sent back</h3>
+          {rejection}
+        </div>
+      )}
+      {changes !== null && (
+        <div className="box">
+          <h3>Changes asked for</h3>
+          {changes}
+        </div>
+      )}
+    </details>
   );
 }
 
