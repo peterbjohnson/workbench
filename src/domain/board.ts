@@ -199,11 +199,17 @@ function atStage(t: Ticket, state: string, stage: Stage, held: readonly Ticket[]
 
 /**
  * Whether the rejection on the ticket is what it is doing now, rather than what
- * happened to it once. It is never cleared — the brief and the hand-over message
- * both read it — so only the ticket actually acting on it should lead with it.
+ * happened to it once. It is cleared only when the plan answering it is approved
+ * — the brief and the hand-over message read it until then — so it stands for
+ * that whole span, the gate included: the plan waiting there is the answer to
+ * that objection, and approving it is judging whether it answers.
  */
 export function rejectionStands(t: Ticket): boolean {
-  return t.status === 'planning' || (t.status === 'blocked' && t.stage === 'plan');
+  return (
+    t.status === 'planning' ||
+    t.status === 'plan_gate' ||
+    (t.status === 'blocked' && t.stage === 'plan')
+  );
 }
 
 /** The same for the changes asked for: the stage putting them right, and no other. */
