@@ -88,6 +88,12 @@ export function App() {
   // never changes — but it comes from the settings, which is also where the colour
   // of this instance is, and that does.
   const [repo, setRepo] = useState<string | null>(null);
+  // What the ticket form offers in front of a title. From the settings, so it is
+  // read where they are and handed to both forms that write a title.
+  const [prefixes, setPrefixes] = useState<string[]>([]);
+  // Bumped when the settings page saves, so what was read out of the settings is
+  // read again — and only then, rather than on every event.
+  const [settingsVersion, setSettingsVersion] = useState(0);
   // Which end of Done to read from. The browser's choice, not the workbench's.
   const [order, chooseOrder] = useOrder();
 
@@ -140,12 +146,14 @@ export function App() {
         if (typeof found === 'string') setRepo(found);
         const colour = all.find((s) => s.key === 'colour')?.value;
         applyBrand(isColour(colour) ? colour : null);
+        const offered = all.find((s) => s.key === 'ticketPrefixes')?.value;
+        if (Array.isArray(offered)) setPrefixes(offered);
       })
       .catch((e: unknown) => live && setError(describe(e)));
     return () => {
       live = false;
     };
-  }, []);
+  }, [settingsVersion]);
 
   // The tab as well as the header: a window you are looking for is usually one you
   // cannot see, and its title is all the switcher shows of it.
@@ -268,7 +276,14 @@ export function App() {
           empty="No skills yet. They live in the workbench's skills/ directory."
         />
       )}
-      {tab === 'Settings' && <Settings onSaved={() => setVersion((v) => v + 1)} />}
+      {tab === 'Settings' && (
+        <Settings
+          onSaved={() => {
+            setVersion((v) => v + 1);
+            setSettingsVersion((v) => v + 1);
+          }}
+        />
+      )}
 
       {tab === 'Board' && (
         <div className="board">
@@ -324,6 +339,7 @@ export function App() {
             commitLabel="Create and commit"
             askAboutApproval
             tickets={tickets}
+            prefixes={prefixes}
             onCancel={() => open(null)}
             // Straight into the ticket that was just written, either way — whether
             // you have just committed to it or are about to decide.
@@ -352,6 +368,7 @@ export function App() {
           // The whole board, so a suggestion already made into a ticket can say
           // which one rather than offering to make it again.
           tickets={tickets}
+          prefixes={prefixes}
           onAct={act}
           onClose={() => open(null)}
         />

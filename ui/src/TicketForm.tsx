@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import type { Ticket } from '../../src/domain/ticket.ts';
+import { joinTitle, splitTitle } from '../../src/domain/titles.ts';
 import { Pick } from './Pick.tsx';
 
 /**
@@ -24,6 +25,12 @@ export function TicketForm(props: {
    * into it.
    */
   tickets?: Ticket[];
+  /**
+   * What the drop-down in front of the title offers, from the settings. It goes on
+   * the front of the title itself, so with none configured there is no drop-down
+   * and a title is just a title.
+   */
+  prefixes?: string[];
   submitLabel: string;
   /**
    * A second way to submit, which commits to the ticket as well as writing it.
@@ -39,7 +46,12 @@ export function TicketForm(props: {
   }) => Promise<unknown>;
   onCancel: () => void;
 }) {
-  const [title, setTitle] = useState(props.title ?? '');
+  const prefixes = props.prefixes ?? [];
+  // A ticket being rewritten arrives with its prefix in its title, so it comes
+  // apart into the two boxes it was written in and goes back together the same.
+  const written = splitTitle(props.title ?? '', prefixes);
+  const [prefix, setPrefix] = useState(written.prefix);
+  const [title, setTitle] = useState(written.rest);
   const [body, setBody] = useState(props.body ?? '');
   const [requiresApproval, setRequiresApproval] = useState(true);
   const [waitsFor, setWaitsFor] = useState<string[]>([]);
@@ -49,7 +61,7 @@ export function TicketForm(props: {
     if (title.trim() === '' || saving) return;
     setSaving(true);
     void props
-      .onSubmit({ title: title.trim(), body, requiresApproval, waitsFor, commit })
+      .onSubmit({ title: joinTitle(prefix, title), body, requiresApproval, waitsFor, commit })
       .finally(() => setSaving(false));
   };
 
@@ -64,12 +76,24 @@ export function TicketForm(props: {
     >
       <label>
         Title
-        <input
-          value={title}
-          autoFocus
-          placeholder="What you want done, in a few words"
-          onChange={(e) => setTitle(e.target.value)}
-        />
+        <div className="titled">
+          {prefixes.length > 0 && (
+            <select value={prefix} onChange={(e) => setPrefix(e.target.value)}>
+              <option value="">none</option>
+              {prefixes.map((one) => (
+                <option key={one} value={one}>
+                  {one}
+                </option>
+              ))}
+            </select>
+          )}
+          <input
+            value={title}
+            autoFocus
+            placeholder="What you want done, in a few words"
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </div>
       </label>
 
       <label>
