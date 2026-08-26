@@ -433,6 +433,13 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     store.append(ticket.id, { type: 'stage_started', stage, runId });
 
     const conflict = await refreshForStage(ticket, stage, runId);
+    // A merge that landed moved the base on the stored ticket, and everything
+    // downstream — the brief's diff above all — is taken from the object rather than
+    // the store. Without this the stage sees the base it was cut from, and the whole
+    // of the merged-in work reads as its own. The base alone, not the whole ticket:
+    // the one held here is deliberately the one from before `stage_started`, which
+    // clears the answer and the session this run is about to carry in.
+    ticket = { ...ticket, base: store.ticket(ticket.id).base };
 
     let checks: CheckRun[] | undefined;
     // Not while a merge is waiting: the checks would be run against a tree full of

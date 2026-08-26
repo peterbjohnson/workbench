@@ -1089,6 +1089,32 @@ test('the base is taken in when a stage starts, not only when the work is offere
   }
 });
 
+test('a stage that took the base in is given the ticket the merge left, not the one before it', async () => {
+  // The brief's diff is taken as `diff(config, worktree, ticket.base)`, from the
+  // object the run was handed. A stage still holding the base its branch was cut from
+  // reads the whole of the merged-in work as its own — the very failure the refresh
+  // is for, one stage along.
+  const bases = new Map<Stage, string | null>();
+  const h = harness({
+    refresh: () => ({ kind: 'merged', base: 'newbase', commit: 'merge01' }),
+    runStage: async ({ ticket, stage }) => {
+      bases.set(stage, ticket.base);
+      return ok(`${stage} done`);
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.equal(bases.get('implement'), 'newbase');
+    assert.equal(bases.get('verify'), 'newbase');
+  } finally {
+    await h.close();
+  }
+});
+
 test('a conflict at the start of a stage is handed to the stage, not to the manager', async () => {
   const handed: { stage: Stage; paths: string[] }[] = [];
   const h = harness({

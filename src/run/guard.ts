@@ -172,8 +172,10 @@ const BANNED_COMMANDS: { pattern: RegExp; reason: string }[] = [
     // sparse-checkout and config in particular could undo the protections above,
     // and `merge --abort` would throw away a merge the workbench handed this stage
     // to resolve — which is how a stage could pass its end guard by discarding the
-    // very thing it was asked to do.
-    pattern: /\bgit\s+(worktree|sparse-checkout|config|checkout|switch|reset|rebase|merge)\b/,
+    // very thing it was asked to do. `merge` needs the lookahead because `\b` matches
+    // before the hyphen too, and would take `merge-base` and `merge-file` with it:
+    // read-only plumbing an agent resolving a merge has every reason to ask.
+    pattern: /\bgit\s+(worktree|sparse-checkout|config|checkout|switch|reset|rebase|merge(?!-))\b/,
     reason: "the workbench owns this ticket's branch and worktree; leave git state alone",
   },
   // A recursive delete is not banned outright — see badRecursiveDelete, which

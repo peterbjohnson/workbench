@@ -211,6 +211,18 @@ test('the agent may not undo its own isolation through git', () => {
   }
 });
 
+test('the read-only merge plumbing is not caught by the ban on merging', () => {
+  // `\b` matches before a hyphen too, so a bare `merge` in the alternation took these
+  // with it — and an agent handed a conflict to resolve has every reason to ask.
+  for (const command of [
+    'git merge-base main HEAD',
+    'git merge-file a b c',
+    'git mergetool --help',
+  ]) {
+    assert.equal(guard(PROTECTED, 'Bash', { command }).allow, true, command);
+  }
+});
+
 test('Skill reads the workbench’s own expertise, and nothing else on the machine', () => {
   // No agent lists Skill in allowedTools: a bare entry there auto-approves the tool
   // before anything can inspect which skill was asked for. This list is the grant.
