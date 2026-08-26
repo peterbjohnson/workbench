@@ -4,6 +4,7 @@ import type { Doc, DocKind } from '../../src/api/documents.ts';
 import { COLUMNS, columnFor, needsYou, waitingForSlot } from '../../src/domain/board.ts';
 import { heldBy, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
+import { applyBrand, isColour } from './brand.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
@@ -69,7 +70,8 @@ export function App() {
   const [docs, setDocs] = useState<Record<DocKind, Doc[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The repository this board is working in. A fact of the running process, so it
-  // is read once and never redrawn.
+  // never changes — but it comes from the settings, which is also where the colour
+  // of this instance is, and that does.
   const [repo, setRepo] = useState<string | null>(null);
 
   /** Anything appended redraws the board. No polling, and no refresh button. */
@@ -106,20 +108,25 @@ export function App() {
     };
   }, []);
 
-  // Which repository this is. Two boards on two ports are otherwise identical down
-  // to the pixel, and the answer to "which one is this" should not be a page away.
+  // Which repository this is, and what colour it was given. Two boards on two ports
+  // are otherwise identical down to the pixel, and the answer to "which one is this"
+  // should not be a page away. Read again when the settings are saved, because the
+  // colour is one of them and takes effect at once.
   useEffect(() => {
     let live = true;
     wb.settings()
       .then((all) => {
+        if (!live) return;
         const found = all.find((s) => s.key === 'repoRoot')?.value;
-        if (live && typeof found === 'string') setRepo(found);
+        if (typeof found === 'string') setRepo(found);
+        const colour = all.find((s) => s.key === 'colour')?.value;
+        applyBrand(isColour(colour) ? colour : null);
       })
       .catch((e: unknown) => live && setError(describe(e)));
     return () => {
       live = false;
     };
-  }, []);
+  }, [version]);
 
   // The tab as well as the header: a window you are looking for is usually one you
   // cannot see, and its title is all the switcher shows of it.

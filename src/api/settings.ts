@@ -15,8 +15,8 @@ export type Setting = {
   key: string;
   label: string;
   value: string | number | string[];
-  /** How it is edited. `lines` is a list, one to a line. */
-  type: 'number' | 'text' | 'lines' | 'choice';
+  /** How it is edited. `lines` is a list, one to a line; `colour` is a hex colour or none. */
+  type: 'number' | 'text' | 'lines' | 'choice' | 'colour';
   choices?: string[];
   about: string;
   /** Read-only settings are facts about this installation, not decisions. */
@@ -36,6 +36,7 @@ const CONFIG_DEFAULTS: Record<string, string | number | string[]> = {
   pollMs: 30_000,
   port: 4600,
   runner: 'claude',
+  colour: '',
 };
 
 const LIMITS: Record<keyof Policy, { label: string; about: string }> = {
@@ -56,7 +57,16 @@ const LIMITS: Record<keyof Policy, { label: string; about: string }> = {
   },
 };
 
-const CONFIGURED: Record<string, Omit<Setting, 'key' | 'value' | 'writable' | 'restart'>> = {
+/**
+ * The settings kept in the config file. `restart` is per-entry and true unless an
+ * entry says otherwise — most of these are read by the server as it starts, but the
+ * colour is read by the board every time it loads, and telling someone who has just
+ * picked one to restart would be a lie.
+ */
+const CONFIGURED: Record<
+  string,
+  Omit<Setting, 'key' | 'value' | 'writable' | 'restart'> & { restart?: boolean }
+> = {
   base: {
     label: 'Base branch',
     type: 'text',
@@ -115,6 +125,15 @@ const CONFIGURED: Record<string, Omit<Setting, 'key' | 'value' | 'writable' | 'r
       'Directories agents may read but never write, left out of ticket worktrees ' +
       'entirely. The workbench’s own home is always one, whatever is listed here.',
   },
+  colour: {
+    label: 'Instance colour',
+    type: 'colour',
+    group: 'Appearance',
+    restart: false,
+    about:
+      'The colour of this workbench’s top bar. Two boards open at once are otherwise ' +
+      'identical down to the pixel. With none chosen the bar is what it always was.',
+  },
 };
 
 /**
@@ -141,7 +160,7 @@ export function settings(store: Store, config: Config): Setting[] {
     ...how,
     value: file[key] ?? CONFIG_DEFAULTS[key] ?? '',
     writable: true,
-    restart: true,
+    restart: how.restart ?? true,
   }));
 
   return [
@@ -244,6 +263,15 @@ function coerce(setting: Setting, raw: unknown): string | number | string[] {
   if (setting.type === 'lines') {
     const list = Array.isArray(raw) ? raw : String(raw ?? '').split('\n');
     return list.map((one) => String(one).trim()).filter((one) => one !== '');
+  }
+
+  // Before the empty guard below, because empty is a colour: it is how the top bar
+  // goes back to being nobody's in particular.
+  if (setting.type === 'colour') {
+    const chosen = String(raw ?? '').trim();
+    if (chosen === '') return '';
+    const colour = chosen.toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(colour) ? colour : bad('must be a colour like #3a7d6f');
   }
 
   const text = String(raw ?? '').trim();
