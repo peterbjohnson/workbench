@@ -64,6 +64,90 @@ export function writeDoc(config: Config, kind: DocKind, name: string, text: stri
   return readDoc(config, kind, name);
 }
 
+/**
+ * A skill that was not there before: a directory with a `SKILL.md` in it, because that
+ * is the whole of what a skill is. Given no text, it starts from a file that loads —
+ * an empty one would be a skill nothing could read and every stage would refuse.
+ *
+ * Agents are the four stages, which are fixed, so there is nothing here to make.
+ */
+export function createDoc(config: Config, kind: DocKind, name: string, text?: string): Doc {
+  const dir = skillDirFor(config, kind, name);
+  if (names(config, kind).includes(name))
+    throw new Error(`there is already a skill called ${name}`);
+
+  const body = text ?? starter(name);
+  describe(kind, name, body);
+
+  ensurePluginManifest(config);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), body.endsWith('\n') ? body : `${body}\n`);
+  return readDoc(config, kind, name);
+}
+
+/**
+ * Gone, directory and all — a skill is its directory, so leaving the rest of it behind
+ * would leave a half-skill on disk that nothing lists and nobody can edit.
+ */
+export function deleteDoc(config: Config, kind: DocKind, name: string): void {
+  const dir = skillDirFor(config, kind, name);
+  if (!names(config, kind).includes(name)) throw new Error(`no ${kind} called ${name}`);
+  fs.rmSync(dir, { recursive: true });
+}
+
+/**
+ * Where a skill of that name would live. The name is checked against what a directory
+ * may be called before it is joined to anything, so a name carrying a separator or `..`
+ * is refused as a name rather than resolving to somewhere outside `skills/`.
+ */
+function skillDirFor(config: Config, kind: DocKind, name: string): string {
+  if (kind === 'agent')
+    throw new Error('the four stages are fixed — an agent is not yours to add or remove');
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    throw new Error(`"${name}" is not a skill name — lowercase letters, digits and dashes`);
+  }
+  return path.join(skillsDir(config), name);
+}
+
+/** A first draft that loads: the name it answers to, and a description to replace. */
+function starter(name: string): string {
+  return [
+    '---',
+    `name: ${name}`,
+    `description: What ${name} covers, and when a stage should read it. Replace this — it is the whole trigger.`,
+    '---',
+    '',
+    `# ${name}`,
+    '',
+    'What good looks like for work of this kind, here.',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Skills reach an agent as a local plugin, and a plugin is its manifest: `loadSkills`
+ * refuses to name a skill without one. `wb init` writes it for that reason, but a home
+ * made before it did, or by hand, has none — and there the first skill added would stop
+ * every stage of every ticket.
+ */
+function ensurePluginManifest(config: Config): void {
+  const file = path.join(config.pluginRoot, '.claude-plugin', 'plugin.json');
+  if (fs.existsSync(file)) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    `${JSON.stringify(
+      {
+        name: 'workbench',
+        version: '0.0.0',
+        description: "This repository's own skills, loaded into the agents the workbench runs.",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
 /** What a document says about itself, which is also the check that it is valid. */
 function describe(kind: DocKind, name: string, text: string): string {
   if (kind === 'skill') return parseSkill(text, name);

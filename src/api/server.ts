@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
 import type { Config } from '../config.ts';
-import { listDocs, writeDoc, type DocKind } from './documents.ts';
+import { createDoc, deleteDoc, listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
@@ -123,6 +123,26 @@ async function handle(
     const kind = kindOf(docPath[1] as string);
     const name = docPath[2] as string;
     return refusable(res, () => ({ doc: writeDoc(config, kind, name, text) }));
+  }
+
+  // Adding and removing is skills only, and `createDoc` is what says so — the route
+  // exists for both kinds so that asking for an agent is answered with the reason
+  // rather than with a 404 that reads like a missing feature.
+  if (method === 'POST' && (route === '/agents' || route === '/skills')) {
+    const { name, text } = await readJson(req);
+    const kind = kindOf(route);
+    return refusable(res, () => ({
+      doc: createDoc(config, kind, String(name ?? ''), typeof text === 'string' ? text : undefined),
+    }));
+  }
+
+  if (method === 'DELETE' && docPath) {
+    const kind = kindOf(docPath[1] as string);
+    const name = docPath[2] as string;
+    return refusable(res, () => {
+      deleteDoc(config, kind, name);
+      return { deleted: name };
+    });
   }
 
   if (route === '/tickets') {

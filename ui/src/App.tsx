@@ -209,6 +209,17 @@ export function App() {
         ? held
         : { ...held, [kind]: held[kind].map((d) => (d.name === doc.name ? doc : d)) },
     );
+  /** And what one page added or removed, which the count is the same count of. */
+  const created = (kind: DocKind) => (doc: Doc) =>
+    setDocs((held) =>
+      held === null
+        ? held
+        : { ...held, [kind]: [...held[kind], doc].sort((a, b) => (a.name < b.name ? -1 : 1)) },
+    );
+  const deleted = (kind: DocKind) => (name: string) =>
+    setDocs((held) =>
+      held === null ? held : { ...held, [kind]: held[kind].filter((d) => d.name !== name) },
+    );
   const from = continuing(selected);
   const writing = selected === NEW || from !== null;
 
@@ -256,6 +267,8 @@ export function App() {
           kind="skill"
           docs={docs?.skill ?? null}
           onSaved={saved('skill')}
+          onCreated={created('skill')}
+          onDeleted={deleted('skill')}
           empty="No skills yet. They live in the workbench's skills/ directory."
         />
       )}
