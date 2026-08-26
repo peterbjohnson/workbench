@@ -5,6 +5,7 @@ import {
   COLUMNS,
   columnFor,
   details,
+  inColumn,
   madeInto,
   needsYou,
   ordered,
@@ -63,6 +64,46 @@ test('a blocked ticket stays in the column of the stage it stopped in', () => {
   assert.equal(columnFor(at('blocked', 'implement')), 'Building');
   assert.equal(columnFor(at('blocked', 'plan')), 'Planning');
   assert.equal(columnFor(at('blocked', null)), 'Committed', 'stuck before anything ran');
+});
+
+function card(id: string, status: Status): Ticket {
+  return { ...at(status), id };
+}
+
+test('a column reads in board order, or from the other end', () => {
+  const board = [
+    card('t1', 'done'),
+    card('t2', 'backlog'),
+    card('t3', 'cancelled'),
+    card('t4', 'gave_up'),
+  ];
+
+  const ids = (order?: Parameters<typeof inColumn>[2]) =>
+    inColumn(board, 'Done', order).map((t) => t.id);
+
+  assert.deepEqual(ids(), ['t1', 't3', 't4'], 'board order by default');
+  assert.deepEqual(ids('oldest'), ['t1', 't3', 't4']);
+  assert.deepEqual(ids('newest'), ['t4', 't3', 't1']);
+  // The board itself is untouched — the filtered copy is what gets reversed.
+  assert.deepEqual(
+    board.map((t) => t.id),
+    ['t1', 't2', 't3', 't4'],
+  );
+});
+
+test('one ticket or none reads the same either way', () => {
+  const one = [card('t1', 'done')];
+  assert.deepEqual(inColumn(one, 'Done', 'newest'), one);
+  assert.deepEqual(inColumn(one, 'Done', 'oldest'), one);
+  assert.deepEqual(inColumn([], 'Done', 'newest'), []);
+});
+
+test('another column keeps the board order whatever is asked of it', () => {
+  const board = [card('t1', 'backlog'), card('t2', 'done'), card('t3', 'backlog')];
+  assert.deepEqual(
+    inColumn(board, 'Backlog').map((t) => t.id),
+    ['t1', 't3'],
+  );
 });
 
 test('needing you is the gate and being stuck, and nothing else', () => {
