@@ -10,8 +10,10 @@ import { fileURLToPath } from 'node:url';
 
 import { createApi } from './server.ts';
 import { createClient, type Client } from './client.ts';
+import { deleteDoc } from './documents.ts';
 import { openStore, type Store } from '../store/store.ts';
-import { CONFIG_FILE, loadConfig } from '../config.ts';
+import { loadSkills, parseSkill } from '../agents/load.ts';
+import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
 import type { Setting } from './settings.ts';
 
 /**
@@ -42,13 +44,15 @@ function scratchConfig() {
 }
 
 /** A real server on an ephemeral port, with a real client talking to it. */
-async function withApi(fn: (wb: Client, store: Store) => Promise<void>): Promise<void> {
+async function withApi(
+  fn: (wb: Client, store: Store, config: Config) => Promise<void>,
+): Promise<void> {
   const store = openStore(':memory:');
   const config = scratchConfig();
   const api = createApi(store, config);
   const port = await api.listen(0);
   try {
-    await fn(createClient(`http://127.0.0.1:${port}`), store);
+    await fn(createClient(`http://127.0.0.1:${port}`), store, config);
   } finally {
     await api.close();
     store.close();
@@ -508,6 +512,101 @@ test('a skill is refused if nothing would ever decide to read it', async () => {
       () => wb.saveDoc('skill', one.name, '---\ndescription: ""\n---\n\nSomething.'),
       /no description/,
     );
+  });
+});
+
+test('a skill added from the board is one every stage can load', async () => {
+  await withApi(async (wb, _store, config) => {
+    const made = await wb.createDoc('skill', 'writing-reports');
+    assert.equal(made.where, path.join('skills', 'writing-reports', 'SKILL.md'));
+    assert.ok(made.about.length > 0, 'a description from the moment it exists');
+
+    assert.deepEqual(
+      (await wb.docs('skill')).map((d) => d.name),
+      ['writing-python', 'writing-reports'],
+    );
+
+    const file = path.join(config.home, 'skills', 'writing-reports', 'SKILL.md');
+    assert.equal(fs.readFileSync(file, 'utf8'), made.text, 'on disk, not only in the reply');
+    assert.equal(
+      parseSkill(made.text, 'writing-reports'),
+      made.about,
+      'what it starts as loads — an unloadable one would stop every stage',
+    );
+  });
+});
+
+test('the first skill in a home with no plugin manifest is still named', async () => {
+  await withApi(async (wb, _store, config) => {
+    fs.rmSync(path.join(config.home, 'skills', 'writing-python'), { recursive: true });
+    fs.rmSync(path.join(config.home, '.claude-plugin'), { recursive: true });
+
+    await wb.createDoc('skill', 'writing-reports');
+    assert.deepEqual(
+      loadSkills(config.home).map((s) => s.name),
+      ['workbench:writing-reports'],
+      'without the manifest this home would have no name to offer the skill under',
+    );
+  });
+});
+
+test('a skill deleted from the board takes its whole directory with it', async () => {
+  await withApi(async (wb, _store, config) => {
+    const dir = path.join(config.home, 'skills', 'writing-python');
+    fs.writeFileSync(path.join(dir, 'example.md'), 'the rest of it');
+
+    assert.equal(await wb.deleteDoc('skill', 'writing-python'), 'writing-python');
+    assert.equal(fs.existsSync(dir), false, 'a skill is its directory, not only its SKILL.md');
+    assert.deepEqual(await wb.docs('skill'), []);
+  });
+});
+
+test('a skill directory the board would not have named that way is still removable', async () => {
+  await withApi(async (wb, _store, config) => {
+    const dir = path.join(config.home, 'skills', 'Writing_Python');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\ndescription: An older one.\n---\n\n# Old\n');
+
+    assert.deepEqual(
+      (await wb.docs('skill')).map((d) => d.name),
+      ['Writing_Python', 'writing-python'],
+      'listed and saveable, so what the Delete button offers has to be a deletion',
+    );
+    assert.equal(await wb.deleteDoc('skill', 'Writing_Python'), 'Writing_Python');
+    assert.equal(fs.existsSync(dir), false);
+  });
+});
+
+test('a skill whose name YAML would read as a number still loads as its own name', async () => {
+  await withApi(async (wb) => {
+    const made = await wb.createDoc('skill', '2024');
+    assert.equal(
+      parseSkill(made.text, '2024'),
+      made.about,
+      'unquoted, its frontmatter would call it the number 2024 and refuse to load',
+    );
+  });
+});
+
+test('adding and removing are refused for anything that is not a skill of its own', async () => {
+  await withApi(async (wb, _store, config) => {
+    const skills = path.join(config.home, 'skills');
+    const before = fs.readdirSync(skills);
+
+    await assert.rejects(() => wb.createDoc('agent', 'planner'), /stages are fixed/);
+    await assert.rejects(() => wb.deleteDoc('agent', 'plan'), /stages are fixed/);
+    await assert.rejects(() => wb.createDoc('skill', 'writing-python'), /already a skill/);
+    await assert.rejects(() => wb.createDoc('skill', ''), /not a skill name/);
+    await assert.rejects(() => wb.createDoc('skill', 'over/there'), /not a skill name/);
+    await assert.rejects(() => wb.createDoc('skill', '..'), /not a skill name/);
+    await assert.rejects(() => wb.deleteDoc('skill', 'nonesuch'), /no skill called nonesuch/);
+    // A separator or `..` never survives a URL — one collapses the path and the other
+    // matches no route — so removing by such a name is refused where the check lives.
+    assert.throws(() => deleteDoc(config, 'skill', 'over/there'), /not a skill name/);
+    assert.throws(() => deleteDoc(config, 'skill', '..'), /not a skill name/);
+
+    assert.deepEqual(fs.readdirSync(skills), before, 'and the disk is as it was');
+    assert.equal((await wb.docs('agent')).length, 4);
   });
 });
 

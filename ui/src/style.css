@@ -1127,6 +1127,43 @@ ul.done-when {
   margin: 0 0 0 auto;
 }
 
+/* Adding a skill, under the list it will join. The workbench ships none, so this is
+   the only way any project ever gets its first. */
+.docs nav .new {
+  margin: 0.5rem 0 0;
+}
+
+/* Not one of the entries: those are left-aligned, with a marker down their edge. */
+.docs nav button.new,
+.docs nav .new button {
+  text-align: center;
+  border-left-width: 1px;
+}
+
+/* Deleting takes the whole directory, so the buttons give way to the question and
+   the second click answers it rather than repeating the first. */
+.docs .head .confirm {
+  flex: 1;
+  align-items: baseline;
+  color: var(--bad);
+  font-size: 0.85rem;
+}
+
+.docs .head .confirm button {
+  flex: none;
+}
+
+button.danger {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+button.danger:hover {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: var(--on-fill);
+}
+
 .docs .editor {
   display: block;
   width: 100%;
