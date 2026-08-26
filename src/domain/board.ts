@@ -46,6 +46,27 @@ export const COLUMNS: readonly Column[] = [
   { name: 'Done', statuses: ['done', 'cancelled', 'gave_up'] },
 ];
 
+/** The column whose cards are finished with, rather than waiting to be worked on. */
+export const DONE = 'Done';
+
+/** Which end of a column's order is drawn first. */
+export type Order = 'newest' | 'oldest';
+
+/**
+ * The tickets in one column, in the order they should be drawn. The board's order
+ * is the queue and reads oldest first everywhere it is one — but Done is not a
+ * queue, and the ticket that just finished is the one worth seeing, so it can be
+ * read from the other end.
+ */
+export function inColumn(
+  tickets: readonly Ticket[],
+  column: string,
+  order: Order = 'oldest',
+): Ticket[] {
+  const held = tickets.filter((t) => columnFor(t) === column);
+  return order === 'newest' ? held.reverse() : held;
+}
+
 /**
  * A blocked ticket keeps the stage it stopped in, so it stays in that stage's
  * column rather than moving to one of its own. That is what has happened: the work

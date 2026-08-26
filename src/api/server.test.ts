@@ -12,6 +12,7 @@ import { createApi } from './server.ts';
 import { createClient, type Client } from './client.ts';
 import { openStore, type Store } from '../store/store.ts';
 import { CONFIG_FILE, loadConfig } from '../config.ts';
+import type { Setting } from './settings.ts';
 
 /**
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
@@ -524,5 +525,40 @@ test('a configured setting is written to the config file, and a default is taken
     // what this project decided, not a copy of every default.
     await wb.setSettings({ base: 'main' });
     assert.equal('base' in file(), false);
+  });
+});
+
+test('the instance colour is kept in the config file, and clearing it takes the key out', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    const colour = (all: Setting[]) => all.find((s) => s.key === 'colour');
+    assert.equal(colour(await wb.settings())?.value, '', 'no colour until one is chosen');
+
+    const after = await wb.setSettings({ colour: '#3A7D6F' });
+    assert.equal(colour(after)?.value, '#3a7d6f', 'and it is written the one way');
+    // The board reads it every time it loads, so saying "next start" would be a lie.
+    assert.equal(colour(after)?.restart, false);
+    assert.equal(file()['colour'], '#3a7d6f');
+
+    // No colour is the default, so the file stops mentioning it rather than holding
+    // an empty string nobody can read a decision out of.
+    const cleared = await wb.setSettings({ colour: '' });
+    assert.equal(colour(cleared)?.value, '');
+    assert.equal('colour' in file(), false);
+  });
+});
+
+test('something that is not a colour is refused, and nothing is written', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), /Instance colour must be a/);
+    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), /Instance colour must be a/);
+    assert.equal('colour' in file(), false);
   });
 });

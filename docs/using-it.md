@@ -35,6 +35,10 @@ from a laptop at night and a desktop by a window can be set differently.
 onto another puts it in front of that one, and onto the column behind them puts it last.
 The order a ticket was written in is a default, not a decision.
 
+**Done reads the other way round.** It is not a queue — nothing is taken from it — and the
+ticket that just finished is the one worth seeing, so it is at the top. The control under
+the heading turns the column round, and like the theme the choice is kept in the browser.
+
 ## The plan gate
 
 A plan is written, and the ticket stops for you to approve it. That is the one place a

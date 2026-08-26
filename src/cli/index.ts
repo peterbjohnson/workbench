@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 
 import { CONFIG_FILE, findHome, loadConfig, PACKAGE_ROOT, type Config } from '../config.ts';
 import { USAGE } from './usage.ts';
+import { abandoning, draining } from './stopping.ts';
 import { reconcile } from '../orchestrator/loop.ts';
 import { checkCredentials, verifyCredentials } from '../run/credentials.ts';
 import { startWorkbench } from '../workbench.ts';
@@ -571,7 +572,23 @@ async function serve(config: Config): Promise<number> {
     process.once('SIGTERM', () => resolve());
   });
 
-  console.log('\nfinishing what is in flight...');
+  // Asked before the drain rather than during it: by the time closing returns there
+  // is nothing left running to name, and the names are the point.
+  const inFlight = wb.store.tickets().filter((t) => t.running);
+  console.log(`\n${draining(inFlight)}\n`);
+
+  // The second interrupt is the impatient one, and the expensive one. Node's default
+  // would take it — the first listener removed itself by firing — and kill the process
+  // without a word. It still stops immediately; it just says what that costs.
+  //
+  // Every stage that finishes while draining still prints, because the line that
+  // reports events is subscribed until the store closes. So the list above empties
+  // itself in front of whoever is waiting, which is what makes waiting bearable.
+  process.on('SIGINT', () => {
+    console.log(`\n${abandoning(wb.store.tickets().filter((t) => t.running))}`);
+    process.exit(1);
+  });
+
   await wb.close();
   return 0;
 }
