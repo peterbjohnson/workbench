@@ -20,6 +20,8 @@ const LOOK_MS = 3_000;
 export type Installed = {
   /** What the dependency is called here. Not always "workbench": npm allows aliases. */
   name: string;
+  /** Where it sits in the lock file, which is where to read the commit again later. */
+  key: string;
   /** The dependency as the project asked for it, which is what an update asks for again. */
   spec: string;
   /** Where npm fetched it from, as the lock file records it. */
@@ -46,10 +48,8 @@ export function installed(
   const key = path.relative(project.repoRoot, from).replaceAll(path.sep, '/');
   if (!key.startsWith('node_modules/')) return undefined;
 
-  const lock = readJson(path.join(project.repoRoot, 'package-lock.json'));
-  const entry = lock?.['packages'] as Record<string, { resolved?: unknown }> | undefined;
-  const resolved = entry?.[key]?.resolved;
-  if (typeof resolved !== 'string') return undefined;
+  const resolved = resolvedIn(project.repoRoot, key);
+  if (resolved === undefined) return undefined;
 
   const commit = /#([0-9a-f]{40})$/.exec(resolved)?.[1];
   if (commit === undefined) return undefined;
@@ -59,23 +59,72 @@ export function installed(
   const spec = specIn(manifest, name);
   if (spec === undefined) return undefined;
 
-  return { name, spec, url: resolved.replace(/#.*$/, '').replace(/^git\+/, ''), commit };
+  return { name, key, spec, url: resolved.replace(/#.*$/, '').replace(/^git\+/, ''), commit };
+}
+
+/** What the lock file says this dependency was resolved to, if it says anything. */
+export function resolvedIn(repoRoot: string, key: string): string | undefined {
+  const lock = readJson(path.join(repoRoot, 'package-lock.json'));
+  const packages = lock?.['packages'] as Record<string, { resolved?: unknown }> | undefined;
+  const resolved = packages?.[key]?.resolved;
+  return typeof resolved === 'string' ? resolved : undefined;
+}
+
+/** The commit the lock file holds for it now, which is the whole of what an update changes. */
+export function commitIn(repoRoot: string, key: string): string | undefined {
+  return /#([0-9a-f]{40})$/.exec(resolvedIn(repoRoot, key) ?? '')?.[1];
 }
 
 /**
- * The commit at the head of what the project depends on, asked of the code host
+ * What `npm install` would resolve this dependency to, asked of the code host
  * directly. No clone, no fetch, and nothing written: `ls-remote` is the one git
  * command that answers about a repository without having one.
  *
- * Nothing here throws. Being unable to find out is an ordinary answer — offline, no
- * key, a remote that has moved — and every caller wants to carry on regardless.
+ * Nothing here throws, and not knowing is an ordinary answer — offline, no key, a
+ * remote that has moved, or a dependency whose ref this cannot work out. Every caller
+ * carries on regardless, because none of those is a reason to stop.
  */
-export async function newest(url: string): Promise<string | undefined> {
+export async function newest(url: string, spec: string): Promise<string | undefined> {
+  const wanted = refIn(spec);
+  if (wanted.kind === 'unknowable') return undefined;
+  if (wanted.kind === 'commit') return wanted.commit;
+
   for (const remote of remotesFor(url)) {
-    const head = await headOf(remote);
-    if (head !== undefined) return head;
+    const found = await lsRemote(remote, wanted.patterns);
+    const commit = wanted.patterns.map((p) => found[p]).find((c) => c !== undefined);
+    if (commit !== undefined) return commit;
   }
   return undefined;
+}
+
+/**
+ * Which ref a dependency is asking for, and therefore what would have to move for an
+ * update to exist.
+ *
+ * A spec with nothing after the `#` follows the default branch, which is the ordinary
+ * way to depend on a repository with no releases. A named ref may be a branch or a tag
+ * and the spelling does not say which, so both are asked for at once — a tag first,
+ * dereferenced, because an annotated one points at an object that is not the commit.
+ *
+ * A commit is already the answer. A semver range is not workable here: finding the
+ * highest tag matching it means comparing versions, and a startup hint is not worth a
+ * dependency for. `wb update` handles that case by installing and looking afterwards,
+ * which needs no such arithmetic.
+ */
+export function refIn(
+  spec: string,
+):
+  | { kind: 'ref'; patterns: string[] }
+  | { kind: 'commit'; commit: string }
+  | { kind: 'unknowable' } {
+  const ref = spec.includes('#') ? spec.slice(spec.indexOf('#') + 1) : '';
+  if (ref === '') return { kind: 'ref', patterns: ['HEAD'] };
+  if (/^[0-9a-f]{40}$/.test(ref)) return { kind: 'commit', commit: ref };
+  if (ref.startsWith('semver:')) return { kind: 'unknowable' };
+  return {
+    kind: 'ref',
+    patterns: [`refs/tags/${ref}^{}`, `refs/tags/${ref}`, `refs/heads/${ref}`],
+  };
 }
 
 /**
@@ -108,17 +157,24 @@ function githubRepo(url: string): string | undefined {
   return found?.[1];
 }
 
-async function headOf(remote: string): Promise<string | undefined> {
+/** Each asked-for ref that the remote has, as commit by ref. One call, however many. */
+async function lsRemote(remote: string, patterns: string[]): Promise<Record<string, string>> {
   try {
-    const { stdout } = await run('git', ['ls-remote', remote, 'HEAD'], {
+    const { stdout } = await run('git', ['ls-remote', remote, ...patterns], {
       timeout: LOOK_MS,
       // Never stop to ask for a password. This runs at startup too, where a prompt
       // nobody is watching is a workbench that never finishes starting.
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
     });
-    return /^([0-9a-f]{40})\s/m.exec(stdout)?.[1];
+    return Object.fromEntries(
+      stdout
+        .split('\n')
+        .map((line) => /^([0-9a-f]{40})\s+(\S+)$/.exec(line.trim()))
+        .filter((found) => found !== null)
+        .map((found) => [found[2], found[1]]),
+    );
   } catch {
-    return undefined;
+    return {};
   }
 }
 

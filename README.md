@@ -39,10 +39,13 @@ wb approve t1      # let implementation start
 wb show t1         # the plan, and everything that happened
 ```
 
-There is nothing to release and no version to track: `npm install` resolves the branch
-to a commit and writes it into your lock file, and `wb update` asks the same question
-again later. `wb serve` says at startup when something newer has been pushed, and never
-does anything about it — restarting is yours to time.
+There is nothing to release and no version to track: `npm install` resolves your
+dependency to a commit and writes it into your lock file, and `wb update` asks the same
+question again later. It predicts nothing — it installs, then says what actually moved,
+so a tag, a branch or a commit all behave the way you told npm they should.
+
+`wb serve` says at startup when something newer is waiting, and never does anything
+about it. A dependency pinned to a tag is silent, because its tag has not moved.
 
 ```bash
 wb update          # fetch whatever has been pushed since; then restart wb serve

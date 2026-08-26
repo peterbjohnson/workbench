@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { compareUrl, installed, remotesFor, short } from './update.ts';
+import { commitIn, compareUrl, installed, refIn, remotesFor, short } from './update.ts';
 
 const COMMIT = 'd4388de9f85714adf19cd96c71a7e4f1fc186dfa';
 
@@ -45,9 +45,50 @@ test('an installed copy knows the commit it is', () => {
 
   assert.deepEqual(installed({ repoRoot }, from), {
     name: 'workbench',
+    key: 'node_modules/workbench',
     spec: 'github:peterbjohnson/workbench',
     url: 'ssh://git@github.com/peterbjohnson/workbench.git',
     commit: COMMIT,
+  });
+});
+
+test('the commit in the lock file is what an update is measured against', () => {
+  const { repoRoot } = project();
+
+  assert.equal(commitIn(repoRoot, 'node_modules/workbench'), COMMIT);
+  assert.equal(commitIn(repoRoot, 'node_modules/nothing'), undefined);
+});
+
+/**
+ * What has to move for an update to exist. One question — would `npm install` resolve
+ * to something else — asked of whichever ref the dependency itself names.
+ */
+test('a dependency with no ref follows the default branch', () => {
+  assert.deepEqual(refIn('github:peterbjohnson/workbench'), { kind: 'ref', patterns: ['HEAD'] });
+});
+
+test('a named ref is asked for as a tag before a branch, and dereferenced', () => {
+  // The spelling does not say which it is, so both are asked at once. An annotated tag
+  // points at the tag object rather than the commit, which is what `^{}` unwraps.
+  assert.deepEqual(refIn('github:peterbjohnson/workbench#v0.2.0'), {
+    kind: 'ref',
+    patterns: ['refs/tags/v0.2.0^{}', 'refs/tags/v0.2.0', 'refs/heads/v0.2.0'],
+  });
+});
+
+test('a dependency pinned to a commit is already its own answer', () => {
+  // Nothing to ask anyone: it cannot move, so there is never an update waiting.
+  assert.deepEqual(refIn(`github:peterbjohnson/workbench#${COMMIT}`), {
+    kind: 'commit',
+    commit: COMMIT,
+  });
+});
+
+test('a semver range is not worked out at startup', () => {
+  // The highest tag matching a range needs version arithmetic, which is not worth a
+  // dependency for a hint. "wb update" still gets it right by installing and looking.
+  assert.deepEqual(refIn('github:peterbjohnson/workbench#semver:^0.2.0'), {
+    kind: 'unknowable',
   });
 });
 
