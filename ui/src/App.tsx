@@ -15,6 +15,7 @@ import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
+import { Interrupted } from './Interrupted.tsx';
 import { useOrder } from './order.ts';
 import { Settings } from './Settings.tsx';
 import { Theme } from './Theme.tsx';
@@ -86,6 +87,10 @@ export function App() {
   // The repository this board is working in. A fact of the running process, so it
   // is read once and never redrawn.
   const [repo, setRepo] = useState<string | null>(null);
+  // Whether the modal listing what was stopped mid-stage has been answered. Held
+  // for this page load and nowhere else: the tickets stay parked until somebody
+  // says what to do with them, so it asks again next time.
+  const [decided, setDecided] = useState(false);
   // Which end of Done to read from. The browser's choice, not the workbench's.
   const [order, chooseOrder] = useOrder();
 
@@ -211,6 +216,8 @@ export function App() {
     );
   const from = continuing(selected);
   const writing = selected === NEW || from !== null;
+  /** What the workbench was stopped in the middle of, and has not been asked about. */
+  const stoppedMidStage = tickets.filter((t) => t.interrupted);
 
   // Which cards are next rather than idle. One count for the whole board, so every
   // card is judged against the same load — and none before the policy has arrived.
@@ -334,6 +341,13 @@ export function App() {
             }
           />
         </aside>
+      )}
+
+      {/* Over everything, and before anything else is read: work that was stopped
+          and is waiting to hear whether to carry on is spending nothing in the
+          meantime, and is invisible on a board full of cards. */}
+      {stoppedMidStage.length > 0 && !decided && (
+        <Interrupted tickets={stoppedMidStage} onAct={act} onClose={() => setDecided(true)} />
       )}
 
       {selected !== null && !writing && (

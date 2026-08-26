@@ -39,6 +39,7 @@ workbench — a board of tickets that agents work through
   wb changes <id> <text>       keep the work and put these right; back to implement
   wb answer <id> <text>        answer a blocked ticket and let it carry on
   wb restart <id>              run a failed stage again, from the top
+  wb continue <id>             carry on a stage the workbench stopped, keeping its run
   wb ship <id>                 offer what it has as a pull request, and decide there
   wb cancel <id> [why]         stop a ticket, including one that is running
   wb wip <n>                   how many tickets may run at once
@@ -209,6 +210,7 @@ at all.
 | `POST /tickets/:id/changes` | keep the work and put these right — `{changes}` |
 | `POST /tickets/:id/answer` | answer a blocked ticket — `{answer}` |
 | `POST /tickets/:id/restart` | run a failed stage again, from the top |
+| `POST /tickets/:id/continue` | carry a stopped stage on, keeping the run it was in the middle of |
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |

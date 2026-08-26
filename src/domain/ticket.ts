@@ -95,6 +95,17 @@ export type Ticket = {
    * than pay again for thinking already done. Null unless something is parked.
    */
   session: string | null;
+  /**
+   * Whether what stopped this ticket was the workbench being stopped, rather than
+   * anything going wrong with the work. It parks the same way a failure does and
+   * is not the same thing at all: there is a run here worth carrying on.
+   *
+   * Its own field rather than read off `session`, because a run killed before the
+   * model service had named its conversation has no session and still has to be
+   * offered — restarting it from the top is what it needs, and a ticket nobody
+   * can see is one nobody restarts.
+   */
+  interrupted: boolean;
   /** The manager's reply, carried into the resumed run and cleared once it starts. */
   answer: string | null;
   /**
@@ -181,6 +192,7 @@ function blank(id: string): Ticket {
     revisions: 0,
     question: null,
     session: null,
+    interrupted: false,
     answer: null,
     prUrl: null,
     offered: false,
@@ -245,7 +257,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // that is already going.
     case 'stage_restarted': {
       if (t.status !== 'blocked') return t;
-      const resumed = { ...t, question: null, answer: null, session: null };
+      const resumed = { ...t, question: null, answer: null, session: null, interrupted: false };
 
       // Unless an offer is standing, in which case there is no stage to put it back
       // into: the last one finished before the pull request was opened, and what
@@ -261,6 +273,21 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       return t.stage === null ? t : { ...resumed, status: STATUS_FOR_STAGE[t.stage] };
     }
 
+    // The same move, keeping the conversation: the stage picks up where it got to
+    // rather than paying for the whole thing again. Guarded exactly like the
+    // restart above, and reading `offered` for the same reason.
+    //
+    // `session` is what it does not clear, and there may be none — a run killed
+    // before the model service named its conversation leaves nothing to resume.
+    // That is not a reason to refuse: the stage simply starts from the top, which
+    // is what a restart would have done anyway.
+    case 'stage_continued': {
+      if (t.status !== 'blocked') return t;
+      const carrying = { ...t, question: null, answer: null, interrupted: false };
+      if (t.offered) return { ...carrying, status: 'awaiting_verdict' };
+      return t.stage === null ? t : { ...carrying, status: STATUS_FOR_STAGE[t.stage] };
+    }
+
     case 'stage_started':
       return {
         ...t,
@@ -269,6 +296,8 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         running: true,
         question: null,
         answer: null,
+        // Whatever stopped the last run, this one is going.
+        interrupted: false,
         // A plan is what starts a trip round the loop, so it is what counts one.
         cycles: e.stage === 'plan' ? t.cycles + 1 : t.cycles,
         // A new plan re-judges the size of the work from nothing. Carrying the last
@@ -284,6 +313,11 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // Progress belongs to a run, not to the ticket. A stage starting has made none.
         step: null,
       };
+
+    // Written while the run is still going, so it is here even when nothing ever
+    // reports the run finishing. `stage_finished` still has the last word.
+    case 'session_started':
+      return { ...t, session: e.sessionId };
 
     case 'step_reached':
       return { ...t, step: e.index };
@@ -385,10 +419,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Both are the end of the road. Nothing resumes them, so nothing is kept for a
     // resumed run; the reason is in the event log, which is where the board reads it.
     case 'cancelled':
-      return { ...t, status: 'cancelled', running: false, question: null };
+      return { ...t, status: 'cancelled', running: false, question: null, interrupted: false };
 
     case 'gave_up':
-      return { ...t, status: 'gave_up', running: false, question: null };
+      return { ...t, status: 'gave_up', running: false, question: null, interrupted: false };
 
     // A rejection ends the offer as well as the round: the reworked ticket is
     // offered again, on the same branch and so on the same pull request — which is
@@ -411,6 +445,13 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
   // A crash is not a rejection. It parks and waits for the manager, same as a question.
   if (e.outcome === 'blocked' || e.outcome === 'failed') {
     return { ...stopped, status: 'blocked' };
+  }
+
+  // Nor is being stopped a crash. It parks in the same place — the manager decides
+  // what happens to it and nothing happens on its own — but it says which of the
+  // two it was, because one of them has a run underneath it worth carrying on.
+  if (e.outcome === 'interrupted') {
+    return { ...stopped, status: 'blocked', interrupted: true };
   }
 
   if (e.rejected !== undefined) {

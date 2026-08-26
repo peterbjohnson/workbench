@@ -267,6 +267,9 @@ export function statusOf(run: Run): string {
   if (run.outcome === 'running') return 'running';
   if (run.outcome === 'blocked') return 'asked you';
   if (run.outcome === 'failed') return 'failed';
+  // The workbench stopped under it. Nothing went wrong, and the run is still there
+  // to be carried on — reading it as either `failed` or `done` says the opposite.
+  if (run.outcome === 'interrupted') return 'stopped';
   if (run.rejected !== null) return 'did not approve';
   if (run.changes !== null) return 'asked for changes';
   if (run.checks !== null && run.checks.failed > 0) return 'checks failed';
@@ -276,10 +279,12 @@ export function statusOf(run: Run): string {
 /**
  * How that word should read: as progress, as a problem, or as still going. Asking
  * for changes is none of the three — the work was sound and is being finished —
- * so it gets no colour rather than borrowing one that means something else.
+ * so it gets no colour rather than borrowing one that means something else. Being
+ * stopped is the same kind of thing, for the same reason.
  */
 export function toneOf(run: Run): 'ok' | 'bad' | 'going' | 'note' {
   if (run.outcome === 'running') return 'going';
+  if (run.outcome === 'interrupted') return 'note';
   if (run.outcome === 'failed' || run.rejected !== null) return 'bad';
   if (run.checks !== null && run.checks.failed > 0) return 'bad';
   if (run.changes !== null) return 'note';

@@ -233,6 +233,81 @@ test('a stage that failed can be restarted, carrying nothing over', () => {
   assert.equal(j.add({ type: 'stage_restarted' }).status, 'implementing');
 });
 
+/** A stage that the workbench was stopped in the middle of, as `reconcile` closes it. */
+function stoppedMidStage(j: Journal, stage: 'plan' | 'implement', sessionId?: string): Ticket {
+  j.add({ type: 'stage_started', stage, runId: 'r1' });
+  if (sessionId !== undefined) j.add({ type: 'session_started', runId: 'r1', sessionId });
+  return j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+    sessionId,
+  });
+}
+
+test('the workbench being stopped is not the stage failing', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({ type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+  assert.equal(
+    j.ticket().session,
+    'sess-abc',
+    'the conversation is written down while the run is still going, not when it ends',
+  );
+
+  const stopped = j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+    sessionId: 'sess-abc',
+  });
+
+  assert.equal(stopped.status, 'blocked', 'it parks, like anything else that is stuck');
+  assert.equal(stopped.interrupted, true, 'and says which of the two it was');
+  assert.equal(stopped.session, 'sess-abc', 'the run is still there to be carried on');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'but nothing picks it back up on its own');
+});
+
+test('continuing an interrupted stage keeps its conversation', () => {
+  const j = newTicket();
+  stoppedMidStage(j, 'implement', 'sess-abc');
+
+  const carrying = j.add({ type: 'stage_continued' });
+  assert.equal(carrying.status, 'implementing', 'back into the stage it stopped in');
+  assert.equal(carrying.session, 'sess-abc', 'carrying what it had already thought');
+  assert.equal(carrying.interrupted, false, 'and no longer waiting to be picked up');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+
+  // Guarded like a restart: it cannot reach into work that is already going.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' });
+  assert.equal(j.add({ type: 'stage_continued' }).running, true, 'left alone while it runs');
+});
+
+test('restarting an interrupted stage still throws the conversation away', () => {
+  const j = newTicket();
+  stoppedMidStage(j, 'implement', 'sess-abc');
+
+  const restarted = j.add({ type: 'stage_restarted' });
+  assert.equal(restarted.status, 'implementing');
+  assert.equal(restarted.session, null, 'from the top means from the top');
+  assert.equal(restarted.interrupted, false, 'and it is no longer one to pick back up');
+});
+
+test('a stage stopped before it had a conversation can still be continued', () => {
+  // Killed between the run starting and the model service naming it. There is
+  // nothing to resume, and the ticket must still be offered and still move —
+  // otherwise the one thing this must never do, lose a ticket, is what it does.
+  const j = newTicket();
+  const stopped = stoppedMidStage(j, 'plan');
+  assert.equal(stopped.interrupted, true, 'still one to pick back up');
+  assert.equal(stopped.session, null, 'with nothing to pick up from');
+
+  assert.equal(j.add({ type: 'stage_continued' }).status, 'planning');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'plan' }, 'so it runs from the top');
+});
+
 test('the plan carries the steps, and a new plan drops the old ones', () => {
   const j = newTicket();
   j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });

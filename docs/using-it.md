@@ -90,6 +90,14 @@ that could not reach the remote — parks the ticket with nothing to answer, so 
 offers **Restart this stage** rather than a question box. It runs again from the top, and
 the failed attempt stays in the record beside the one that worked.
 
+**A stage the workbench was stopped in the middle of carries on instead.** Being stopped
+is not failing — it is how a `wb update` is picked up — and the run it was in the middle
+of is still there, so paying for the whole stage again would be paying twice for thinking
+already done. Those tickets say **stopped mid-stage** rather than **needs you**, and the
+board asks about them in one box the next time you open it: everything checked, one press
+for all of it. Nothing carries on by itself. `wb continue <id>` does one from the command
+line, and **Start this stage again** is there when carrying on is the wrong answer.
+
 ## Holding a ticket behind others
 
 `wb wait t43 t37,t40`, `wb new --after`, or the **Start after** box on the panel and the

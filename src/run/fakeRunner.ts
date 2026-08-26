@@ -57,6 +57,11 @@ export function createFakeRunner(opts: {
       return verdict.allow;
     };
 
+    // A real run says what conversation it is the moment the model service names
+    // one, and that is what lets a stage the workbench died in the middle of carry
+    // on. There is no conversation here, so the run's own id stands in — enough to
+    // exercise the path that keeps it, which is otherwise never run for real.
+    emit({ type: 'session_started', runId, sessionId: `fake-${runId}` });
     emit({ type: 'agent_said', runId, text: `[fake ${stage}]` });
 
     switch (stage) {

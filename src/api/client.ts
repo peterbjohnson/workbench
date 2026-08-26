@@ -95,6 +95,12 @@ export function createClient(baseUrl: string) {
     answer: (id: string, answer: string) => post<unknown>(`/tickets/${id}/answer`, { answer }),
     /** Run the stage again from the top. For one that failed, not one that asked. */
     restart: (id: string) => post<unknown>(`/tickets/${id}/restart`),
+    /**
+     * Run the stage again from where it got to, keeping its conversation. For one
+     * the workbench was stopped in the middle of — which is not the same as one
+     * that broke, and is not worth paying for twice.
+     */
+    carryOn: (id: string) => post<unknown>(`/tickets/${id}/continue`),
     /** Offer what it has as a pull request, whatever the agents made of it. */
     ship: (id: string) => post<unknown>(`/tickets/${id}/ship`),
     cancel: (id: string, reason: string) => post<unknown>(`/tickets/${id}/cancel`, { reason }),

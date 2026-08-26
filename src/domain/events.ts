@@ -7,7 +7,13 @@ export type Stage = 'plan' | 'implement' | 'review' | 'verify';
  */
 export type Scale = 'small' | 'standard' | 'large';
 
-export type RunOutcome = 'completed' | 'blocked' | 'failed';
+/**
+ * `interrupted` is not one a runner ever reports: it is written by `reconcile`
+ * alone, for a run nobody is left to answer for, exactly like the `runId` of
+ * `interrupted` it is written beside. Being stopped is not failing, and the
+ * difference is what lets the stage carry on rather than begin again.
+ */
+export type RunOutcome = 'completed' | 'blocked' | 'failed' | 'interrupted';
 
 /**
  * One standing check, run by the workbench itself rather than by an agent. That is
@@ -86,6 +92,15 @@ export type EventBody =
    */
   | { type: 'stage_restarted' }
   /**
+   * Put the stage back into the stage it stopped in, keeping its conversation.
+   *
+   * The counterpart of `stage_restarted`, and the difference between them is the
+   * only thing worth saying about either: that one throws the conversation away
+   * and buys the stage a second time, this one picks it back up where it got to.
+   * Both stay available, because carrying on is sometimes the wrong answer.
+   */
+  | { type: 'stage_continued' }
+  /**
    * The manager says this will do: offer it as a pull request from wherever it
    * has got to. Not a bypass of review — the pull request is still a review, and
    * merging is still a deliberate act — but it means two agents disagreeing can
@@ -94,6 +109,14 @@ export type EventBody =
    */
   | { type: 'shipped' }
   | { type: 'stage_started'; stage: Stage; runId: string }
+  /**
+   * The conversation this run is, written down the moment the model service names
+   * it rather than when the run ends. That is the whole point of it: a run only
+   * reports a session when it stops with something left to say, so a workbench
+   * killed mid-stage never reported one at all — and everything the run had spent
+   * was spent again from the top. This is what survives the kill.
+   */
+  | { type: 'session_started'; runId: string; sessionId: string }
   /**
    * The stage says it has started step `index` of the approved plan. Announced by
    * the agent as it works, so a long run says where it has got to rather than only
@@ -150,7 +173,8 @@ export type EventBody =
       later?: string[];
       /**
        * The conversation this run was, set only when it stopped with something left
-       * to say. Answering the question picks it back up instead of starting again.
+       * to say — a question it asked, or a workbench that stopped underneath it.
+       * Picking the ticket back up continues that instead of starting again.
        */
       sessionId?: string;
     }

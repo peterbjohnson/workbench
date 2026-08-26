@@ -490,9 +490,23 @@ function Actions({
 
       {t.status === 'blocked' && (
         <>
+          {/* Stopped rather than broken, so the run it was in the middle of is
+              still there. Restarting stays beside it, unstyled: carrying on is
+              the cheap answer and usually the right one, but sometimes it is not,
+              and then somebody has to be able to say so. */}
+          {t.interrupted && (
+            <div className="row">
+              <button type="button" className="go" onClick={() => void onAct(wb.carryOn(t.id))}>
+                Carry on where it stopped
+              </button>
+              <button type="button" onClick={() => void onAct(wb.restart(t.id))}>
+                Start this stage again
+              </button>
+            </div>
+          )}
           {/* A stage that failed asked nothing, so there is nothing to answer:
               what it needs is to be run again. */}
-          {t.question === null && (
+          {!t.interrupted && t.question === null && (
             <div className="row">
               <button type="button" className="go" onClick={() => void onAct(wb.restart(t.id))}>
                 Restart this stage

@@ -241,6 +241,13 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case 'continue': {
+      if (!args[0]) return fail('which ticket?');
+      await wb.carryOn(args[0]);
+      console.log(`${args[0]} carrying on from where it stopped`);
+      return 0;
+    }
+
     case 'cancel': {
       const [id, reason] = args;
       if (!id) return fail('which ticket?');
@@ -367,6 +374,15 @@ async function show(wb: Client, config: Config, id: string | undefined): Promise
   console.log(`${t.id}  ${t.title}`);
   if (t.body) console.log(t.body);
   console.log(`\nstatus   ${label(t).trim()}`);
+  // A ticket the workbench was stopped in the middle of parks in the same place as
+  // one that broke, and is not the same thing: there is a run underneath it worth
+  // carrying on, and reading it as a failure is what made restarting expensive.
+  if (t.interrupted) {
+    console.log(
+      `         stopped mid-stage, not failed — "wb continue ${t.id}" carries it on,\n` +
+        `         "wb restart ${t.id}" runs the stage again from the top`,
+    );
+  }
   if (t.waitsFor.length > 0) {
     console.log(`waits    ${t.waitsFor.join(', ')}, until each offers its work or ends`);
   }
@@ -539,7 +555,9 @@ async function serve(config: Config): Promise<number> {
 
   const wb = await startWorkbench(running, (message) => console.log(`\n${message}\n`));
 
-  for (const id of reconcile(wb.store)) console.log(`${id}  picked up mid-stage; it needs you`);
+  for (const id of reconcile(wb.store)) {
+    console.log(`${id}  stopped mid-stage; "wb continue ${id}" carries it on from there`);
+  }
 
   // Only the good news: the orchestrator announces the bad news itself, on its first
   // tick and on every change after it, and saying it twice reads like two problems.

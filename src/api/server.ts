@@ -243,6 +243,10 @@ async function handle(
         case 'restart':
           store.append(id, { type: 'stage_restarted' });
           return send(res, 200, { ticket: store.ticket(id) });
+        // The other half of restarting: same stage, keeping its conversation.
+        case 'continue':
+          store.append(id, { type: 'stage_continued' });
+          return send(res, 200, { ticket: store.ticket(id) });
         case 'approve':
           store.append(id, { type: 'plan_approved' });
           return send(res, 200, { ticket: store.ticket(id) });

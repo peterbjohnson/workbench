@@ -128,6 +128,39 @@ test('answering a blocked ticket resumes it', async () => {
   });
 });
 
+test('an interrupted ticket can be carried on, or restarted from the top', async () => {
+  await withApi(async (wb, store) => {
+    /** What `reconcile` leaves behind for a stage the workbench was stopped in. */
+    const stoppedMidStage = () => {
+      store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+      store.append('t1', { type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+      store.append('t1', {
+        type: 'stage_finished',
+        runId: 'interrupted',
+        outcome: 'interrupted',
+        summary: 'the workbench stopped while this stage was running',
+        sessionId: 'sess-abc',
+      });
+    };
+
+    await wb.create('a thing', '');
+    stoppedMidStage();
+    const parked = (await wb.ticket('t1')).ticket;
+    assert.equal(parked.status, 'blocked');
+    assert.equal(parked.interrupted, true, 'stopped, not broken');
+
+    await wb.carryOn('t1');
+    const carrying = (await wb.ticket('t1')).ticket;
+    assert.equal(carrying.status, 'planning');
+    assert.equal(carrying.session, 'sess-abc', 'with the run it stopped in the middle of');
+
+    // And the other way round: restarting is still there, and still throws it away.
+    stoppedMidStage();
+    await wb.restart('t1');
+    assert.equal((await wb.ticket('t1')).ticket.session, null);
+  });
+});
+
 test('the work-in-progress limit is readable and settable', async () => {
   await withApi(async (wb) => {
     assert.equal((await wb.policy()).wipLimit, 2);
