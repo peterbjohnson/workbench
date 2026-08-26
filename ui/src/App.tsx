@@ -12,6 +12,7 @@ import {
 } from '../../src/domain/board.ts';
 import { heldBy, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
+import { applyBrand, isColour } from './brand.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
@@ -84,8 +85,15 @@ export function App() {
   const [docs, setDocs] = useState<Record<DocKind, Doc[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The repository this board is working in. A fact of the running process, so it
-  // is read once and never redrawn.
+  // never changes — but it comes from the settings, which is also where the colour
+  // of this instance is, and that does.
   const [repo, setRepo] = useState<string | null>(null);
+  // What the ticket form offers in front of a title. From the settings, so it is
+  // read where they are and handed to both forms that write a title.
+  const [prefixes, setPrefixes] = useState<string[]>([]);
+  // Bumped when the settings page saves, so what was read out of the settings is
+  // read again — and only then, rather than on every event.
+  const [settingsVersion, setSettingsVersion] = useState(0);
   // Which end of Done to read from. The browser's choice, not the workbench's.
   const [order, chooseOrder] = useOrder();
 
@@ -123,20 +131,29 @@ export function App() {
     };
   }, []);
 
-  // Which repository this is. Two boards on two ports are otherwise identical down
-  // to the pixel, and the answer to "which one is this" should not be a page away.
+  // Which repository this is, and what colour it was given. Two boards on two ports
+  // are otherwise identical down to the pixel, and the answer to "which one is this"
+  // should not be a page away. Read once: the settings page is the only thing that
+  // changes a colour, and it puts its own — draft or saved — on the header while it
+  // is open. Reading again on every event would overwrite an unsaved draft with the
+  // saved colour each time a running ticket said anything.
   useEffect(() => {
     let live = true;
     wb.settings()
       .then((all) => {
+        if (!live) return;
         const found = all.find((s) => s.key === 'repoRoot')?.value;
-        if (live && typeof found === 'string') setRepo(found);
+        if (typeof found === 'string') setRepo(found);
+        const colour = all.find((s) => s.key === 'colour')?.value;
+        applyBrand(isColour(colour) ? colour : null);
+        const offered = all.find((s) => s.key === 'ticketPrefixes')?.value;
+        if (Array.isArray(offered)) setPrefixes(offered);
       })
       .catch((e: unknown) => live && setError(describe(e)));
     return () => {
       live = false;
     };
-  }, []);
+  }, [settingsVersion]);
 
   // The tab as well as the header: a window you are looking for is usually one you
   // cannot see, and its title is all the switcher shows of it.
@@ -209,6 +226,17 @@ export function App() {
         ? held
         : { ...held, [kind]: held[kind].map((d) => (d.name === doc.name ? doc : d)) },
     );
+  /** And what one page added or removed, which the count is the same count of. */
+  const created = (kind: DocKind) => (doc: Doc) =>
+    setDocs((held) =>
+      held === null
+        ? held
+        : { ...held, [kind]: [...held[kind], doc].sort((a, b) => (a.name < b.name ? -1 : 1)) },
+    );
+  const deleted = (kind: DocKind) => (name: string) =>
+    setDocs((held) =>
+      held === null ? held : { ...held, [kind]: held[kind].filter((d) => d.name !== name) },
+    );
   const from = continuing(selected);
   const writing = selected === NEW || from !== null;
 
@@ -256,10 +284,19 @@ export function App() {
           kind="skill"
           docs={docs?.skill ?? null}
           onSaved={saved('skill')}
+          onCreated={created('skill')}
+          onDeleted={deleted('skill')}
           empty="No skills yet. They live in the workbench's skills/ directory."
         />
       )}
-      {tab === 'Settings' && <Settings onSaved={() => setVersion((v) => v + 1)} />}
+      {tab === 'Settings' && (
+        <Settings
+          onSaved={() => {
+            setVersion((v) => v + 1);
+            setSettingsVersion((v) => v + 1);
+          }}
+        />
+      )}
 
       {tab === 'Board' && (
         <div className="board">
@@ -315,6 +352,7 @@ export function App() {
             commitLabel="Create and commit"
             askAboutApproval
             tickets={tickets}
+            prefixes={prefixes}
             onCancel={() => open(null)}
             // Straight into the ticket that was just written, either way — whether
             // you have just committed to it or are about to decide.
@@ -343,6 +381,7 @@ export function App() {
           // The whole board, so a suggestion already made into a ticket can say
           // which one rather than offering to make it again.
           tickets={tickets}
+          prefixes={prefixes}
           onAct={act}
           onClose={() => open(null)}
         />

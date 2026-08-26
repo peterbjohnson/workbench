@@ -5,11 +5,12 @@ import { fileURLToPath } from 'node:url';
 
 import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
+import { ended } from '../domain/ticket.ts';
 import type { Config } from '../config.ts';
 import { chatTurns } from '../domain/board.ts';
 import { proposalEvent } from '../domain/proposals.ts';
 import type { ChatRunner } from '../run/chat.ts';
-import { listDocs, writeDoc, type DocKind } from './documents.ts';
+import { createDoc, deleteDoc, listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
@@ -136,6 +137,26 @@ async function handle(
     return refusable(res, () => ({ doc: writeDoc(config, kind, name, text) }));
   }
 
+  // Adding and removing is skills only, and `createDoc` is what says so — the route
+  // exists for both kinds so that asking for an agent is answered with the reason
+  // rather than with a 404 that reads like a missing feature.
+  if (method === 'POST' && (route === '/agents' || route === '/skills')) {
+    const { name, text } = await readJson(req);
+    const kind = kindOf(route);
+    return refusable(res, () => ({
+      doc: createDoc(config, kind, String(name ?? ''), typeof text === 'string' ? text : undefined),
+    }));
+  }
+
+  if (method === 'DELETE' && docPath) {
+    const kind = kindOf(docPath[1] as string);
+    const name = docPath[2] as string;
+    return refusable(res, () => {
+      deleteDoc(config, kind, name);
+      return { deleted: name };
+    });
+  }
+
   if (route === '/tickets') {
     if (method === 'GET') return send(res, 200, { tickets: store.tickets() });
     if (method === 'POST') {
@@ -251,6 +272,17 @@ async function handle(
         case 'ship':
           store.append(id, { type: 'shipped' });
           return send(res, 200, { ticket: store.ticket(id) });
+        case 'merge': {
+          // Nothing to merge unless an offer is actually standing. A ticket being
+          // reworked keeps its `prUrl`, so that alone would let the work in flight
+          // be merged halfway through.
+          const ticket = store.ticket(id);
+          if (!ticket.offered || ticket.prUrl === null) {
+            return send(res, 400, { error: 'there is no pull request to merge' });
+          }
+          store.append(id, { type: 'merge_requested' });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
         case 'restart':
           store.append(id, { type: 'stage_restarted' });
           return send(res, 200, { ticket: store.ticket(id) });
@@ -266,9 +298,16 @@ async function handle(
         case 'changes': {
           const changes = String(payload['changes'] ?? '').trim();
           if (changes === '') return send(res, 400, { error: 'say what to put right' });
+          const ticket = store.ticket(id);
+          // A ticket that has ended is not being worked on any more, and this is
+          // the one route that would start it again — pressed on a merged ticket,
+          // it would drop finished work back into implement.
+          if (ended(ticket)) {
+            return send(res, 400, { error: 'this ticket is over — there is nothing to put right' });
+          }
           // Nothing to put right before there is a plan, and no plan means the
           // stage this sends the ticket to has nothing to work from.
-          if (store.ticket(id).plan === null) {
+          if (ticket.plan === null) {
             return send(res, 400, { error: 'nothing has been planned yet — send it back instead' });
           }
           store.append(id, { type: 'changes_requested', changes });
