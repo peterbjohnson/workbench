@@ -695,6 +695,28 @@ section > h3 {
   line-height: 1.5;
 }
 
+/* The prefix reads as part of the title, because it is: it is put on the front of
+   the title itself, so it sits on the same line rather than above it as a field of
+   its own. */
+.form .titled {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.form .titled input {
+  flex: 1;
+  min-width: 0;
+}
+
+.form .titled select {
+  margin-top: 0.3rem;
+  color: var(--ink);
+  font-size: 0.9rem;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
 /* A note under a field is prose, not another field name — the label's own casing
    and tracking would otherwise shout a whole sentence at you. */
 .form label > .quiet {
