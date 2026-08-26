@@ -2,13 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  changesStand,
   COLUMNS,
   columnFor,
   details,
+  headline,
   inColumn,
   madeInto,
   needsYou,
   ordered,
+  rejectionStands,
   runs,
   sendableBack,
   statusOf,
@@ -109,6 +112,70 @@ test('another column keeps the board order whatever is asked of it', () => {
 test('needing you is the gate and being stuck, and nothing else', () => {
   const waiting = EVERY_STATUS.filter((s) => needsYou(at(s)));
   assert.deepEqual(waiting, ['plan_gate', 'blocked']);
+});
+
+test('every status says where the ticket is and what happens next', () => {
+  for (const status of EVERY_STATUS) {
+    const { state, detail } = headline(at(status));
+    assert.notEqual(state, '', status);
+    assert.notEqual(detail, '', status);
+  }
+});
+
+test('the headline is what the panel is opened to find out', () => {
+  assert.deepEqual(headline(at('plan_gate')), {
+    state: 'Waiting on you',
+    detail: 'approve the plan, or send it back',
+    tone: 'note',
+  });
+
+  // The case this was written for: a ticket in a pull request said nothing about
+  // being in one, and led with whatever had sent it back three stages ago.
+  assert.deepEqual(headline({ ...at('awaiting_verdict'), rejection: 'wrong problem' }), {
+    state: 'Offered',
+    detail: 'waiting on the pull request',
+    tone: 'going',
+  });
+
+  // Stuck asking and stuck fallen-over need different things done about them.
+  const stuck = at('blocked', 'implement');
+  const asked = { ...stuck, question: { question: 'which units?', reasoning: 'two are used' } };
+  assert.equal(headline(asked).state, 'Waiting on you');
+  assert.equal(headline(asked).detail, 'an agent asked you something');
+  assert.equal(headline(stuck).state, 'Stuck');
+  assert.equal(headline(stuck).tone, 'bad');
+
+  // A running stage says how far it has got — the answer to twenty minutes of
+  // "running" — and one merely waiting for a slot does not claim to be going.
+  const reviewing = { ...at('reviewing'), steps: ['a', 'b', 'c', 'd', 'e'], step: 2 };
+  assert.equal(headline({ ...reviewing, running: true }).detail, 'review is running, step 2/5');
+  assert.equal(headline({ ...reviewing, running: true, step: null }).detail, 'review is running');
+  assert.equal(headline(reviewing).detail, 'waiting for a slot to review');
+
+  // A ticket held behind another is not waiting for a slot, and its card already
+  // says so — the block the ticket asked to be the one you trust must not
+  // contradict the card about the same ticket.
+  const waiting = { ...at('queued'), waitsFor: ['t3'] };
+  const other = { ...at('queued'), id: 't3' };
+  assert.equal(headline(waiting, heldBy(waiting, [waiting, other])).detail, 'waiting for t3');
+  assert.equal(headline(waiting, []).detail, 'waiting for a slot to plan', 'once it is let go');
+});
+
+test('a rejection stands only while the ticket is doing something about it', () => {
+  const standing = EVERY_STATUS.filter((s) => rejectionStands(at(s)));
+  assert.deepEqual(standing, ['planning']);
+  assert.equal(rejectionStands(at('blocked', 'plan')), true, 'stuck part-way through replanning');
+  assert.equal(rejectionStands(at('blocked', 'implement')), false);
+
+  // Everywhere else it is history. Neither is ever cleared — the brief and the
+  // hand-over message read them — so this is the only thing keeping a rejection
+  // three stages old from being the loudest line on the ticket.
+  assert.equal(rejectionStands({ ...at('awaiting_verdict'), rejection: 'wrong problem' }), false);
+
+  const changing = EVERY_STATUS.filter((s) => changesStand(at(s)));
+  assert.deepEqual(changing, ['implementing']);
+  assert.equal(changesStand(at('blocked', 'implement')), true);
+  assert.equal(changesStand(at('blocked', 'plan')), false);
 });
 
 function one(body: EventBody, i = 0): Event {

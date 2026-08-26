@@ -399,6 +399,50 @@ aside h2 {
   font-size: 1.05rem;
 }
 
+/* Where the ticket is, in words, before anything else. The status was only ever a
+   word in the chip line, so a ticket waiting on a pull request said nothing about
+   waiting on one — and whatever box happened to be set said it instead. */
+.headline {
+  margin: 0.5rem 0 0.8rem;
+  padding-left: 0.6rem;
+  border-left: 3px solid var(--line);
+}
+
+.headline .state {
+  font-weight: 600;
+}
+
+.headline .detail {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+/* The tones the stage line already uses, so the top of the panel and the line
+   under it read as the same news rather than as two colour schemes. */
+.headline.ok {
+  border-color: var(--ok);
+}
+
+.headline.ok .state {
+  color: var(--ok);
+}
+
+.headline.bad {
+  border-color: var(--bad);
+}
+
+.headline.bad .state {
+  color: var(--bad);
+}
+
+.headline.going {
+  border-color: var(--accent);
+}
+
+.headline.going .state {
+  color: var(--accent);
+}
+
 /* Where the ticket has got to, above everything else in the panel. One line of
    stages, so the answer to "what is happening" costs no scrolling and no clicks. */
 .pipeline {
