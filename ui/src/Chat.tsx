@@ -36,6 +36,15 @@ export function Chat({
   const showing = open ?? turns.length > 0;
   const turnList = useRef<HTMLDivElement>(null);
 
+  /* The pane is open on this ticket, so a turn about it is coming. Almost all of
+     what one used to cost was starting something to answer it, and told now that is
+     over before the first thing is typed — which is the whole point of paying it
+     here rather than when Send is pressed. Told on the rail as well as open: the
+     count is there to be clicked. */
+  useEffect(() => {
+    void wb.warmChat(id).catch(() => {});
+  }, [id]);
+
   /* The newest turn is the one worth seeing, so the scroller starts at the bottom
      and goes back there as the conversation grows. */
   useEffect(() => {
