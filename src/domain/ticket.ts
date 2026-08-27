@@ -32,8 +32,8 @@ export type Ticket = {
   continues: string | null;
   /**
    * Tickets this one must not start ahead of. Nothing runs while any of them is
-   * unmet — see `heldBy`, which says what meeting one takes and is the only thing
-   * that reads this.
+   * unmet — see `heldBy`, which says what meeting one takes, and `awaitedWork`,
+   * which says what of theirs this branch is then built on.
    *
    * Not the same as `continues`, and they compose: that one says where the work
    * *starts from* and is fixed when the branch is cut; these say *when*, and can
@@ -149,6 +149,12 @@ export type Ticket = {
    * taken from.
    */
   base: string | null;
+  /**
+   * The branches this one has merged that the base has not got — the work it
+   * waited for, which was offered rather than merged. What keeps `base` from moving
+   * onto a commit that has not got it: see `carriedWork`, which decides this.
+   */
+  carrying: string[];
   /** Every commit this ticket has made, oldest first. */
   commits: string[];
   /** How many times this ticket has been planned. One per trip round the loop. */
@@ -214,6 +220,7 @@ function blank(id: string): Ticket {
     mergeRequested: false,
     conflicts: [],
     base: null,
+    carrying: [],
     commits: [],
     cycles: 0,
     costUsd: 0,
@@ -403,8 +410,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       };
     }
 
+    // A branch just cut carries nothing: it is the base and nothing else until the
+    // work this ticket waited for is merged onto it.
     case 'branched':
-      return { ...t, branch: e.branch, base: e.base };
+      return { ...t, branch: e.branch, base: e.base, carrying: [] };
 
     // The merge commit is the ticket's, and the new base is what its change is now
     // measured against — `diff` reads `base...HEAD`, so leaving the old one there
@@ -414,15 +423,34 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Except for a ticket carrying on from another: its base is that ticket's
     // branch, and moving it to the base proper is the same mistake the other way
     // round — the earlier ticket's work would read as this one's.
-    case 'refreshed':
+    //
+    // And except while the branch is standing on work it waited for, which is
+    // offered and so is in no commit of the base: moving there would hand every
+    // stage the dependency's change as this ticket's. The merge that took that work
+    // is what the ticket is measured from instead — and it can be, but only while
+    // the branch has nothing of its own on it. Where the branch is cut that merge is
+    // the base plus the dependencies and nothing else, which is the commit this
+    // ticket needs and the only one anywhere that is; after any stage has committed
+    // there is no such commit, and the base stands where that merge put it.
+    //
+    // What the branch is standing on is asked of the branch, not of the refresh that
+    // last touched it: `carrying` is every merge in it the base has not got, and it
+    // stops naming one when that work lands rather than when its ticket stops
+    // offering it. Read from `took` when a refresh recorded before this existed says
+    // nothing else — those events then mean exactly what they always did.
+    case 'refreshed': {
+      const carrying = e.carrying ?? e.took ?? [];
+      const held = t.continues !== null || (carrying.length > 0 && t.commits.length > 0);
       return {
         ...t,
-        base: t.continues === null ? e.base : t.base,
+        base: held ? t.base : e.base,
+        carrying,
         commits: [...t.commits, e.commit],
         // The base went in, and it went in cleanly. Whatever the branch last
         // clashed with is settled by that.
         conflicts: [],
       };
+    }
 
     // Record only, unlike `refreshed`: there is no commit and the base has not
     // moved. The merge is on disk, and the stage now running is what finishes it.

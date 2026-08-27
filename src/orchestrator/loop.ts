@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, Scale, Stage } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
-import { heldBy, nextAction, type Action } from '../domain/rules.ts';
+import { awaitedWork, carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
 import { readStep } from '../run/protocol.ts';
@@ -98,6 +98,11 @@ export type Workspace = {
    */
   refresh: (
     ticketId: string,
+    /**
+     * Branches to bring in besides the base: the work this ticket waited for,
+     * which is offered and so is not in the base yet.
+     */
+    alsoMerge?: readonly string[],
     /**
      * Leave a conflict in the worktree rather than undoing it, because the caller
      * is about to run a stage that can resolve it. At ship time there is nobody
@@ -420,11 +425,22 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     // at all, so a conflict handed to one of them could only sit there unresolved.
     if (stage !== 'implement' && stage !== 'verify') return undefined;
 
-    const result = await deps.workspace.refresh(ticket.id, true);
+    // The base and nothing else: the work this ticket waited for is brought in by
+    // `takeAwaitedWork`, before the stage starts, and a dependency's conflict is not
+    // one to hand a stage — it belongs to the manager who chose the dependency.
+    const result = await deps.workspace.refresh(ticket.id, [], true);
     if (result.kind === 'up-to-date') return undefined;
 
     if (result.kind === 'merged') {
-      store.append(ticket.id, { type: 'refreshed', base: result.base, commit: result.commit });
+      store.append(ticket.id, {
+        type: 'refreshed',
+        base: result.base,
+        commit: result.commit,
+        // Nothing was taken here — only the base came in — but what the branch was
+        // already standing on is still in it, and a `refreshed` that says otherwise
+        // is what lets the base move onto a commit that has not got it.
+        carrying: carriedWork(ticket, store.tickets(), []),
+      });
       return undefined;
     }
 
@@ -541,7 +557,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         // the ticket keeps the base it was cut from, and every later diff is taken
         // from there: the whole of the merged-in work read as this ticket's own.
         if (conflict !== undefined && commit !== null) {
-          store.append(ticket.id, { type: 'refreshed', base: conflict.base, commit });
+          store.append(ticket.id, {
+            type: 'refreshed',
+            base: conflict.base,
+            commit,
+            carrying: carriedWork(ticket, store.tickets(), []),
+          });
         }
       } catch (error) {
         // The run still cost what it cost, whatever happened afterwards.
@@ -624,38 +645,64 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     store.append(ticket.id, { type: 'pr_opened', url });
   }
 
+  /** The branches of the offered work this ticket waited for. See `awaitedWork`. */
+  function awaitedBranches(ticket: Ticket): string[] {
+    return awaitedWork(ticket, store.tickets()).map((t) => t.branch);
+  }
+
   /**
-   * Brings the base into a ticket's branch, and says whether the ticket may carry
-   * on. A clean branch is the ordinary answer: nothing merged, nothing recorded,
-   * nothing re-run, nothing spent.
+   * Brings the base — and the work this ticket waited for, which is offered and so
+   * is not in the base yet — into a ticket's branch, and says whether the ticket
+   * may carry on. A clean branch is the ordinary answer: nothing merged, nothing
+   * recorded, nothing re-run, nothing spent.
    *
    * When something did merge, the standing checks decide. They are the whole point
    * of refreshing — a merge git can do silently is exactly the change that breaks
    * a ticket against work that landed while it was busy, and running them here is
    * how that is found on the ticket rather than by a person at merge time.
    *
-   * A conflict and a failure both park the ticket rather than starting anything:
-   * the branch is untouched, the work stands, and what to do about it is a
-   * decision — ship it, put it right, or stop it — rather than a stage.
+   * A conflict and a failure both park the ticket rather than starting anything: the
+   * work stands, and what to do about it is a decision — ship it, put it right, or
+   * stop it — rather than a stage. What a conflict does leave behind is whatever
+   * merged before it, so that is recorded first: the branch has moved, and a record
+   * that says otherwise is what measures a dependency's change as this ticket's.
    */
   async function refresh(ticket: Ticket, worktree: string): Promise<boolean> {
-    const result = await deps.workspace.refresh(ticket.id);
+    const result = await deps.workspace.refresh(ticket.id, awaitedBranches(ticket));
     if (result.kind === 'up-to-date') return true;
+
+    // What came in with the base is recorded along with it, because a branch
+    // standing on work the base has not got cannot be measured from the base: see
+    // `refreshed` in events.ts. Written whichever way the merge went — a conflict
+    // leaves everything that merged before it standing, and the branch's record has
+    // to say where the branch is rather than where it was.
+    const took = result.merged.filter((ref) => ref !== result.base);
+    if (result.merged.length > 0) {
+      store.append(ticket.id, {
+        type: 'refreshed',
+        base: result.base,
+        commit: result.commit,
+        took,
+        // Everything the base still has not got, not only what came in now: a
+        // dependency sent back for changes stops being offered without its work
+        // reaching the base, and the reducer is what decides whether the base may
+        // move onto this one.
+        carrying: carriedWork(ticket, store.tickets(), took),
+      });
+    }
 
     if (result.kind === 'conflicted') {
       store.append(ticket.id, {
         type: 'blocked',
         reason:
-          `this branch conflicts with ${result.base.slice(0, 8)}, which the base has ` +
-          `moved on to:\n${result.paths.map((p) => `  ${p}`).join('\n')}`,
+          `this branch conflicts with ${describeRef(result.with, result.base)}:\n` +
+          result.paths.map((p) => `  ${p}`).join('\n'),
         // The same paths as data, so the panel can list them and offer the way out
         // rather than leaving them buried in a paragraph.
         conflicts: result.paths,
       });
       return false;
     }
-
-    store.append(ticket.id, { type: 'refreshed', base: result.base, commit: result.commit });
 
     const failed = (await deps.checks(worktree)).filter((r) => !r.ok);
     if (failed.length === 0) return true;
@@ -758,8 +805,65 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     );
     if (base !== null) {
       store.append(ticket.id, { type: 'branched', branch: ticket.branch, base });
+      await takeAwaitedWork(ticket);
     }
     return { path, scratch };
+  }
+
+  /**
+   * Puts the work this ticket waited for into the branch just cut for it.
+   *
+   * A ticket is released the moment what it waits for is *offered*, which is the
+   * right moment — but the base does not have that work in it yet, and by
+   * definition will not until a person merges it. So the branch is cut from the
+   * base, as every branch is, and then the offered work is merged in: the commit
+   * this ticket needs is the base with all of its dependencies on it, and nowhere
+   * else in the world is there one. Without this the wait is honoured in name and
+   * defeated in fact — the ticket starts at the right time, on the wrong code.
+   *
+   * Only where the branch is cut, so a ticket pays for this once. The standing
+   * checks are not run: they judge a ticket's own work against a base that moved,
+   * and there is no work here yet.
+   *
+   * A conflict blocks the ticket — `perform` turns the throw into `blocked`, and
+   * this is reached before `stage_started`, so two dependencies that will not sit in
+   * one tree stop it at the cheapest moment there is. Whatever merged before the
+   * conflict is recorded first: it is on the branch, and the branch's record has to
+   * say what the branch is.
+   */
+  async function takeAwaitedWork(ticket: Ticket): Promise<void> {
+    const branches = awaitedBranches(ticket);
+    if (branches.length === 0) return;
+
+    const result = await deps.workspace.refresh(ticket.id, branches);
+    if (result.kind === 'up-to-date') return;
+
+    // Recorded against the merge rather than the commit the branch was cut from,
+    // because that is what this ticket's own work is now measured from: `diff` reads
+    // `base...HEAD`, so leaving the base behind the dependencies hands every stage —
+    // and then the reviewer — their work as though this ticket had written it. The
+    // failure `refreshed` moves the base to prevent, arriving by the other door.
+    //
+    // What merged, not what was asked for: a conflict leaves the merges before it
+    // standing, and a blocked ticket whose base is still the commit it was cut from
+    // hands the stage that follows the manager's answer exactly that whole change.
+    const took = result.merged.filter((ref) => ref !== result.base);
+    if (result.merged.length > 0) {
+      store.append(ticket.id, {
+        type: 'refreshed',
+        base: result.commit,
+        commit: result.commit,
+        took,
+        carrying: carriedWork(ticket, store.tickets(), took),
+      });
+    }
+
+    if (result.kind === 'conflicted') {
+      throw new Error(
+        `this branch cannot take ${describeRef(result.with, result.base)}:\n` +
+          result.paths.map((p) => `  ${p}`).join('\n'),
+      );
+    }
   }
 
   /** Guards against a rule that keeps finding work forever. */
@@ -805,4 +909,15 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * What would not merge, said so a person can act on it: the base is a commit and
+ * is worth naming as one, and anything else is a ticket's branch, which says which
+ * ticket without anybody having to look a sha up.
+ */
+function describeRef(ref: string, base: string): string {
+  return ref === base
+    ? `${base.slice(0, 8)}, which the base has moved on to`
+    : `${ref}, whose work it waits for`;
 }

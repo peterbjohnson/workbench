@@ -42,10 +42,11 @@ const STAGE_FOR_STATUS = {
  * Whether this ticket has let go of whatever is waiting on it.
  *
  * **A pull request is the release, not the merge.** What one ticket needs of
- * another is that it stop committing — after that its branch is final, and a
- * ticket that needs the code itself starts *from* that branch (`continues`) rather
- * than from a merge that has not happened. Waiting for the merge would make every
- * dependency wait on a person, and a forgotten pull request would stop the board.
+ * another is that it stop committing — after that its branch is final, and the
+ * ticket that waited takes that branch into its own (`awaitedWork`) rather than
+ * waiting for a merge that has not happened. Waiting for the merge would make
+ * every dependency wait on a person, and a forgotten pull request would stop the
+ * board.
  *
  * A ticket that ended — cancelled, given up on — releases too. Nothing else ever
  * will, and a queue held up by a ticket nobody is working on is the one failure
@@ -73,6 +74,56 @@ export function heldBy(t: Ticket, tickets: readonly Ticket[]): Ticket[] {
   return t.waitsFor
     .map((id) => tickets.find((o) => o.id === id))
     .filter((o): o is Ticket => o !== undefined && !released(o));
+}
+
+/**
+ * The work this ticket has to be standing on when it starts: the tickets it
+ * `waitsFor` that are offered right now.
+ *
+ * The sibling of `heldBy`, and the other half of it. `heldBy` says *when* a ticket
+ * may start; this says *what must be in its branch* by then — because being
+ * released by an offer means, by definition, being released against a base that
+ * does not have that work in it yet.
+ *
+ * Offered and still going, and nothing else. A cancelled or given-up ticket lets go
+ * without leaving any work to take — and the ending has to be asked about as well
+ * as the offer, because it does not take the offer back: only the manager's two
+ * noes and the verdict clear `offered`, so a ticket cancelled after opening a pull
+ * request is still offering, and merging that would ship work the manager stopped.
+ *
+ * One whose pull request has been merged has put its work in the base, where the
+ * ordinary refresh brings it in with everything else. So a dependency drops off this
+ * list on its own as it lands, and nothing has to remember what was once on it.
+ */
+export function awaitedWork(t: Ticket, tickets: readonly Ticket[]): Ticket[] {
+  return t.waitsFor
+    .map((id) => tickets.find((o) => o.id === id))
+    .filter((o): o is Ticket => o !== undefined && o.offered && !ended(o));
+}
+
+/**
+ * The work in this branch that the base has not got: what it was already carrying,
+ * plus whatever this refresh has just taken.
+ *
+ * A fact about the branch rather than about the dependency, and so a sticky one —
+ * once a merge is in the branch it is in it, whatever the board says afterwards.
+ * `awaitedWork` cannot answer this: it is the offered work, and only the merged
+ * `refreshed` that follows an offer being withdrawn would then record nothing and
+ * let the base move onto a commit that has not got the merge this branch is
+ * standing on.
+ *
+ * A ref drops off when its ticket is `done` — the pull request merged, so the work
+ * is in the base and the ordinary refresh brings it in with everything else. That,
+ * and nothing else: a dependency sent back for changes, rejected, cancelled or
+ * belonging to no ticket on the board is still work no commit of the base has.
+ */
+export function carriedWork(
+  t: Ticket,
+  tickets: readonly Ticket[],
+  taking: readonly string[],
+): string[] {
+  const landed = (ref: string) => tickets.some((o) => o.branch === ref && o.status === 'done');
+  return [...new Set([...t.carrying, ...taking])].filter((ref) => !landed(ref));
 }
 
 /**

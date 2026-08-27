@@ -22,7 +22,7 @@ import {
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
-import { heldBy } from './rules.ts';
+import { awaitedWork, carriedWork, heldBy } from './rules.ts';
 import { deriveTicket, ended, type Status, type Ticket } from './ticket.ts';
 
 const EVERY_STATUS = [
@@ -427,6 +427,88 @@ test('a pull request lets go of what waits on it, and so does an ending', () => 
   // A ticket waiting on one that is not there waits for nothing.
   assert.deepEqual(heldBy(waiting, [waiting]), []);
   assert.deepEqual(heldBy(at('queued'), [at('queued')]), []);
+});
+
+/**
+ * A dependency as its own events left it. Built from a history rather than from
+ * `at`, which writes a status over a blank ticket and so leaves `offered` false
+ * whatever it says: against that, a filter on the offer agrees with every answer
+ * there is, including the wrong one.
+ */
+function dep(id: string, ...rest: EventBody[]): Ticket {
+  const bodies: EventBody[] = [{ type: 'ticket_created', title: id, body: '' }, ...rest];
+  return deriveTicket(
+    bodies.map((body, i) => ({ ...body, id: i + 1, ticketId: id, at: `2026-08-05T0${i}` })),
+  );
+}
+
+test('what a released ticket must be standing on is the work that is offered', () => {
+  const waiting = { ...at('queued'), waitsFor: ['t2', 't3'] };
+  const offered = (id: string): EventBody => ({ type: 'pr_opened', url: `http://pr/${id}` });
+  const offering = (id: string): Ticket => dep(id, offered(id));
+  const awaited = (...tickets: Ticket[]) => awaitedWork(waiting, tickets).map((t) => t.id);
+
+  // Both, and in the order the manager named them: two dependencies offered at
+  // once is the ordinary case, and neither may be dropped.
+  assert.deepEqual(awaited(offering('t2'), offering('t3')), ['t2', 't3']);
+  assert.deepEqual(awaited(offering('t3'), offering('t2')), ['t2', 't3']);
+
+  // Released with nothing to take: nobody will finish these, and there is no branch
+  // of theirs the waiting ticket should be built on. Their offer is still standing
+  // — an ending does not take it back — so the offer alone would have taken work
+  // the manager stopped and put it in the waiting ticket's pull request.
+  const cancelled = dep('t2', offered('t2'), { type: 'cancelled', reason: 'not now' });
+  const gaveUp = dep('t2', offered('t2'), { type: 'gave_up', reason: 'too dear' });
+  assert.equal(cancelled.offered, true, 'which is why the ending is asked about too');
+  assert.equal(gaveUp.offered, true);
+  assert.deepEqual(awaited(cancelled, offering('t3')), ['t3']);
+  assert.deepEqual(awaited(gaveUp, offering('t3')), ['t3']);
+
+  // Merged: the work is in the base now, and the ordinary refresh brings it in.
+  const merged = dep('t2', offered('t2'), { type: 'verdict', verdict: 'accepted' });
+  assert.equal(merged.status, 'done');
+  assert.deepEqual(awaited(merged, offering('t3')), ['t3']);
+
+  // Still being built, so nothing is standing on it yet — `heldBy` is what stops
+  // the ticket, and this says nothing about it either way. Both the one sent back
+  // to be reworked, which is committing again on the branch it offered, and the one
+  // that has never offered anything.
+  const reworking = dep('t2', offered('t2'), { type: 'changes_requested', changes: 'the units' });
+  assert.equal(reworking.status, 'implementing');
+  assert.deepEqual(awaited(reworking, offering('t3')), ['t3']);
+  assert.deepEqual(awaited(dep('t2'), offering('t3')), ['t3']);
+
+  // A ticket that is not on the board contributes nothing, as it holds nothing.
+  assert.deepEqual(awaited(offering('t3')), ['t3']);
+  assert.deepEqual(awaitedWork(at('queued'), [at('queued')]), []);
+});
+
+test('a branch carries what it merged until that work reaches the base', () => {
+  const offered = (id: string): EventBody => ({ type: 'pr_opened', url: `http://pr/${id}` });
+  const took = { ...at('implementing'), carrying: ['wb/t2'] };
+
+  // Taken once and taken again is one merge: a refresh that brings the base in
+  // while the same dependency is still offered must not name it twice.
+  assert.deepEqual(carriedWork(at('queued'), [], ['wb/t2']), ['wb/t2']);
+  assert.deepEqual(carriedWork(took, [], ['wb/t2']), ['wb/t2']);
+  assert.deepEqual(carriedWork(took, [], ['wb/t3']), ['wb/t2', 'wb/t3']);
+
+  // Merged: the base has it now, so the branch is no longer standing on anything
+  // the base has not got, and its own work can be measured from the base again.
+  const merged = dep('t2', offered('t2'), { type: 'verdict', verdict: 'accepted' });
+  assert.equal(merged.status, 'done');
+  assert.deepEqual(carriedWork(took, [merged], []), []);
+
+  // Everything else leaves the merge exactly where it is. Whatever the board says
+  // about the dependency, the commit is in this branch and in no commit of the base
+  // — this is a fact about the branch, and only a merge changes it.
+  const reworking = dep('t2', offered('t2'), { type: 'changes_requested', changes: 'the units' });
+  const rejected = dep('t2', offered('t2'), { type: 'verdict', verdict: 'rejected' });
+  const cancelled = dep('t2', offered('t2'), { type: 'cancelled', reason: 'not now' });
+  for (const other of [reworking, rejected, cancelled]) {
+    assert.deepEqual(carriedWork(took, [other], []), ['wb/t2'], other.status);
+  }
+  assert.deepEqual(carriedWork(took, [], []), ['wb/t2'], 'and one not on the board at all');
 });
 
 test('a ticket the limit is holding back says so; nothing else does', () => {
