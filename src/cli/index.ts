@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { CONFIG_FILE, findHome, loadConfig, PACKAGE_ROOT, type Config } from '../config.ts';
 import { USAGE } from './usage.ts';
 import { abandoning, draining } from './stopping.ts';
+import { CHILD_ENV, offer, relaunch, taken } from './updating.ts';
 import { reconcile } from '../orchestrator/loop.ts';
 import { checkCredentials, verifyCredentials } from '../run/credentials.ts';
 import { startWorkbench } from '../workbench.ts';
@@ -445,11 +446,13 @@ async function update(config: Config): Promise<number> {
 }
 
 /**
- * Whether something newer has been pushed, said once at startup and never acted on.
+ * Whether something newer has been pushed, and — when there is someone to ask — an
+ * offer to take it before this workbench starts.
  *
  * The workbench is what the agents run under, and code that governs them arriving
- * without anyone asking is the thing the whole design is against. So this only ever
- * mentions it. Anything that goes wrong — offline, no such remote, taking too long,
+ * without anyone asking is the thing the whole design is against. So nothing here
+ * installs anything on its own: with no terminal to answer, this is the notice it
+ * always was. Anything that goes wrong — offline, no such remote, taking too long,
  * or a dependency whose ref cannot be worked out — means saying nothing: a workbench
  * that will not start because it could not check for an update would be a worse tool
  * than one that is out of date.
@@ -457,20 +460,95 @@ async function update(config: Config): Promise<number> {
  * A pinned dependency is therefore silent by construction rather than by rule. Nothing
  * here knows what pinning is: it asks what the spec's own ref points at, and a tag
  * points where it always did.
+ *
+ * Taking the offer ends this process's part in serving: `npm install` replaces the
+ * code on disk, but the old build is what is running, so the new one only serves if a
+ * new process runs it. A number back means `serve` is finished — either the child has
+ * exited and its code is ours, or the install failed and nothing started.
  */
-async function updateWaiting(config: Config): Promise<string | undefined> {
+async function offerUpdate(config: Config): Promise<number | undefined> {
   const here = installed(config);
-  if (here === undefined) return undefined;
+  // A child was started by the offer below, and must not offer again: a spec whose ref
+  // npm does not resolve to still looks out of date the moment it starts, and would
+  // relaunch itself forever.
+  if (here === undefined || process.env[CHILD_ENV] !== undefined) return undefined;
+
+  let latest: string | undefined;
   try {
-    const latest = await newest(here.url, here.spec);
-    if (latest === undefined || latest === here.commit) return undefined;
-    return (
-      `an update is waiting: ${short(here.commit)} → ${short(latest)}.\n` +
-      '    Run "wb update", then start again.'
-    );
+    latest = await newest(here.url, here.spec);
   } catch {
     return undefined;
   }
+  if (latest === undefined || latest === here.commit) return undefined;
+
+  if (!process.stdin.isTTY) {
+    console.log(
+      `⬆️  an update is waiting: ${short(here.commit)} → ${short(latest)}.\n` +
+        '    Run "wb update", then start again.\n',
+    );
+    return undefined;
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let yes = false;
+  try {
+    yes = taken(await rl.question(offer(short(here.commit), short(latest))));
+  } catch {
+    // Ctrl-C or Ctrl-D at the question. Nothing was answered, so nothing is installed —
+    // the same as saying no, and said the same way.
+  } finally {
+    rl.close();
+  }
+  if (!yes) return undefined;
+
+  console.log(`\nasking npm for ${here.name}@${here.spec}...`);
+  try {
+    await install(config, here);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
+  const now = commitIn(config.repoRoot, here.key);
+  if (now !== undefined) {
+    console.log(`\n${short(here.commit)} → ${short(now)}`);
+    const changes = compareUrl(here.url, here.commit, now);
+    if (changes !== undefined) console.log(changes);
+  }
+
+  return await handOver();
+}
+
+/**
+ * Runs `wb serve` again from the code npm has just installed, and waits for it.
+ *
+ * The child inherits this terminal, so what it prints is what someone sees and what
+ * they type reaches it — from here on this process is only holding the exit code. It
+ * also inherits Ctrl-C, which the terminal delivers to the whole group: the child
+ * drains its stages and says what that costs, and this one must stay out of the way
+ * until it has, or the terminal comes back while the child is still writing to it.
+ */
+async function handOver(): Promise<number> {
+  const { command, args } = relaunch(process.execPath, process.argv);
+  console.log('\nstarting the new workbench...\n');
+
+  const child = spawn(command, args, {
+    stdio: 'inherit',
+    env: { ...process.env, [CHILD_ENV]: '1' },
+  });
+
+  process.on('SIGINT', () => {});
+  process.on('SIGTERM', () => {});
+
+  return await new Promise<number>((resolve) => {
+    child.on('error', (error) => {
+      console.error(`the new workbench would not start: ${error.message}`);
+      resolve(1);
+    });
+    // A child killed by a signal has no code of its own, and reporting it as 0 would
+    // say it finished cleanly.
+    child.on('exit', (code, signal) => resolve(signal === null ? (code ?? 1) : 1));
+  });
 }
 
 /**
@@ -540,6 +618,12 @@ async function choosePort(config: Config): Promise<number | undefined> {
 
 /** Runs the workbench in this process, and says what it is doing as it goes. */
 async function serve(config: Config): Promise<number> {
+  // First of all, before a port is taken, the database opened or an orchestrator
+  // started: taking the update hands the terminal to a new process, and nothing of
+  // this one's may still be open when it does.
+  const handed = await offerUpdate(config);
+  if (handed !== undefined) return handed;
+
   const port = await choosePort(config);
   if (port === undefined) return 1;
   const running = port === config.port ? config : { ...config, port };
@@ -565,9 +649,6 @@ async function serve(config: Config): Promise<number> {
         '    not that anything passes. Set "checks" in workbench.config.json.\n',
     );
   }
-
-  const waiting = await updateWaiting(running);
-  if (waiting !== undefined) console.log(`⬆️  ${waiting}\n`);
 
   wb.store.subscribe((e) => console.log(`${e.ticketId}  ${e.type}${describe(e)}`));
   wb.orchestrator.start();
