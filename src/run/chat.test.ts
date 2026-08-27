@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { HookInput, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  HookInput,
+  Options,
+  SDKMessage,
+  SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 
 import { createChatRunner, type ChatReply, type ChatRunnerDeps } from './chat.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
@@ -18,34 +23,62 @@ type Script = {
   text?: string;
   cost?: number;
   session?: string;
+  /** How the turn ended, when it did not end well. `success` when absent. */
+  subtype?: string;
   /** The error the call ends with. Ends cleanly when absent. */
   throws?: string;
 };
 
-/** A model service that never leaves the machine. One script per call, in order. */
+/** One subprocess: what was asked of it, and everything it was told, in order. */
+type Call = { options: Options; prompts: string[] };
+
+/**
+ * A model service that never leaves the machine. One script per turn, in order —
+ * and a turn is one thing said down one process, which for a living process is
+ * several per call and for a cold one is the only thing it ever hears.
+ */
 function service(scripts: Script[]): {
   query: NonNullable<ChatRunnerDeps['query']>;
   /** Every call as it was made, so a test can see what was resumed and what was said. */
-  calls: { options: Options; prompt: string }[];
+  calls: Call[];
 } {
-  const calls: { options: Options; prompt: string }[] = [];
+  const calls: Call[] = [];
   const remaining = [...scripts];
 
+  async function* answer(script: Script): AsyncGenerator<SDKMessage, void> {
+    if (script.text !== undefined || script.cost !== undefined || script.subtype !== undefined) {
+      yield {
+        type: 'result',
+        subtype: script.subtype ?? 'success',
+        result: script.text ?? '',
+        total_cost_usd: script.cost ?? 0,
+        session_id: script.session ?? 'session-1',
+      } as unknown as SDKMessage;
+    }
+    if (script.throws !== undefined) throw new Error(script.throws);
+  }
+
   const query: NonNullable<ChatRunnerDeps['query']> = ({ prompt, options }) => {
-    const script = remaining.shift() ?? {};
-    calls.push({ options: options ?? {}, prompt: String(prompt) });
+    const call: Call = { options: options ?? {}, prompts: [] };
+    calls.push(call);
 
     async function* messages(): AsyncGenerator<SDKMessage, void> {
-      if (script.text !== undefined || script.cost !== undefined) {
-        yield {
-          type: 'result',
-          subtype: 'success',
-          result: script.text ?? '',
-          total_cost_usd: script.cost ?? 0,
-          session_id: script.session ?? 'session-1',
-        } as unknown as SDKMessage;
+      // A string is one turn and then the process is gone, which is what a cold
+      // spawn is. A stream is a process being kept, and it is read until whoever
+      // holds it lets go.
+      if (typeof prompt === 'string') {
+        call.prompts.push(prompt);
+        yield* answer(remaining.shift() ?? {});
+        return;
       }
-      if (script.throws !== undefined) throw new Error(script.throws);
+      for await (const said of prompt as AsyncIterable<SDKUserMessage>) {
+        call.prompts.push(String(said.message.content));
+        const script = remaining.shift();
+        // A living process with nothing left scripted is one that has died, which
+        // is what the runner has to fall back from.
+        if (script === undefined) return;
+        yield* answer(script);
+      }
     }
 
     return messages() as ReturnType<NonNullable<ChatRunnerDeps['query']>>;
@@ -74,14 +107,24 @@ function aTicket(): Ticket {
   return built;
 }
 
-/** One conversation against a scripted service. `resumeFrom` is what the route passes. */
-function chatting(scripts: Script[]): {
-  calls: { options: Options; prompt: string }[];
+/**
+ * One conversation about one ticket, against a scripted service. `resumeFrom` is
+ * what the route passes; `warm` is the pane being opened, which every test that
+ * wants a living process has to do first — nothing else starts one.
+ */
+function chatting(
+  scripts: Script[],
+  agent: () => ChatAgentDef = () => AGENT,
+): {
+  calls: Call[];
+  warm: () => void;
+  close: () => Promise<void>;
   say: (resumeFrom?: string) => Promise<ChatReply>;
 } {
   const model = service(scripts);
-  const chat = createChatRunner({
-    agent: () => AGENT,
+  const ticket = aTicket();
+  const chats = createChatRunner({
+    agent,
     cwd: () => process.cwd(),
     protectedPaths: [],
     about: '',
@@ -90,15 +133,33 @@ function chatting(scripts: Script[]): {
 
   return {
     calls: model.calls,
+    warm: () => chats.warm(ticket),
+    close: chats.close,
     say: (resumeFrom) =>
-      chat({
-        ticket: aTicket(),
+      chats.chat({
+        ticket,
         events: [],
         message: 'what is this?',
         ...(resumeFrom === undefined ? {} : { resumeFrom }),
         signal: new AbortController().signal,
       }),
   };
+}
+
+/** What a turn's hook says about reading a file, which is the only guard there is. */
+function reading(
+  options: Options,
+  file_path: string,
+): Promise<{
+  hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+}> {
+  const hook = options.hooks?.PreToolUse?.[0]?.hooks?.[0];
+  assert.ok(hook, 'every process watches its tool calls');
+  return hook(
+    { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path } } as HookInput,
+    undefined,
+    { signal: new AbortController().signal },
+  ) as ReturnType<typeof reading>;
 }
 
 test('the chat reads only where it was pointed', async () => {
@@ -109,22 +170,15 @@ test('the chat reads only where it was pointed', async () => {
   // started, where there is no worktree yet and the chat is reading the repository.
   const chat = chatting([{ text: 'had a look' }]);
   await chat.say();
+  const options = chat.calls[0]?.options ?? {};
 
-  const hook = chat.calls[0]?.options.hooks?.PreToolUse?.[0]?.hooks?.[0];
-  assert.ok(hook, 'every turn watches its tool calls');
+  assert.deepEqual(
+    await reading(options, 'src/run/chat.ts'),
+    {},
+    'where it is reading is its business',
+  );
 
-  const reading = (file_path: string) =>
-    hook(
-      { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path } } as HookInput,
-      undefined,
-      { signal: new AbortController().signal },
-    ) as Promise<{
-      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
-    }>;
-
-  assert.deepEqual(await reading('src/run/chat.ts'), {}, 'where it is reading is its business');
-
-  const refused = await reading('~/.aws/credentials');
+  const refused = await reading(options, '~/.aws/credentials');
   assert.equal(refused.hookSpecificOutput?.permissionDecision, 'deny');
   assert.match(
     refused.hookSpecificOutput?.permissionDecisionReason ?? '',
@@ -147,7 +201,11 @@ test('a turn that could not pick its session up starts the conversation again', 
   assert.equal(chat.calls.length, 2, 'it tried again');
   assert.equal(chat.calls[0]?.options.resume, 'session-gone');
   assert.equal(chat.calls[1]?.options.resume, undefined, 'the second attempt is a fresh one');
-  assert.match(chat.calls[1]?.prompt ?? '', /a ticket/, 'briefed from the top, not left to guess');
+  assert.match(
+    chat.calls[1]?.prompts[0] ?? '',
+    /a ticket/,
+    'briefed from the top, not left to guess',
+  );
   assert.equal(reply.text, 'it is about the ticket');
   assert.equal(reply.sessionId, 'session-2', 'and the dead session is replaced, not kept');
 });
@@ -166,6 +224,123 @@ test('a resumed turn that answers is told the message alone', async () => {
   const reply = await chat.say('session-1');
 
   assert.equal(chat.calls.length, 1);
-  assert.equal(chat.calls[0]?.prompt, 'what is this?', 'the conversation already holds the rest');
+  assert.equal(
+    chat.calls[0]?.prompts[0],
+    'what is this?',
+    'the conversation already holds the rest',
+  );
   assert.equal(reply.text, 'still the same ticket');
+});
+
+test('two turns after the pane is opened go down one process, and neither reloads a session', async () => {
+  // What the ticket asks for, end to end: the wait is paid when the pane opens, the
+  // first turn spends it, and the second costs what it costs to answer and nothing
+  // to ask. The route passes the session it stored after turn one, and the living
+  // process wins over it — it never left, so there is nothing to pick back up.
+  const chat = chatting([{ text: 'it is about the ticket' }, { text: 'and about that too' }]);
+
+  chat.warm();
+  assert.equal(chat.calls.length, 1, 'opening the pane started one');
+  assert.deepEqual(chat.calls[0]?.prompts, [], 'before a word had been said to it');
+
+  assert.equal((await chat.say()).text, 'it is about the ticket');
+  assert.equal((await chat.say('session-1')).text, 'and about that too');
+
+  assert.equal(chat.calls.length, 1, 'both turns went down the one process');
+  assert.equal(chat.calls[0]?.options.resume, undefined, 'neither had a session to reload');
+  assert.match(chat.calls[0]?.prompts[0] ?? '', /a ticket/, 'the first turn briefed it');
+  assert.equal(chat.calls[0]?.prompts[1], 'what is this?', 'and it held the brief after that');
+
+  await chat.close();
+});
+
+test('a turn down a process that has died falls back and still answers', async () => {
+  // A living process can be gone by the time it is spoken to — the machine slept,
+  // the session ended, a boot that got nowhere. The manager is sitting in front of
+  // the pane, so the turn goes the way every turn went before: spawn and resume.
+  const chat = chatting([{ throws: 'the session ended' }, { text: 'answered anyway' }]);
+
+  chat.warm();
+  const reply = await chat.say('session-1');
+
+  assert.equal(chat.calls.length, 2, 'a fresh one answered it');
+  assert.equal(chat.calls[1]?.options.resume, 'session-1', "today's spawn-and-resume, exactly");
+  assert.equal(reply.text, 'answered anyway');
+
+  await chat.close();
+});
+
+test('a living turn that spent money before stopping is not paid for twice', async () => {
+  // The chat reaching its own budget is an ending, not a process that failed to
+  // serve: it got to the model, so that is the turn. Falling back here would spawn
+  // a second process to spend the same money again.
+  const chat = chatting([{ cost: 0.4, subtype: 'error_max_budget_usd' }]);
+
+  chat.warm();
+  await assert.rejects(chat.say('session-1'), /the chat stopped: error_max_budget_usd/);
+  assert.equal(chat.calls.length, 1, 'it did not run the turn again');
+
+  await chat.close();
+});
+
+test('editing the chat agent between turns retires the process rather than serving it stale', async () => {
+  // The board edits `chat.md` like the other four, and a process cannot be told
+  // about it: what it was started with is what it will answer as. So it goes, and
+  // the turn that found it stale runs on one started from the file as it now reads.
+  let agent: ChatAgentDef = AGENT;
+  const chat = chatting([{ text: 'as it was' }, { text: 'as it is now' }], () => agent);
+
+  chat.warm();
+  assert.equal((await chat.say()).text, 'as it was');
+
+  agent = { ...AGENT, instructions: 'talk about it differently' };
+  const reply = await chat.say();
+
+  assert.equal(chat.calls.length, 2, 'the stale process could not serve it');
+  assert.equal(chat.calls[0]?.prompts.length, 1, 'and was not asked a second thing');
+  assert.match(chat.calls[1]?.prompts[0] ?? '', /talk about it differently/, 'the new file ran');
+  assert.equal(reply.text, 'as it is now');
+
+  await chat.close();
+});
+
+test('a living process is started with the same guard as a cold one', async () => {
+  // Keeping a process between turns must not widen what the chat can reach. What it
+  // may reach is settled at spawn and cannot be changed after, so this is the only
+  // place it could go wrong — and the first test in this file is what the hook then
+  // does with the answer.
+  const chat = chatting([{ text: 'live' }, { text: 'cold' }]);
+
+  chat.warm();
+  await chat.say();
+  // Closed, so the next turn has no living process to take and goes the cold way.
+  await chat.close();
+  await chat.say('session-1');
+
+  const live = chat.calls[0]?.options ?? {};
+  const cold = chat.calls[1]?.options ?? {};
+  assert.equal(chat.calls.length, 2, 'one of each to compare');
+
+  assert.deepEqual(live.allowedTools, cold.allowedTools, 'the same tool grant');
+  assert.deepEqual(live.disallowedTools, cold.disallowedTools);
+  assert.deepEqual(Object.keys(live.mcpServers ?? {}), Object.keys(cold.mcpServers ?? {}));
+  assert.equal(live.cwd, cold.cwd, 'reading in the same place');
+  assert.equal(live.permissionMode, cold.permissionMode);
+  assert.deepEqual(
+    live.settingSources,
+    cold.settingSources,
+    'nothing from this machine either way',
+  );
+
+  for (const [which, options] of [
+    ['the living one', live],
+    ['the cold one', cold],
+  ] as const) {
+    const refused = await reading(options, '~/.aws/credentials');
+    assert.equal(
+      refused.hookSpecificOutput?.permissionDecision,
+      'deny',
+      `${which} reads only where it was pointed`,
+    );
+  }
 });

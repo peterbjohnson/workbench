@@ -217,6 +217,7 @@ at all.
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
 | `POST /tickets/:id/merge` | squash the offered work onto the base and accept it |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
+| `POST /tickets/:id/chat-warm` | the ticket's chat pane is open, so the process that will answer its turns starts now |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
 | `POST /name-check/warm` | the ticket form is open, so whatever answers a name check gets ready now |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |

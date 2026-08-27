@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
-import { ended } from '../domain/ticket.ts';
+import { ended, type Ticket } from '../domain/ticket.ts';
 import type { Config } from '../config.ts';
 import { chatTurns } from '../domain/board.ts';
 import { proposalEvent } from '../domain/proposals.ts';
@@ -48,6 +48,11 @@ export type ApiDeps = {
   warmNameCheck?: () => void;
   /** The conversation about a ticket. Absent means the workbench has no chat. */
   chat?: ChatRunner;
+  /**
+   * A ticket's pane has been opened, so a turn about it is coming. Absent for the
+   * same reason `warmNameCheck` is: getting ready costs nothing to skip.
+   */
+  warmChat?: (ticket: Ticket) => void;
 };
 
 export type Api = {
@@ -425,6 +430,17 @@ async function handle(
             ...(reply.sessionId === undefined ? {} : { sessionId: reply.sessionId }),
           });
           return send(res, 200, { chat: chatTurns(store.eventsFor(id)) });
+        }
+
+        /**
+         * The pane on this ticket is open, so a turn about it is coming. Almost all
+         * of what a turn used to cost was starting something to answer it, and that
+         * can be started now instead — so the first thing the manager says is
+         * answered as quickly as the second.
+         */
+        case 'chat-warm': {
+          deps.warmChat?.(store.ticket(id));
+          return send(res, 200, { ok: true });
         }
 
         /**

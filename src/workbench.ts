@@ -91,22 +91,28 @@ export async function startWorkbench(
   // subprocess open.
   const pool = fake ? undefined : createWarmPool();
 
+  // The conversation about a ticket, and the process it keeps alive between the
+  // turns of one. Unlike the pool above it can start nothing until it is told which
+  // ticket it is for: what a chat process is bound to at spawn is that ticket's.
+  const chats = fake
+    ? undefined
+    : createChatRunner({
+        agent: () => loadChatAgent(config.agentDirs),
+        // A ticket has no worktree until it starts, and a conversation about one
+        // that has not started is a conversation about this repository.
+        cwd: (ticket) => {
+          const worktree = worktreeFor(config, ticket.id).path;
+          return fs.existsSync(worktree) ? worktree : config.repoRoot;
+        },
+        protectedPaths: config.protectedPaths,
+        about: readAbout(config),
+      });
+
   // Fake agents spend nothing, and a name check is a model call like any other:
   // trying the workbench out must not be the one thing that quietly costs money.
   const api = createApi(store, config, {
-    chat: fake
-      ? createFakeChatRunner()
-      : createChatRunner({
-          agent: () => loadChatAgent(config.agentDirs),
-          // A ticket has no worktree until it starts, and a conversation about one
-          // that has not started is a conversation about this repository.
-          cwd: (ticket) => {
-            const worktree = worktreeFor(config, ticket.id).path;
-            return fs.existsSync(worktree) ? worktree : config.repoRoot;
-          },
-          protectedPaths: config.protectedPaths,
-          about: readAbout(config),
-        }),
+    chat: chats === undefined ? createFakeChatRunner() : chats.chat,
+    ...(chats === undefined ? {} : { warmChat: chats.warm }),
     ...(pool === undefined
       ? {}
       : { checkName: createNameChecker(config, pool.ask), warmNameCheck: pool.warm }),
@@ -121,6 +127,9 @@ export async function startWorkbench(
       await orchestrator.stop();
       await api.close();
       await pool?.close();
+      // After the API, so a turn still in flight has ended: a chat process that
+      // outlives `wb serve` is a subprocess nothing can reach to stop.
+      await chats?.close();
       store.close();
     },
   };

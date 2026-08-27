@@ -800,6 +800,28 @@ test('the form opening says so, and a workbench with nobody to ask takes it anyw
   });
 });
 
+test("a ticket's pane opening says so, and says which ticket", async () => {
+  // Unlike a name check, what gets ready here is bound to one ticket: where it
+  // reads, what it may read and the tools it is given are all that ticket's, so
+  // nothing can be started until this arrives.
+  const warmed: string[] = [];
+  await withApi(
+    async (wb) => {
+      await wb.create('Add a retry', 'It gives up too early.');
+      assert.deepEqual(await wb.warmChat('t1'), { ok: true });
+      assert.deepEqual(warmed, ['t1']);
+    },
+    { warmChat: (ticket) => warmed.push(ticket.id) },
+  );
+
+  // Fake agents wire no chat and so have nothing to get ready. Saying so must
+  // still not be an error the board has to handle.
+  await withApi(async (wb) => {
+    await wb.create('Add a retry', 'It gives up too early.');
+    assert.deepEqual(await wb.warmChat('t1'), { ok: true });
+  });
+});
+
 test('a skill added from the board is one every stage can load', async () => {
   await withApi(async (wb, _store, config) => {
     const made = await wb.createDoc('skill', 'writing-reports');

@@ -114,6 +114,12 @@ export function createClient(baseUrl: string) {
      */
     chat: (id: string, message: string) =>
       post<{ chat: Chat }>(`/tickets/${id}/chat`, { message }).then((r) => r.chat),
+    /**
+     * This ticket's pane is open, so whatever will answer the first turn can get
+     * ready now. Nothing comes back but the acknowledgement: this is the wait,
+     * moved to where the manager is not yet waiting.
+     */
+    warmChat: (id: string) => post<{ ok: true }>(`/tickets/${id}/chat-warm`),
     /** Take a proposal up. `at` is its place in the conversation, as the chat gives it. */
     acceptProposal: (id: string, at: number) =>
       post<{ ticket: Ticket }>(`/tickets/${id}/chat-accept`, { at }).then((r) => r.ticket),

@@ -11,6 +11,7 @@ import { runs, statusOf } from '../domain/board.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
 import { wbServer } from '../tools/server.ts';
 import { guard, type GuardContext } from './guard.ts';
+import { createLiveChats } from './liveChat.ts';
 import { readProposals } from './protocol.ts';
 
 /**
@@ -19,6 +20,18 @@ import { readProposals } from './protocol.ts';
  * the orchestrator holds a `StageRunner`.
  */
 export type ChatRunner = (ask: ChatAsk) => Promise<ChatReply>;
+
+/**
+ * The chat, and the subprocess it keeps alive between the turns of one conversation.
+ * The API is handed `chat` alone and knows nothing about the rest; the composition
+ * root wires `warm` to the pane opening and `close` to the workbench stopping.
+ */
+export type Chats = {
+  chat: ChatRunner;
+  /** A ticket's pane is open, so a turn is coming. Have something up for it. */
+  warm: (ticket: Ticket) => void;
+  close: () => Promise<void>;
+};
 
 export type ChatAsk = {
   ticket: Ticket;
@@ -71,10 +84,52 @@ export type ChatRunnerDeps = {
  * own spend: talking about a ticket must not be able to push it past `maxTicketUsd`
  * and stop the work being talked about.
  */
-export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
-  return async function chat({ ticket, events, message, resumeFrom, signal }): Promise<ChatReply> {
+export function createChatRunner(deps: ChatRunnerDeps): Chats {
+  const live = createLiveChats(deps.query === undefined ? {} : { run: deps.query });
+
+  return { chat, warm, close: live.close };
+
+  /**
+   * The pane on a ticket has been opened, so a turn is coming. Starting the process
+   * now rather than when Send is pressed is the whole of what this saves on the first
+   * turn — the one the manager actually sits and waits through.
+   */
+  function warm(ticket: Ticket): void {
     const agent = deps.agent();
     const cwd = deps.cwd(ticket);
+    live.warm(
+      keyFor(deps, agent, ticket, cwd),
+      chatOptions(deps, agent, cwd, new AbortController()),
+    );
+  }
+
+  async function chat({
+    ticket,
+    events,
+    message,
+    resumeFrom,
+    signal,
+  }: ChatAsk): Promise<ChatReply> {
+    const agent = deps.agent();
+    const cwd = deps.cwd(ticket);
+
+    // The process the pane started when it was opened, if it is still there and is
+    // still this ticket's. It has not been anywhere, so there is no session to load
+    // back off disk — and loading one is most of what a turn used to cost.
+    //
+    // One that has answered before holds the brief already and is told the message
+    // alone; one only just started is told the whole ticket, as a cold turn is.
+    const alive = await live.take(
+      keyFor(deps, agent, ticket, cwd),
+      (fresh) => (fresh ? brief(deps, agent, ticket, events, message) : message),
+      signal,
+    );
+    // The same rule the resume below follows, for the same reason: an attempt that
+    // spent money reached the model, so its ending is this turn's answer however bad
+    // it is, and starting again would pay twice for the one turn.
+    if (alive !== undefined && (alive.failed === undefined || alive.costUsd > 0)) {
+      return replyTo(alive);
+    }
 
     // Resuming is worth a try but must never be worth a chat that cannot be had
     // again. The session lives in ~/.claude/projects on one machine and can simply
@@ -105,42 +160,10 @@ export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
       if (signal.aborted) relayAbort();
 
       const options: Options = {
+        ...chatOptions(deps, agent, cwd, abortController),
+        // The one thing that is not the same for every chat process: which
+        // conversation it is picking up. A living one is already in its own.
         ...(resume !== undefined ? { resume } : {}),
-        cwd,
-        model: agent.model,
-        effort: agent.effort,
-        permissionMode: agent.permissionMode,
-        allowedTools: [...agent.allowedTools],
-        disallowedTools: [...agent.disallowedTools],
-        maxTurns: agent.maxTurns,
-        maxBudgetUsd: agent.maxBudgetUsd,
-        abortController,
-        // Nothing from this machine, and no skills: this agent is a reader and a
-        // talker, and expertise about how work is done here is for the stages doing it.
-        settingSources: [],
-        mcpServers: wbServer(
-          { worktree: cwd, protectedPaths: deps.protectedPaths },
-          agent.allowedTools,
-        ),
-        strictMcpConfig: true,
-        env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
-        hooks: {
-          PreToolUse: [
-            {
-              hooks: [
-                toolHook({
-                  worktree: cwd,
-                  allowedTools: agent.allowedTools,
-                  protectedPaths: deps.protectedPaths,
-                }),
-              ],
-            },
-          ],
-        },
-        canUseTool: async (toolName): Promise<PermissionResult> => ({
-          behavior: 'deny',
-          message: `${toolName} is not available to the chat`,
-        }),
       };
 
       let text = '';
@@ -179,7 +202,69 @@ export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
         ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
       };
     }
+  }
+}
+
+/**
+ * Everything a chat process is started with, apart from which conversation it is
+ * picking up. One function so that a process kept alive between turns and one
+ * spawned for a single turn are provably started the same way: what the chat may
+ * reach is settled at spawn and cannot be changed after, so keeping a process alive
+ * must not be able to widen it.
+ */
+function chatOptions(
+  deps: ChatRunnerDeps,
+  agent: ChatAgentDef,
+  cwd: string,
+  abortController: AbortController,
+): Options {
+  return {
+    cwd,
+    model: agent.model,
+    effort: agent.effort,
+    permissionMode: agent.permissionMode,
+    allowedTools: [...agent.allowedTools],
+    disallowedTools: [...agent.disallowedTools],
+    maxTurns: agent.maxTurns,
+    maxBudgetUsd: agent.maxBudgetUsd,
+    abortController,
+    // Nothing from this machine, and no skills: this agent is a reader and a
+    // talker, and expertise about how work is done here is for the stages doing it.
+    settingSources: [],
+    mcpServers: wbServer(
+      { worktree: cwd, protectedPaths: deps.protectedPaths },
+      agent.allowedTools,
+    ),
+    strictMcpConfig: true,
+    env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            toolHook({
+              worktree: cwd,
+              allowedTools: agent.allowedTools,
+              protectedPaths: deps.protectedPaths,
+            }),
+          ],
+        },
+      ],
+    },
+    canUseTool: async (toolName): Promise<PermissionResult> => ({
+      behavior: 'deny',
+      message: `${toolName} is not available to the chat`,
+    }),
   };
+}
+
+/**
+ * What a living process was started to serve, as one string. Everything in it is
+ * settled at spawn and cannot be changed after: the ticket it is reading about,
+ * where it is reading, and the whole agent definition — instructions included, so
+ * that editing `chat.md` retires the process rather than being served stale by it.
+ */
+function keyFor(deps: ChatRunnerDeps, agent: ChatAgentDef, ticket: Ticket, cwd: string): string {
+  return JSON.stringify([ticket.id, cwd, agent, deps.protectedPaths]);
 }
 
 /**
