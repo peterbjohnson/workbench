@@ -1245,6 +1245,13 @@ ul.completion-criteria {
   border-left: 1px solid var(--line);
 }
 
+/* An opened burst of tool calls, indented off its summary the way a field is. */
+.log .calls {
+  margin: 0.2rem 0 0.4rem 1.2rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--line);
+}
+
 .log .field > span {
   color: var(--accent);
 }
