@@ -10,6 +10,7 @@ import type {
 
 import { createChatRunner, type ChatReply, type ChatRunnerDeps } from './chat.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
+import type { Event } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import { openStore } from '../store/store.ts';
 
@@ -29,8 +30,12 @@ type Script = {
   throws?: string;
 };
 
-/** One subprocess: what was asked of it, and everything it was told, in order. */
-type Call = { options: Options; prompts: string[] };
+/**
+ * One subprocess: what was asked of it, and everything it was told, in order.
+ * `started` is whether anything ever pulled on it — the SDK spawns nothing until
+ * something does, so a call that was made and never read is a process that never was.
+ */
+type Call = { options: Options; prompts: string[]; started: boolean };
 
 /**
  * A model service that never leaves the machine. One script per turn, in order —
@@ -59,10 +64,11 @@ function service(scripts: Script[]): {
   }
 
   const query: NonNullable<ChatRunnerDeps['query']> = ({ prompt, options }) => {
-    const call: Call = { options: options ?? {}, prompts: [] };
+    const call: Call = { options: options ?? {}, prompts: [], started: false };
     calls.push(call);
 
     async function* messages(): AsyncGenerator<SDKMessage, void> {
+      call.started = true;
       // A string is one turn and then the process is gone, which is what a cold
       // spawn is. A stream is a process being kept, and it is read until whoever
       // holds it lets go.
@@ -98,11 +104,18 @@ const AGENT: ChatAgentDef = {
   instructions: 'talk about the ticket',
 };
 
-/** A ticket as the store builds one, so nothing here is a hand-made shape. */
-function aTicket(): Ticket {
+/** One turn of a conversation already had about the ticket, as the route stored it. */
+type Said = { role: 'manager' | 'agent'; text: string };
+
+/**
+ * A ticket and its history as the store builds them, so nothing here is a hand-made
+ * shape — including the conversation, which is only ever read back out of events.
+ */
+function aTicket(said: Said[] = []): { ticket: Ticket; events: readonly Event[] } {
   const store = openStore(':memory:');
   store.append('t1', { type: 'ticket_created', title: 'a ticket', body: 'do it' });
-  const built = store.ticket('t1');
+  for (const turn of said) store.append('t1', { type: 'chat_said', ...turn });
+  const built = { ticket: store.ticket('t1'), events: store.eventsFor('t1') };
   store.close();
   return built;
 }
@@ -115,6 +128,7 @@ function aTicket(): Ticket {
 function chatting(
   scripts: Script[],
   agent: () => ChatAgentDef = () => AGENT,
+  said: Said[] = [],
 ): {
   calls: Call[];
   warm: () => void;
@@ -122,7 +136,7 @@ function chatting(
   say: (resumeFrom?: string) => Promise<ChatReply>;
 } {
   const model = service(scripts);
-  const ticket = aTicket();
+  const { ticket, events } = aTicket(said);
   const chats = createChatRunner({
     agent,
     cwd: () => process.cwd(),
@@ -138,7 +152,7 @@ function chatting(
     say: (resumeFrom) =>
       chats.chat({
         ticket,
-        events: [],
+        events,
         message: 'what is this?',
         ...(resumeFrom === undefined ? {} : { resumeFrom }),
         signal: new AbortController().signal,
@@ -251,6 +265,83 @@ test('two turns after the pane is opened go down one process, and neither reload
   assert.match(chat.calls[0]?.prompts[0] ?? '', /a ticket/, 'the first turn briefed it');
   assert.equal(chat.calls[0]?.prompts[1], 'what is this?', 'and it held the brief after that');
 
+  await chat.close();
+});
+
+/** Long enough for a generator that has been asked for something to start running. */
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('opening the pane pulls on the process, so the boot is paid before anything is said', async () => {
+  // The SDK does boot against a stream nobody has asked anything of — measured — so
+  // this is not what makes warming work today. It is what would notice if that
+  // stopped being true: nothing else here would, and what the manager would get is
+  // the slow first turn this was all written for.
+  const chat = chatting([{ text: 'ready when you are' }]);
+
+  chat.warm();
+  await tick();
+
+  assert.equal(chat.calls.length, 1, 'opening the pane started one');
+  assert.equal(chat.calls[0]?.started, true, 'and asked it for its first word');
+  assert.deepEqual(chat.calls[0]?.prompts, [], 'before a word had been said to it');
+
+  await chat.close();
+});
+
+test('a process started fresh is told the conversation the pane is showing', async () => {
+  // Warming spawns a process that has been nowhere, and it wins over `resumeFrom` —
+  // so the first turn after a pane is reopened is answered by something that has seen
+  // none of the conversation above it unless the brief carries it. A fast turn that
+  // has forgotten what was being talked about is worse than the slow one it replaced.
+  const chat = chatting([{ text: 'still about the ticket' }], () => AGENT, [
+    { role: 'manager', text: 'why is it stuck?' },
+    { role: 'agent', text: 'the verify stage sent it back' },
+    // The route writes what the manager just said before the runner is called, so
+    // the last turn is always the message that is a section of the brief already.
+    { role: 'manager', text: 'what is this?' },
+  ]);
+
+  chat.warm();
+  await chat.say('session-1');
+
+  const briefed = chat.calls[0]?.prompts[0] ?? '';
+  assert.equal(chat.calls.length, 1, 'the warmed process took it');
+  assert.match(briefed, /why is it stuck\?/, 'what was asked before');
+  assert.match(briefed, /the verify stage sent it back/, 'and what was answered');
+  assert.equal(
+    briefed.split('what is this?').length - 1,
+    1,
+    'and what was just said is in it once, not as history as well',
+  );
+
+  await chat.close();
+});
+
+test('a turn is charged the running total moving, and a total that restarts is charged whole', async () => {
+  // The SDK reports `total_cost_usd` cumulatively across the turns of a streaming
+  // session, so a turn costs the difference — charging the total would bill the
+  // second turn for the first as well. It says a lower one means the total restarted
+  // rather than that money came back, so the whole of what it now says is this turn.
+  const chat = chatting([
+    { text: 'first', cost: 0.5 },
+    { text: 'second', cost: 0.8 },
+    { text: 'third', cost: 0.2 },
+  ]);
+
+  chat.warm();
+  assert.equal((await chat.say()).costUsd, 0.5, 'the first turn is the whole of the total');
+  assert.equal(
+    Number((await chat.say('session-1')).costUsd.toFixed(2)),
+    0.3,
+    'the second is what the total moved by, not what it says',
+  );
+  assert.equal(
+    (await chat.say('session-1')).costUsd,
+    0.2,
+    'and a restarted total is that turn, not nothing',
+  );
+
+  assert.equal(chat.calls.length, 1, 'all three down the one process');
   await chat.close();
 });
 

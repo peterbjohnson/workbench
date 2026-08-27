@@ -7,7 +7,7 @@ import {
 
 import type { Event, Proposal } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
-import { runs, statusOf } from '../domain/board.ts';
+import { chatTurns, runs, statusOf } from '../domain/board.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
 import { wbServer } from '../tools/server.ts';
 import { guard, type GuardContext } from './guard.ts';
@@ -118,7 +118,9 @@ export function createChatRunner(deps: ChatRunnerDeps): Chats {
     // back off disk — and loading one is most of what a turn used to cost.
     //
     // One that has answered before holds the brief already and is told the message
-    // alone; one only just started is told the whole ticket, as a cold turn is.
+    // alone; one only just started is told the whole ticket, as a cold turn is —
+    // including the conversation so far, because it wins over `resumeFrom` and would
+    // otherwise answer having seen none of what the pane is showing.
     const alive = await live.take(
       keyFor(deps, agent, ticket, cwd),
       (fresh) => (fresh ? brief(deps, agent, ticket, events, message) : message),
@@ -313,6 +315,7 @@ function brief(
     ['The plan', ticket.plan ?? undefined],
     ['Completion criteria', ticket.completionCriteria.map((c) => `- ${c}`).join('\n') || undefined],
     ['What the stages said', whatTheStagesSaid(events)],
+    ['The conversation so far', conversationSoFar(events, message)],
     ['What the manager just said', message],
   ];
 
@@ -322,6 +325,26 @@ function brief(
     .join('\n\n');
 
   return `${agent.instructions}\n\n---\n\n${body}\n`;
+}
+
+/**
+ * The conversation the pane is showing, which a session picked back up would have
+ * held already. A brief is what a process that has been nowhere is told, and a warmed
+ * one has been nowhere — so without this the first turn after a pane is reopened
+ * answers having seen none of what is on the screen above it, which is a worse turn
+ * than the slow one it replaced.
+ *
+ * The manager's turn is appended before the runner is called, so the last of these is
+ * the message that is already a section of its own.
+ */
+function conversationSoFar(events: readonly Event[], message: string): string {
+  const turns = chatTurns(events).turns;
+  const last = turns.at(-1);
+  const earlier = last?.role === 'manager' && last.text === message ? turns.slice(0, -1) : turns;
+
+  return earlier
+    .map((turn) => `**${turn.role === 'manager' ? 'The manager' : 'You'}:** ${turn.text}`)
+    .join('\n\n');
 }
 
 function whereItIs(ticket: Ticket): string {

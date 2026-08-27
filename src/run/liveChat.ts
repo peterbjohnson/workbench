@@ -177,6 +177,21 @@ function spawn(run: typeof query, key: string, options: Options): Living {
   const said = run({ prompt: input(), options });
 
   /**
+   * Asked for its first message now rather than at the first turn. Measured, the SDK
+   * spawns and boots against an input stream nobody has pulled on, so this is not what
+   * makes the warm work today — a warmed turn cost 45ms against a cold one's 1100ms
+   * with and without it. It is what stops that being luck: an SDK that went lazy would
+   * leave a warm that boots nothing and a first turn quietly as slow as it ever was,
+   * which is the complaint this was written for. `warmPool.spawn` consumes from the
+   * moment it spawns for the same reason. One message ahead rather than a loop,
+   * because each turn has to stop reading at its own `result`.
+   */
+  let coming = said.next();
+  // A process that dies with nobody talking to it must not bring the workbench down
+  // with it. Whatever it failed with is read by the turn that does come, if one does.
+  coming.catch(() => {});
+
+  /**
    * What this session has cost so far. The SDK reports `total_cost_usd` as a running
    * total across the turns of a streaming session, so the turn's own cost is the
    * difference — otherwise the second turn would be charged for the first as well.
@@ -195,19 +210,28 @@ function spawn(run: typeof query, key: string, options: Options): Living {
       let sessionId: string | undefined;
       try {
         for (;;) {
-          const { value, done } = await said.next();
+          const { value, done } = await coming;
           // A session that ends rather than answering is a death like any other:
           // the caller falls back, exactly as it does for one that threw.
           if (done) return { text: '', costUsd: 0, sessionId, failed: 'the chat ended' };
+          // The next is asked for before this one is dealt with, so the process is
+          // never held up waiting to be read — including between turns, which is the
+          // gap the boot happens in.
+          coming = said.next();
+          coming.catch(() => {});
 
           sessionId ??= value.session_id;
           if (value.type !== 'result') continue;
 
-          // Clamped, because a result from a crashed or half-started session can
-          // carry a zeroed total, and that must read as a free turn rather than as
-          // a refund of everything before it.
-          const spent = Math.max(0, value.total_cost_usd - paid);
-          if (value.total_cost_usd > paid) paid = value.total_cost_usd;
+          // A total lower than the last means the running total restarted, not that
+          // money came back: the SDK zeroes it on a crashed or half-started result
+          // and resets it on a `/clear`. What it now says is then this turn's own
+          // cost, where charging the difference would charge nothing for a turn that
+          // was really paid for. Either way a turn is charged once, and never less
+          // than nothing.
+          const spent =
+            value.total_cost_usd >= paid ? value.total_cost_usd - paid : value.total_cost_usd;
+          paid = value.total_cost_usd;
 
           return value.subtype === 'success'
             ? { text: value.result, costUsd: spent, sessionId }
