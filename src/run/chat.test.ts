@@ -281,10 +281,10 @@ test('two turns after the pane is opened go down one process, and neither reload
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test('opening the pane pulls on the process, so the boot is paid before anything is said', async () => {
-  // The SDK does boot against a stream nobody has asked anything of — measured — so
-  // this is not what makes warming work today. It is what would notice if that
-  // stopped being true: nothing else here would, and what the manager would get is
-  // the slow first turn this was all written for.
+  // The SDK does boot against a stream nobody has asked anything of, as far as anyone
+  // has looked, so this is not what makes warming work today. It is what would notice
+  // if that stopped being true: nothing else here would, and what the manager would
+  // get is the slow first turn this was all written for.
   const chat = chatting([{ text: 'ready when you are' }]);
 
   chat.warm();
@@ -413,7 +413,15 @@ test("a living turn cut off by the conversation's own caps falls back and still 
   assert.equal(reply.text, 'answered anyway', 'the pane gets an answer, not the limit');
   assert.equal(turns.length, 2);
   assert.equal(turns[1]?.options.resume, 'session-1', "today's spawn-and-resume, exactly");
-  assert.equal(reply.costUsd, 0.2, 'and the turn is charged once, for the answer it got');
+  // Charged for both attempts, because both were paid for and only one of them
+  // answered: the cut-off attempt reached the model and that money is gone, so
+  // dropping it would report the turn at less than it took. Rounded because
+  // `0.4 + 0.2` is not `0.6` in floating point.
+  assert.equal(
+    Number(reply.costUsd.toFixed(2)),
+    0.6,
+    'and the turn carries what the cut-off attempt spent onto the answer',
+  );
 
   await chat.close();
 });

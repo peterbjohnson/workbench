@@ -190,14 +190,17 @@ function spawn(run: typeof query, key: string, options: Options): Living {
   const said = run({ prompt: input(), options });
 
   /**
-   * Asked for its first message now rather than at the first turn. Measured, the SDK
-   * spawns and boots against an input stream nobody has pulled on, so this is not what
-   * makes the warm work today — a warmed turn cost 45ms against a cold one's 1100ms
-   * with and without it. It is what stops that being luck: an SDK that went lazy would
-   * leave a warm that boots nothing and a first turn quietly as slow as it ever was,
-   * which is the complaint this was written for. `warmPool.spawn` consumes from the
-   * moment it spawns for the same reason. One message ahead rather than a loop,
-   * because each turn has to stop reading at its own `result`.
+   * Asked for its first message now rather than at the first turn. On the SDK as it
+   * behaves today the spawn and boot happen against an input stream nobody has pulled
+   * on, so this is belt and braces rather than what makes the warm work — no real-SDK
+   * timing was taken with and without it, so that is where it stands and not a
+   * measurement. What it buys is that the warm cannot quietly stop working: an SDK
+   * that went lazy would leave a warm that boots nothing and a first turn as slow as
+   * it ever was, which is the complaint this was written for, and `chat.test.ts:283`
+   * — the warmed turn that goes down the one process — is what would notice.
+   * `warmPool.spawn` consumes from the moment it spawns for the same reason. One
+   * message ahead rather than a loop, because each turn has to stop reading at its own
+   * `result`.
    */
   let coming = said.next();
   // A process that dies with nobody talking to it must not bring the workbench down
@@ -205,9 +208,13 @@ function spawn(run: typeof query, key: string, options: Options): Living {
   coming.catch(() => {});
 
   /**
-   * What this session has cost so far. The SDK reports `total_cost_usd` as a running
-   * total across the turns of a streaming session, so the turn's own cost is the
-   * difference — otherwise the second turn would be charged for the first as well.
+   * What this session has cost so far. Taken as a running total across the turns of a
+   * streaming session, so the turn's own cost is the difference — otherwise the second
+   * turn would be charged for the first as well. That is an assumption, not something
+   * observed in a real run: `chat.test.ts:329` encodes it, which is not the same as
+   * proving it. If `total_cost_usd` is per-turn after all, then every turn dearer than
+   * the one before it is under-reported by the previous turn's total, and one cheaper
+   * than its predecessor is charged whole by the branch below.
    */
   let paid = 0;
 
@@ -236,12 +243,12 @@ function spawn(run: typeof query, key: string, options: Options): Living {
           sessionId ??= value.session_id;
           if (value.type !== 'result') continue;
 
-          // A total lower than the last means the running total restarted, not that
-          // money came back: the SDK zeroes it on a crashed or half-started result
-          // and resets it on a `/clear`. What it now says is then this turn's own
-          // cost, where charging the difference would charge nothing for a turn that
-          // was really paid for. Either way a turn is charged once, and never less
-          // than nothing.
+          // A total lower than the last is read as the running total having restarted
+          // rather than money coming back — the assumption above again, and not
+          // something watched happen. What it now says is then taken as this turn's
+          // own cost, where charging the difference would charge nothing for a turn
+          // that was really paid for. Either way a turn is charged once, and never
+          // less than nothing.
           const spent =
             value.total_cost_usd >= paid ? value.total_cost_usd - paid : value.total_cost_usd;
           paid = value.total_cost_usd;

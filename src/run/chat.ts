@@ -133,12 +133,14 @@ export function createChatRunner(deps: ChatRunnerDeps): Chats {
     // A cap is the exception. `maxTurns` and `maxBudgetUsd` bound a query, and a
     // living process's query is the whole conversation, so a few questions in they
     // end a turn on an allowance written for one — and the pane would show an error
-    // where a cold turn, whose caps are its own again, answers. What that cut-off
-    // attempt spent is dropped rather than added to the turn below: the manager is
-    // charged once for the answer they get, and the process it happened on has
-    // already been let go.
-    if (alive !== undefined && alive.capped !== true) {
-      if (alive.failed === undefined || alive.costUsd > 0) return replyTo(alive);
+    // where a cold turn, whose caps are its own again, answers. What is not repeated
+    // there is the question, not the charge: the cut-off attempt reached the model
+    // and that money is gone, so it is carried onto whatever does answer and the turn
+    // is reported at what it actually took.
+    let alreadySpent = 0;
+    if (alive !== undefined) {
+      if (alive.capped === true) alreadySpent = alive.costUsd;
+      else if (alive.failed === undefined || alive.costUsd > 0) return replyTo(alive);
     }
 
     // Nothing was standing, or what was standing could not serve this turn: it had
@@ -219,7 +221,7 @@ export function createChatRunner(deps: ChatRunnerDeps): Chats {
       return {
         text: attempt.text,
         proposals: readProposals(attempt.text),
-        costUsd: attempt.costUsd,
+        costUsd: attempt.costUsd + alreadySpent,
         ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
       };
     }
