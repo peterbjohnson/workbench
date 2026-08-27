@@ -917,6 +917,15 @@ test('a cancelled ticket stops, whatever it was doing', () => {
   assert.deepEqual(j.next(), { kind: 'wait' });
 });
 
+test('nothing parks a ticket that has already ended', () => {
+  const j = newTicket();
+  j.add({ type: 'cancelled', reason: 'no longer wanted' });
+
+  const late = j.add({ type: 'blocked', reason: 'this branch conflicts with the base' });
+  assert.equal(late.status, 'cancelled', 'a stopped ticket does not come back as a question');
+  assert.equal(late.question, null);
+});
+
 test('deriveTicket refuses an event list that does not start with creation', () => {
   assert.throws(
     () => deriveTicket([{ type: 'plan_approved', id: 1, ticketId: 't1', at: 'now' }]),

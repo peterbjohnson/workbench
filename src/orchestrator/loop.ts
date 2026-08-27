@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, Scale, Stage } from '../domain/events.ts';
-import type { Ticket } from '../domain/ticket.ts';
+import { ended, type Ticket } from '../domain/ticket.ts';
 import { awaitedWork, carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
@@ -729,9 +729,16 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * ticket. Nothing is pushed for them, so there is nothing to do between stages.
    */
   async function refreshOffered(merged: Ticket): Promise<void> {
+    // Ended tickets are told nothing. Cancelling does not take the offer back — see
+    // `awaitedWork` for why it must not — so a cancelled ticket still reads as
+    // offered, and without this every later merge brought it back up to the base,
+    // found the conflicts nobody is going to resolve, and blocked it: a ticket the
+    // manager stopped, back on the board hours after they stopped it.
     const standing = store
       .tickets()
-      .filter((t) => t.id !== merged.id && t.offered && !t.running && !inFlight.has(t.id));
+      .filter(
+        (t) => t.id !== merged.id && t.offered && !ended(t) && !t.running && !inFlight.has(t.id),
+      );
 
     for (const ticket of standing) {
       try {
