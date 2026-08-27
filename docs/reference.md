@@ -218,6 +218,7 @@ at all.
 | `POST /tickets/:id/merge` | squash the offered work onto the base and accept it |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
+| `POST /name-check/warm` | the ticket form is open, so whatever answers a name check gets ready now |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |

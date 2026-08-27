@@ -783,6 +783,23 @@ test('with nobody to ask, the name check answers that it has nothing, and asks n
   });
 });
 
+test('the form opening says so, and a workbench with nobody to ask takes it anyway', async () => {
+  let warmed = 0;
+  await withApi(
+    async (wb) => {
+      assert.deepEqual(await wb.warmNameCheck(), { ok: true });
+      assert.equal(warmed, 1);
+    },
+    { warmNameCheck: () => warmed++ },
+  );
+
+  // Fake agents wire no checker and so have nothing to get ready. Saying so must
+  // still not be an error the board has to handle.
+  await withApi(async (wb) => {
+    assert.deepEqual(await wb.warmNameCheck(), { ok: true });
+  });
+});
+
 test('a skill added from the board is one every stage can load', async () => {
   await withApi(async (wb, _store, config) => {
     const made = await wb.createDoc('skill', 'writing-reports');
