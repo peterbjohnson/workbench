@@ -129,9 +129,28 @@ export function createChatRunner(deps: ChatRunnerDeps): Chats {
     // The same rule the resume below follows, for the same reason: an attempt that
     // spent money reached the model, so its ending is this turn's answer however bad
     // it is, and starting again would pay twice for the one turn.
-    if (alive !== undefined && (alive.failed === undefined || alive.costUsd > 0)) {
-      return replyTo(alive);
+    //
+    // A cap is the exception. `maxTurns` and `maxBudgetUsd` bound a query, and a
+    // living process's query is the whole conversation, so a few questions in they
+    // end a turn on an allowance written for one — and the pane would show an error
+    // where a cold turn, whose caps are its own again, answers. What that cut-off
+    // attempt spent is dropped rather than added to the turn below: the manager is
+    // charged once for the answer they get, and the process it happened on has
+    // already been let go.
+    if (alive !== undefined && alive.capped !== true) {
+      if (alive.failed === undefined || alive.costUsd > 0) return replyTo(alive);
     }
+
+    // Nothing was standing, or what was standing could not serve this turn: it had
+    // died, or timed out, or the agent file was edited under it. Start one now,
+    // because opening the pane is the only other thing that ever does — so without
+    // this one gap in a conversation, or one process that died, is spawn-and-resume
+    // from there on for good.
+    //
+    // Before the cold turn rather than after it: the boot is paid in the time that
+    // turn spends thinking, and a turn that ends badly still leaves something up for
+    // the next one.
+    warm(ticket);
 
     // Resuming is worth a try but must never be worth a chat that cannot be had
     // again. The session lives in ~/.claude/projects on one machine and can simply

@@ -93,6 +93,13 @@ function service(scripts: Script[]): {
   return { query, calls };
 }
 
+/**
+ * The calls that were spoken to. A turn that has to go cold starts a process for the
+ * next turn on its way past, and that one is up with nothing said to it — so counting
+ * spawns stopped being a way of counting turns.
+ */
+const spoken = (calls: Call[]) => calls.filter((call) => call.prompts.length > 0);
+
 const AGENT: ChatAgentDef = {
   model: 'a-model',
   effort: 'low',
@@ -184,7 +191,7 @@ test('the chat reads only where it was pointed', async () => {
   // started, where there is no worktree yet and the chat is reading the repository.
   const chat = chatting([{ text: 'had a look' }]);
   await chat.say();
-  const options = chat.calls[0]?.options ?? {};
+  const options = spoken(chat.calls)[0]?.options ?? {};
 
   assert.deepEqual(
     await reading(options, 'src/run/chat.ts'),
@@ -198,6 +205,8 @@ test('the chat reads only where it was pointed', async () => {
     refused.hookSpecificOutput?.permissionDecisionReason ?? '',
     /outside this ticket's workspace/,
   );
+
+  await chat.close();
 });
 
 test('a turn that could not pick its session up starts the conversation again', async () => {
@@ -211,17 +220,16 @@ test('a turn that could not pick its session up starts the conversation again', 
   ]);
 
   const reply = await chat.say('session-gone');
+  const turns = spoken(chat.calls);
 
-  assert.equal(chat.calls.length, 2, 'it tried again');
-  assert.equal(chat.calls[0]?.options.resume, 'session-gone');
-  assert.equal(chat.calls[1]?.options.resume, undefined, 'the second attempt is a fresh one');
-  assert.match(
-    chat.calls[1]?.prompts[0] ?? '',
-    /a ticket/,
-    'briefed from the top, not left to guess',
-  );
+  assert.equal(turns.length, 2, 'it tried again');
+  assert.equal(turns[0]?.options.resume, 'session-gone');
+  assert.equal(turns[1]?.options.resume, undefined, 'the second attempt is a fresh one');
+  assert.match(turns[1]?.prompts[0] ?? '', /a ticket/, 'briefed from the top, not left to guess');
   assert.equal(reply.text, 'it is about the ticket');
   assert.equal(reply.sessionId, 'session-2', 'and the dead session is replaced, not kept');
+
+  await chat.close();
 });
 
 test('a resumed turn that spent money before failing is not paid for twice', async () => {
@@ -229,21 +237,22 @@ test('a resumed turn that spent money before failing is not paid for twice', asy
   const chat = chatting([{ cost: 0.4, throws: 'reached its cost limit' }]);
 
   await assert.rejects(chat.say('session-1'), /reached its cost limit/);
-  assert.equal(chat.calls.length, 1, 'it did not run the turn again');
+  assert.equal(spoken(chat.calls).length, 1, 'it did not run the turn again');
+
+  await chat.close();
 });
 
 test('a resumed turn that answers is told the message alone', async () => {
   const chat = chatting([{ text: 'still the same ticket' }]);
 
   const reply = await chat.say('session-1');
+  const turns = spoken(chat.calls);
 
-  assert.equal(chat.calls.length, 1);
-  assert.equal(
-    chat.calls[0]?.prompts[0],
-    'what is this?',
-    'the conversation already holds the rest',
-  );
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.prompts[0], 'what is this?', 'the conversation already holds the rest');
   assert.equal(reply.text, 'still the same ticket');
+
+  await chat.close();
 });
 
 test('two turns after the pane is opened go down one process, and neither reloads a session', async () => {
@@ -353,23 +362,71 @@ test('a turn down a process that has died falls back and still answers', async (
 
   chat.warm();
   const reply = await chat.say('session-1');
+  const turns = spoken(chat.calls);
 
-  assert.equal(chat.calls.length, 2, 'a fresh one answered it');
-  assert.equal(chat.calls[1]?.options.resume, 'session-1', "today's spawn-and-resume, exactly");
+  assert.equal(turns.length, 2, 'a fresh one answered it');
+  assert.equal(turns[1]?.options.resume, 'session-1', "today's spawn-and-resume, exactly");
   assert.equal(reply.text, 'answered anyway');
 
   await chat.close();
 });
 
-test('a living turn that spent money before stopping is not paid for twice', async () => {
-  // The chat reaching its own budget is an ending, not a process that failed to
-  // serve: it got to the model, so that is the turn. Falling back here would spawn
-  // a second process to spend the same money again.
-  const chat = chatting([{ cost: 0.4, subtype: 'error_max_budget_usd' }]);
+test('a turn that had to go cold leaves something standing for the next one', async () => {
+  // Opening the pane is the only other thing that starts a process, and it happens
+  // once. So without this, the first thing that goes wrong — a gap longer than the
+  // idle release, a process that died, an edited agent file — is the last live turn
+  // that conversation ever gets, and every one after it pays the boot again.
+  const chat = chatting([
+    { throws: 'the session ended' },
+    { text: 'answered the slow way', session: 'session-2' },
+    { text: 'and the next one was quick' },
+  ]);
 
   chat.warm();
-  await assert.rejects(chat.say('session-1'), /the chat stopped: error_max_budget_usd/);
-  assert.equal(chat.calls.length, 1, 'it did not run the turn again');
+  assert.equal((await chat.say('session-1')).text, 'answered the slow way');
+  assert.equal(chat.calls.length, 3, 'the dead one, one started for next time, and the cold turn');
+
+  const quick = await chat.say('session-2');
+
+  assert.equal(quick.text, 'and the next one was quick');
+  assert.equal(chat.calls.length, 3, 'which went down the one already standing');
+  assert.equal(chat.calls[1]?.options.resume, undefined, 'and it had no session to reload');
+
+  await chat.close();
+});
+
+test("a living turn cut off by the conversation's own caps falls back and still answers", async () => {
+  // `maxTurns` and `maxBudgetUsd` are the agent file's, written when every turn was
+  // its own query and got its own allowance. Down a living process one query is the
+  // whole conversation, so a few questions in they end a turn that was not itself
+  // expensive — and the manager would be shown a limit where the same question asked
+  // of a cold process, whose caps are its own again, is answered.
+  const chat = chatting([
+    { cost: 0.4, subtype: 'error_max_budget_usd' },
+    { text: 'answered anyway', cost: 0.2 },
+  ]);
+
+  chat.warm();
+  const reply = await chat.say('session-1');
+  const turns = spoken(chat.calls);
+
+  assert.equal(reply.text, 'answered anyway', 'the pane gets an answer, not the limit');
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1]?.options.resume, 'session-1', "today's spawn-and-resume, exactly");
+  assert.equal(reply.costUsd, 0.2, 'and the turn is charged once, for the answer it got');
+
+  await chat.close();
+});
+
+test('a living turn that spent money before failing is not paid for twice', async () => {
+  // Not a cap: a run that reached the model and went wrong there had its turn, so
+  // its ending is this turn's however bad it is. Falling back would spawn a second
+  // process to spend the same money on the same question.
+  const chat = chatting([{ cost: 0.4, subtype: 'error_during_execution' }]);
+
+  chat.warm();
+  await assert.rejects(chat.say('session-1'), /the chat stopped: error_during_execution/);
+  assert.equal(spoken(chat.calls).length, 1, 'it did not run the turn again');
 
   await chat.close();
 });
@@ -386,10 +443,11 @@ test('editing the chat agent between turns retires the process rather than servi
 
   agent = { ...AGENT, instructions: 'talk about it differently' };
   const reply = await chat.say();
+  const turns = spoken(chat.calls);
 
-  assert.equal(chat.calls.length, 2, 'the stale process could not serve it');
+  assert.equal(turns.length, 2, 'the stale process could not serve it');
   assert.equal(chat.calls[0]?.prompts.length, 1, 'and was not asked a second thing');
-  assert.match(chat.calls[1]?.prompts[0] ?? '', /talk about it differently/, 'the new file ran');
+  assert.match(turns[1]?.prompts[0] ?? '', /talk about it differently/, 'the new file ran');
   assert.equal(reply.text, 'as it is now');
 
   await chat.close();

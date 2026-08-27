@@ -14,7 +14,7 @@ type Spawned = { prompts: string[]; options: Options; signal: AbortSignal | unde
  * What a session says back to one thing it was told. `undefined` is a session that
  * ends instead of answering, which is what a dead process looks like from here.
  */
-type Said = { text?: string; total?: number; throws?: string } | undefined;
+type Said = { text?: string; total?: number; throws?: string; subtype?: string } | undefined;
 type Reply = (prompt: string, nth: number) => Promise<Said>;
 
 const answers: Reply = async (prompt) => ({ text: `answer to ${prompt}` });
@@ -44,7 +44,7 @@ function service(reply: Reply = answers): { run: Run; spawned: Spawned[] } {
         if (said.throws !== undefined) throw new Error(said.throws);
         yield {
           type: 'result',
-          subtype: 'success',
+          subtype: said.subtype ?? 'success',
           result: said.text ?? '',
           total_cost_usd: said.total ?? 0,
           session_id: `session-${spawned.length}`,
@@ -149,6 +149,39 @@ test('a process that went wrong is not asked a second thing', async () => {
 
   assert.ok(model.spawned[0]?.signal?.aborted, 'and it was let go');
   assert.equal(await live.take('t1', saying, free()), undefined, 'so the next turn goes cold');
+
+  await live.close();
+});
+
+test("a turn cut off by a cap says so, because the cap is the conversation's not the turn's", async () => {
+  // `maxTurns` and `maxBudgetUsd` bound a query, and here one query is the whole
+  // conversation — so an allowance written for a single turn runs out a few
+  // questions in, on a turn that was not itself expensive. The caller cannot tell
+  // that from the ending alone, and what it does about it is the opposite.
+  const model = service(async () => ({ subtype: 'error_max_budget_usd', total: 1 }));
+  const live = createLiveChats({ run: model.run });
+
+  live.warm('t1', options());
+  const turn = await live.take('t1', saying, free());
+
+  assert.equal(turn?.capped, true, 'the conversation ran out, not the turn');
+  assert.match(turn?.failed ?? '', /error_max_budget_usd/, 'and it still says how it ended');
+  assert.ok(model.spawned[0]?.signal?.aborted, 'one that has run out is not asked again');
+
+  await live.close();
+});
+
+test('an ending that is not a cap is not reported as one', async () => {
+  // A turn that went wrong on its own is the turn's, and the caller keeps it rather
+  // than paying for it again.
+  const model = service(async () => ({ subtype: 'error_during_execution', total: 0.4 }));
+  const live = createLiveChats({ run: model.run });
+
+  live.warm('t1', options());
+  const turn = await live.take('t1', saying, free());
+
+  assert.equal(turn?.capped, undefined);
+  assert.equal(turn?.costUsd, 0.4, 'and it says what it spent getting there');
 
   await live.close();
 });

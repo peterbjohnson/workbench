@@ -4,7 +4,20 @@ import { query, type Options, type SDKUserMessage } from '@anthropic-ai/claude-a
  * How one turn ended: the same four fields a cold attempt in `chat.ts` ends with, so
  * a turn served by a living process and one served by a fresh spawn are read alike.
  */
-export type LiveTurn = { text: string; costUsd: number; sessionId?: string; failed?: string };
+export type LiveTurn = {
+  text: string;
+  costUsd: number;
+  sessionId?: string;
+  failed?: string;
+  /**
+   * The turn ended on `maxTurns` or `maxBudgetUsd`. Both bound a `query()`, and a
+   * living process's query is the whole conversation rather than one turn of it, so
+   * these are not this turn being too big — they are the conversation having used up
+   * an allowance written for a single turn. Told apart from every other ending
+   * because it is the one the caller should go cold on however much it spent.
+   */
+  capped?: boolean;
+};
 
 export type LiveChats = {
   /**
@@ -233,9 +246,23 @@ function spawn(run: typeof query, key: string, options: Options): Living {
             value.total_cost_usd >= paid ? value.total_cost_usd - paid : value.total_cost_usd;
           paid = value.total_cost_usd;
 
-          return value.subtype === 'success'
-            ? { text: value.result, costUsd: spent, sessionId }
-            : { text: '', costUsd: spent, sessionId, failed: `the chat stopped: ${value.subtype}` };
+          if (value.subtype === 'success') return { text: value.result, costUsd: spent, sessionId };
+
+          // Which of the endings is the conversation running out rather than the
+          // turn going wrong. The agent file's caps were written when every turn
+          // was its own query and got its own allowance; down a living process one
+          // query is the whole conversation, so the fifth question can end on a
+          // limit meant for the first.
+          const capped =
+            value.subtype === 'error_max_turns' || value.subtype === 'error_max_budget_usd';
+
+          return {
+            text: '',
+            costUsd: spent,
+            sessionId,
+            failed: `the chat stopped: ${value.subtype}`,
+            ...(capped ? { capped: true } : {}),
+          };
         }
       } catch (error) {
         return {
