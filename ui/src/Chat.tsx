@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { chatTurns, withoutProposals, type Offered } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
@@ -10,6 +10,9 @@ import { wb } from './wb.ts';
  * The turns are read out of the ticket's own events, which is where a chat is kept:
  * the pane redraws off the same stream everything else does, and reopening it reads
  * the conversation back rather than starting a new one.
+ *
+ * It sits beside the ticket panel rather than inside it, and scrolls on its own, so
+ * a conversation that runs long does not push the rest of the ticket out of reach.
  */
 export function Chat({
   id,
@@ -25,11 +28,20 @@ export function Chat({
   /** Whether a reply is in flight. One turn at a time, so Send waits for it. */
   const [thinking, setThinking] = useState(false);
   /**
-   * Whether the pane is open, once you have said. Held here rather than left to the
-   * `<details>` because the panel re-renders on every event, and an uncontrolled one
-   * would fold itself back up mid-conversation.
+   * Whether the pane is open, once you have said. Held here rather than read off the
+   * DOM because the panel re-renders on every event, and anything uncontrolled would
+   * fold itself back up mid-conversation.
    */
   const [open, setOpen] = useState<boolean | null>(null);
+  const showing = open ?? turns.length > 0;
+  const turnList = useRef<HTMLDivElement>(null);
+
+  /* The newest turn is the one worth seeing, so the scroller starts at the bottom
+     and goes back there as the conversation grows. */
+  useEffect(() => {
+    const list = turnList.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [turns.length, thinking, showing]);
 
   const say = () => {
     const message = text.trim();
@@ -39,36 +51,55 @@ export function Chat({
     void onAct(wb.chat(id, message)).finally(() => setThinking(false));
   };
 
+  /* Collapsed, the whole column is the way back in: the icon says what it is and
+     the count says how much of it there is, which is all a fold ever said. */
+  if (!showing)
+    return (
+      <button
+        type="button"
+        className="chatrail"
+        aria-label={`Chat (${turns.length} messages)`}
+        onClick={() => setOpen(true)}
+      >
+        <Bubble />
+        {turns.length}
+      </button>
+    );
+
   return (
-    <details
-      className="chat"
-      open={open ?? turns.length > 0}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
-    >
-      <summary>Chat{turns.length > 0 && ` (${turns.length})`}</summary>
+    <section className="chatpane">
+      <header>
+        <Bubble />
+        Chat{turns.length > 0 && ` (${turns.length})`}
+        <button type="button" onClick={() => setOpen(false)}>
+          Hide
+        </button>
+      </header>
 
-      {turns.length === 0 && (
-        <div className="box quiet">
-          Nothing said yet. It has read the ticket, the plan and what the stages made of it, and it
-          can read the code — it cannot change anything except by proposing it.
-        </div>
-      )}
+      <div className="turns" ref={turnList}>
+        {turns.length === 0 && (
+          <div className="box quiet">
+            Nothing said yet. It has read the ticket, the plan and what the stages made of it, and
+            it can read the code — it cannot change anything except by proposing it.
+          </div>
+        )}
 
-      {turns.map((turn, i) => (
-        <div key={i} className={`turn ${turn.role}`}>
-          <div className="who">{turn.role === 'manager' ? 'You' : 'Chat'}</div>
-          {withoutProposals(turn.text)}
-          {turn.proposals.map((proposal) => (
-            <Offer
-              key={proposal.at}
-              proposal={proposal}
-              onAccept={() => onAct(wb.acceptProposal(id, proposal.at))}
-            />
-          ))}
-        </div>
-      ))}
+        {turns.map((turn, i) => (
+          <div key={i} className={`turn ${turn.role}`}>
+            <div className="who">{turn.role === 'manager' ? 'You' : 'Chat'}</div>
+            {withoutProposals(turn.text)}
+            {turn.proposals.map((proposal) => (
+              <Offer
+                key={proposal.at}
+                proposal={proposal}
+                onAccept={() => onAct(wb.acceptProposal(id, proposal.at))}
+              />
+            ))}
+          </div>
+        ))}
 
-      {thinking && <div className="turn agent quiet">thinking…</div>}
+        {thinking && <div className="turn agent quiet">thinking…</div>}
+      </div>
 
       <form
         className="row"
@@ -96,7 +127,22 @@ export function Chat({
           Send
         </button>
       </form>
-    </details>
+    </section>
+  );
+}
+
+/** What marks the chat in both of its forms. */
+function Bubble() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M2 3.5h12v8H6.5L3.5 14v-2.5H2z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

@@ -66,204 +66,210 @@ export function Detail(props: {
   const lastPlan = stages.reduce((at, run, i) => (run.stage === 'plan' ? i : at), -1);
 
   return (
-    <aside>
-      <button type="button" className="close" onClick={onClose}>
-        Close
-      </button>
+    <>
+      <aside>
+        <button type="button" className="close" onClick={onClose}>
+          Close
+        </button>
 
-      <h2>{t.title}</h2>
+        <h2>{t.title}</h2>
 
-      {/* Where it is and what it is waiting for, in words, before anything else.
+        {/* Where it is and what it is waiting for, in words, before anything else.
           Who it waits for is a fact about the board, so it is handed in. */}
-      <Headline ticket={t} held={heldBy(t, tickets)} />
+        <Headline ticket={t} held={heldBy(t, tickets)} />
 
-      {/* Which stages there were and how each ended. The blocks per stage are
+        {/* Which stages there were and how each ended. The blocks per stage are
           further down for when you want them. */}
-      {stages.length > 0 && <Pipeline stages={stages} step={t.step} steps={t.steps} />}
+        {stages.length > 0 && <Pipeline stages={stages} step={t.step} steps={t.steps} />}
 
-      {/* Identification rather than status, so it sits under both. */}
-      <div className="meta">
-        <span className="mono">{t.id}</span> · {t.status.replace(/_/g, ' ')}
-        {t.running && ' · running'}
-        {/* Otherwise a ticket that never stops to be approved looks like one whose
+        {/* Identification rather than status, so it sits under both. */}
+        <div className="meta">
+          <span className="mono">{t.id}</span> · {t.status.replace(/_/g, ' ')}
+          {t.running && ' · running'}
+          {/* Otherwise a ticket that never stops to be approved looks like one whose
             gate you missed. Said only when it is true; the gate is the default. */}
-        {!t.requiresApproval && ' · builds its plan unapproved'}
-        {t.plan !== null && ` · ${t.scale}`}
-        {t.costUsd > 0 && ` · $${t.costUsd.toFixed(2)}`}
-        {t.cycles > 1 && ` · round ${t.cycles}`}
-        {t.continues !== null && (
-          <>
-            {' · from '}
-            <a href={`#${t.continues}`}>{t.continues}</a>
-          </>
-        )}
-        {t.waitsFor.map((id) => (
-          <span key={id}>
-            {' · waits for '}
-            <a href={`#${id}`}>{id}</a>
-          </span>
-        ))}
-        {t.prUrl !== null && (
-          <>
-            {' · '}
-            <a href={t.prUrl} target="_blank" rel="noreferrer">
-              pull request
-            </a>
-          </>
-        )}
-      </div>
-
-      {t.question !== null && (
-        <div className="box ask">
-          <h3>Waiting on you</h3>
-          {t.question.question}
-          <div className="meta why">{t.question.reasoning}</div>
+          {!t.requiresApproval && ' · builds its plan unapproved'}
+          {t.plan !== null && ` · ${t.scale}`}
+          {t.costUsd > 0 && ` · $${t.costUsd.toFixed(2)}`}
+          {t.cycles > 1 && ` · round ${t.cycles}`}
+          {t.continues !== null && (
+            <>
+              {' · from '}
+              <a href={`#${t.continues}`}>{t.continues}</a>
+            </>
+          )}
+          {t.waitsFor.map((id) => (
+            <span key={id}>
+              {' · waits for '}
+              <a href={`#${id}`}>{id}</a>
+            </span>
+          ))}
+          {t.prUrl !== null && (
+            <>
+              {' · '}
+              <a href={t.prUrl} target="_blank" rel="noreferrer">
+                pull request
+              </a>
+            </>
+          )}
         </div>
-      )}
 
-      {/* Only while the ticket is acting on it. Neither is ever cleared, so at the
+        {t.question !== null && (
+          <div className="box ask">
+            <h3>Waiting on you</h3>
+            {t.question.question}
+            <div className="meta why">{t.question.reasoning}</div>
+          </div>
+        )}
+
+        {/* Only while the ticket is acting on it. Neither is ever cleared, so at the
           top unconditionally they went on shouting long after the stage that
           answered them — a ticket in a pull request led with why it was sent back
           three stages ago. Off duty they are history, and fold away below. */}
-      {t.rejection !== null && rejectionStands(t) && (
-        <div className="box">
-          <h3>Sent back because</h3>
-          {t.rejection}
-        </div>
-      )}
+        {t.rejection !== null && rejectionStands(t) && (
+          <div className="box">
+            <h3>Sent back because</h3>
+            {t.rejection}
+          </div>
+        )}
 
-      {t.changes !== null && changesStand(t) && (
-        <div className="box">
-          {/* Only when a round of agent comments is what put it there. Yours count
+        {t.changes !== null && changesStand(t) && (
+          <div className="box">
+            {/* Only when a round of agent comments is what put it there. Yours count
               none, so the heading would otherwise say "revision 0". */}
-          <h3>Changes asked for{t.revisions > 0 && ` — revision ${t.revisions}`}</h3>
-          {t.changes}
-        </div>
-      )}
+            <h3>Changes asked for{t.revisions > 0 && ` — revision ${t.revisions}`}</h3>
+            {t.changes}
+          </div>
+        )}
 
-      {/* Naming the files is half of it; the other half is the way out. Resolving
+        {/* Naming the files is half of it; the other half is the way out. Resolving
           them is implement's work, so the button is the ordinary "keep the work and
           put this right" with the paths already written into it.
 
           Only while the ticket is actually stuck on them: the paths are what one
           attempt found, and offering to send a ticket back is only an offer worth
           making where there is nothing else going on. */}
-      {t.status === 'blocked' && t.conflicts.length > 0 && (
-        <div className="box">
-          <h3>Conflicts with the base</h3>
-          {t.conflicts.map((path) => (
-            <div key={path} className="mono">
-              {path}
+        {t.status === 'blocked' && t.conflicts.length > 0 && (
+          <div className="box">
+            <h3>Conflicts with the base</h3>
+            {t.conflicts.map((path) => (
+              <div key={path} className="mono">
+                {path}
+              </div>
+            ))}
+            <div className="row">
+              <button
+                type="button"
+                onClick={() =>
+                  void onAct(
+                    wb.changes(
+                      t.id,
+                      'The base has moved on and this branch no longer merges into it. ' +
+                        `Resolve the conflicts in:\n${t.conflicts.map((p) => `- ${p}`).join('\n')}`,
+                    ),
+                  )
+                }
+              >
+                Send back to resolve them
+              </button>
             </div>
-          ))}
-          <div className="row">
-            <button
-              type="button"
-              onClick={() =>
-                void onAct(
-                  wb.changes(
-                    t.id,
-                    'The base has moved on and this branch no longer merges into it. ' +
-                      `Resolve the conflicts in:\n${t.conflicts.map((p) => `- ${p}`).join('\n')}`,
-                  ),
-                )
-              }
-            >
-              Send back to resolve them
-            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      <Actions ticket={t} tickets={tickets} onAct={onAct} />
+        <Actions ticket={t} tickets={tickets} onAct={onAct} />
 
-      <Earlier ticket={t} />
+        <Earlier ticket={t} />
 
-      {/* Thinking about the ticket out loud, with something that has already read it.
-          Keyed on the ticket, so moving to another one is another conversation rather
-          than this one's box with someone else's words half-typed in it. */}
-      <Chat key={t.id} id={t.id} events={events} onAct={onAct} />
-
-      {/* What the work was asked for, above what has been made of it: the plan and
+        {/* What the work was asked for, above what has been made of it: the plan and
           the runs are answers to this, and reading them against anything else is
           how a ticket gets judged for something it never asked for. Folded, because
           it is the longest thing here. */}
-      <details
-        open={showBody ?? stages.length === 0}
-        onToggle={(e) => setShowBody(e.currentTarget.open)}
-      >
-        <summary>Description</summary>
-        {editing ? (
-          <TicketForm
-            title={t.title}
-            body={t.body}
-            prefixes={prefixes}
-            submitLabel="Save"
-            onCancel={() => setEditing(false)}
-            // Title and body only. The gate was settled when the ticket was written,
-            // and the form does not offer it here.
-            onSubmit={({ title, body }) =>
-              onAct(wb.edit(t.id, { title, body })).then(() => setEditing(false))
-            }
-          />
-        ) : (
-          <>
-            {t.body === '' ? (
-              <div className="box quiet">No instructions yet.</div>
-            ) : (
-              <div className="box">{t.body}</div>
-            )}
-            <div className="row">
-              <button type="button" onClick={() => setEditing(true)}>
-                Edit ticket
-              </button>
-              {t.running && (
-                <span className="quiet">
-                  a stage is running, and keeps the wording it was given
-                </span>
-              )}
-            </div>
-          </>
-        )}
-      </details>
-
-      {/* Omitted rather than shown empty: a heading with nothing under it says a
-          stage produced nothing, when in fact none has run. */}
-      {stages.length > 0 && (
-        <section>
-          <h3>Progress</h3>
-          {stages.map((run, i) => (
-            <RunBlock
-              key={i}
-              run={run}
-              // The finish line and the steps in force belong to the plan run that
-              // wrote them — which is the last one, after a ticket has been round
-              // again. An earlier plan says only what it said at the time.
-              plan={
-                i === lastPlan ? { completionCriteria: t.completionCriteria, steps: t.steps } : null
+        <details
+          open={showBody ?? stages.length === 0}
+          onToggle={(e) => setShowBody(e.currentTarget.open)}
+        >
+          <summary>Description</summary>
+          {editing ? (
+            <TicketForm
+              title={t.title}
+              body={t.body}
+              prefixes={prefixes}
+              submitLabel="Save"
+              onCancel={() => setEditing(false)}
+              // Title and body only. The gate was settled when the ticket was written,
+              // and the form does not offer it here.
+              onSubmit={({ title, body }) =>
+                onAct(wb.edit(t.id, { title, body })).then(() => setEditing(false))
               }
-              // The checklist belongs to the run that is working through it.
-              steps={run.outcome === 'running' ? t.steps : []}
-              reached={run.outcome === 'running' ? t.step : null}
-              onAct={onAct}
-              ticket={t}
-              tickets={tickets}
             />
-          ))}
-        </section>
-      )}
+          ) : (
+            <>
+              {t.body === '' ? (
+                <div className="box quiet">No instructions yet.</div>
+              ) : (
+                <div className="box">{t.body}</div>
+              )}
+              <div className="row">
+                <button type="button" onClick={() => setEditing(true)}>
+                  Edit ticket
+                </button>
+                {t.running && (
+                  <span className="quiet">
+                    a stage is running, and keeps the wording it was given
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </details>
 
-      <Git ticket={t} />
+        {/* Omitted rather than shown empty: a heading with nothing under it says a
+          stage produced nothing, when in fact none has run. */}
+        {stages.length > 0 && (
+          <section>
+            <h3>Progress</h3>
+            {stages.map((run, i) => (
+              <RunBlock
+                key={i}
+                run={run}
+                // The finish line and the steps in force belong to the plan run that
+                // wrote them — which is the last one, after a ticket has been round
+                // again. An earlier plan says only what it said at the time.
+                plan={
+                  i === lastPlan
+                    ? { completionCriteria: t.completionCriteria, steps: t.steps }
+                    : null
+                }
+                // The checklist belongs to the run that is working through it.
+                steps={run.outcome === 'running' ? t.steps : []}
+                reached={run.outcome === 'running' ? t.step : null}
+                onAct={onAct}
+                ticket={t}
+                tickets={tickets}
+              />
+            ))}
+          </section>
+        )}
 
-      <details>
-        <summary>Everything that happened ({events.length})</summary>
-        <div className="log">
-          {events.map((e) => (
-            <LogLine key={e.id} event={e} />
-          ))}
-        </div>
-      </details>
-    </aside>
+        <Git ticket={t} />
+
+        <details>
+          <summary>Everything that happened ({events.length})</summary>
+          <div className="log">
+            {events.map((e) => (
+              <LogLine key={e.id} event={e} />
+            ))}
+          </div>
+        </details>
+      </aside>
+
+      {/* Thinking about the ticket out loud, with something that has already read it.
+          Beside the panel rather than in it, so a long conversation scrolls on its own
+          instead of pushing the description and the log out of reach. Keyed on the
+          ticket, so moving to another one is another conversation rather than this
+          one's box with someone else's words half-typed in it. */}
+      <Chat key={t.id} id={t.id} events={events} onAct={onAct} />
+    </>
   );
 }
 
