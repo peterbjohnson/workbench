@@ -87,7 +87,7 @@ export function buildBrief(input: BriefInput): string {
     ['The plan they rejected', rejectedPlanFor(agent, ticket)],
     ['Changes to make', changesFor(agent, ticket)],
     ['The approved plan', planFor(agent, ticket)],
-    ['Done when', doneWhenFor(agent, ticket)],
+    ['Completion criteria', completionCriteriaFor(agent, ticket)],
     ['Answer to your question', input.answer],
     ['How much this warrants', declaredScale(input)],
     ['The change so far', fenced(input.diff, 'diff')],
@@ -311,15 +311,15 @@ function changesFor(agent: AgentDef, ticket: Ticket): string | undefined {
  * between "is this done" — a question with an answer — and "is this as good as it
  * could be", which has none, and which is what ended the first two real tickets.
  */
-function doneWhenFor(agent: AgentDef, ticket: Ticket): string | undefined {
-  if (agent.stage === 'plan' || ticket.doneWhen.length === 0) return undefined;
+function completionCriteriaFor(agent: AgentDef, ticket: Ticket): string | undefined {
+  if (agent.stage === 'plan' || ticket.completionCriteria.length === 0) return undefined;
 
   const asked =
     agent.stage === 'implement'
       ? 'Build the smallest thing that makes all of these true. Nothing beyond them.'
       : 'These, and defects. Anything else you would like is a later ticket, not a verdict.';
 
-  return [...ticket.doneWhen.map((d) => `- ${d}`), '', asked].join('\n');
+  return [...ticket.completionCriteria.map((d) => `- ${d}`), '', asked].join('\n');
 }
 
 /**

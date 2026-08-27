@@ -9,7 +9,13 @@ import type { EventBody, Scale, Stage } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import { forScale, type AgentDef, type SkillDef } from '../agents/load.ts';
 import { buildBrief } from '../agents/brief.ts';
-import { readApproval, readDoneWhen, readLater, readScale, readSteps } from './protocol.ts';
+import {
+  readApproval,
+  readCompletionCriteria,
+  readLater,
+  readScale,
+  readSteps,
+} from './protocol.ts';
 import { indexTree } from '../code/symbols.ts';
 import { fileMap } from '../code/report.ts';
 import { wbServer } from '../tools/server.ts';
@@ -309,7 +315,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         ...readApproval(stage, finalText),
         ...readScale(stage, finalText),
         ...readSteps(stage, finalText),
-        ...readDoneWhen(stage, finalText),
+        ...readCompletionCriteria(stage, finalText),
         ...readLater(finalText),
         costUsd,
       });

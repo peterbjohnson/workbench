@@ -226,7 +226,7 @@ function brief(
     ['Ticket', `**${ticket.id} — ${ticket.title}**\n\n${ticket.body}`.trim()],
     ['Where it has got to', whereItIs(ticket)],
     ['The plan', ticket.plan ?? undefined],
-    ['Done when', ticket.doneWhen.map((d) => `- ${d}`).join('\n') || undefined],
+    ['Completion criteria', ticket.completionCriteria.map((c) => `- ${c}`).join('\n') || undefined],
     ['What the stages said', whatTheStagesSaid(events)],
     ['What the manager just said', message],
   ];

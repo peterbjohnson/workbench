@@ -239,7 +239,9 @@ export function Detail(props: {
               // The finish line and the steps in force belong to the plan run that
               // wrote them — which is the last one, after a ticket has been round
               // again. An earlier plan says only what it said at the time.
-              plan={i === lastPlan ? { doneWhen: t.doneWhen, steps: t.steps } : null}
+              plan={
+                i === lastPlan ? { completionCriteria: t.completionCriteria, steps: t.steps } : null
+              }
               // The checklist belongs to the run that is working through it.
               steps={run.outcome === 'running' ? t.steps : []}
               reached={run.outcome === 'running' ? t.step : null}
@@ -331,7 +333,7 @@ function RunBlock({
 }: {
   run: Run;
   /** The finish line and the steps this run set, when it is the plan in force. */
-  plan: { doneWhen: string[]; steps: string[] } | null;
+  plan: { completionCriteria: string[]; steps: string[] } | null;
   steps: string[];
   reached: number | null;
   ticket: Ticket;
@@ -387,11 +389,11 @@ function RunBlock({
           <summary>{head}</summary>
           {/* What the plan settled is its gist: the finish line review judges
               against, and the steps the work breaks into. */}
-          {plan !== null && plan.doneWhen.length > 0 && (
+          {plan !== null && plan.completionCriteria.length > 0 && (
             <>
-              <h4>Done when</h4>
-              <ul className="done-when">
-                {plan.doneWhen.map((d) => (
+              <h4>Completion criteria</h4>
+              <ul className="completion-criteria">
+                {plan.completionCriteria.map((d) => (
                   <li key={d}>{d}</li>
                 ))}
               </ul>

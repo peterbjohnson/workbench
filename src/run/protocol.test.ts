@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   readApproval,
-  readDoneWhen,
+  readCompletionCriteria,
   readLater,
   readProposals,
   readScale,
@@ -255,7 +255,7 @@ test('the plan says when the ticket is finished', () => {
   const text = [
     'A plan for the report.',
     '',
-    'DONE WHEN:',
+    'COMPLETION CRITERIA:',
     '- every number matches calcs_v03.py',
     '- the three existing figures are referenced',
     '',
@@ -265,14 +265,25 @@ test('the plan says when the ticket is finished', () => {
     'SCALE: small',
   ].join('\n');
 
-  assert.deepEqual(readDoneWhen('plan', text), {
-    doneWhen: ['every number matches calcs_v03.py', 'the three existing figures are referenced'],
+  assert.deepEqual(readCompletionCriteria('plan', text), {
+    completionCriteria: [
+      'every number matches calcs_v03.py',
+      'the three existing figures are referenced',
+    ],
   });
   // The blocks do not bleed into each other.
   assert.deepEqual(readSteps('plan', text), { steps: ['Draft it'] });
 
-  assert.deepEqual(readDoneWhen('review', text), {}, 'only the plan sets the finish line');
-  assert.deepEqual(readDoneWhen('plan', 'a plan with no conditions'), {});
+  assert.deepEqual(
+    readCompletionCriteria('review', text),
+    {},
+    'only the plan sets the finish line',
+  );
+  assert.deepEqual(readCompletionCriteria('plan', 'a plan with no conditions'), {});
+
+  // A clean break: the old heading is no longer a heading.
+  const old = 'A plan for the report.\n\nDONE WHEN:\n- every number matches calcs_v03.py';
+  assert.deepEqual(readCompletionCriteria('plan', old), {});
 });
 
 test('improvements that are not this ticket are kept apart from the verdict', () => {

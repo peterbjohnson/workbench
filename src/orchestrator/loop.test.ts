@@ -1332,6 +1332,7 @@ test('a merge onto a base that will not merge names the files and merges nothing
       kind: 'conflicted',
       base: 'newbase',
       paths: ['src/api/server.ts'],
+      // Asked without `keep`, so the clash was found and undone rather than left.
       with: 'newbase',
       merged: [],
       commit: 'head0001',

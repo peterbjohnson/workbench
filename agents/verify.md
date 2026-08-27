@@ -91,8 +91,8 @@ rather than implying you did. If it works, say so plainly without hedging.
 ## The question you are answering
 
 **Does this do what the ticket said, and does the evidence hold?** The brief carries
-`Done when` — the conditions agreed at the gate. Those, and what you can actually break,
-are what you may object to.
+`Completion criteria` — the conditions agreed at the gate. Those, and what you can actually
+break, are what you may object to.
 
 Something you would like, or would have built differently, goes in a `LATER:` block after
 your verdict, one per line. The manager makes a ticket of it with a click.

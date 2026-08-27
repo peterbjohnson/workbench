@@ -47,7 +47,7 @@ person sees the work before any money goes on building it.
 **The gate can be turned off per ticket, when you write it** — the switch on the new ticket
 form, or `wb new --no-approval`. It defaults to on, so skipping it is something to choose
 rather than something to forget. Off, the ticket goes straight from planning to
-implementing; the plan is still written, still recorded, and still the `DONE WHEN:` list
+implementing; the plan is still written, still recorded, and still the `COMPLETION CRITERIA:` list
 that review and verify hold the work to. The ticket says so on its panel, because one that
 never stopped for you otherwise looks like one whose gate you missed.
 
