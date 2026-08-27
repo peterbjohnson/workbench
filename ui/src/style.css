@@ -859,6 +859,51 @@ summary {
   font-weight: 600;
 }
 
+/* The conversation about a ticket. Turns read as a chat rather than as a log —
+   what was said and what came back — and under an agent's turn sit the things it
+   offered to do, each of them one click from being done. */
+.turn {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem 0.7rem;
+  margin: 0.6rem 0;
+  white-space: pre-wrap;
+  font-size: 0.88rem;
+}
+
+/* Whose turn it is, said by which side of the box is marked rather than by a
+   colour, so the two read apart in either theme. */
+.turn.manager {
+  border-left: 2px solid var(--accent);
+}
+
+.turn .who {
+  color: var(--dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.offer {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line);
+}
+
+/* What the proposal would actually write, under the reason for it. */
+.offer .what {
+  color: var(--dim);
+  font-size: 0.82rem;
+  margin-top: 0.3rem;
+}
+
 dl.git {
   display: grid;
   grid-template-columns: auto 1fr;

@@ -1,4 +1,4 @@
-import type { Event, RunOutcome, Stage } from './events.ts';
+import type { Event, Proposal, RunOutcome, Stage } from './events.ts';
 import { nextAction, type Policy } from './rules.ts';
 import { ended, type Status, type Ticket } from './ticket.ts';
 
@@ -309,6 +309,93 @@ export function madeInto(
 ): Ticket | undefined {
   const { title, body } = suggestion(from, stage, idea);
   return tickets.find((t) => t.title === title && t.body === body);
+}
+
+/** A proposal with what the pane needs in order to offer it: where it is, and its fate. */
+export type Offered = Proposal & {
+  /**
+   * Its place in the conversation, counting every proposal ever made on this
+   * ticket. This is how one is named to be accepted — the events are appended and
+   * never rewritten, so the count of what came before it never changes.
+   */
+  at: number;
+  accepted: boolean;
+};
+
+/** One turn of the conversation about a ticket. */
+export type ChatTurn = {
+  role: 'manager' | 'agent';
+  text: string;
+  /** What that turn offered to do. Empty for everything the manager says. */
+  proposals: Offered[];
+  costUsd: number;
+};
+
+export type Chat = {
+  turns: ChatTurn[];
+  /**
+   * The agent's last conversation, so the next turn carries on rather than paying
+   * to read the whole ticket again. Null before it has said anything.
+   */
+  session: string | null;
+};
+
+/**
+ * The chat about a ticket, read back out of its events — which is the only place it
+ * is: nothing about a conversation belongs on the `Ticket` projection, which is sent
+ * for every card on the board.
+ *
+ * A proposal is marked accepted by matching what was accepted against what was
+ * offered, because that is what `chat_accepted` records. Two identical proposals in
+ * two turns therefore both read as accepted; they are the same offer, and taking it
+ * up once is the honest answer for both.
+ */
+export function chatTurns(events: readonly Event[]): Chat {
+  const taken = new Set(
+    events.flatMap((e) => (e.type === 'chat_accepted' ? [JSON.stringify(e.proposal)] : [])),
+  );
+
+  const turns: ChatTurn[] = [];
+  let session: string | null = null;
+  let at = 0;
+
+  for (const e of events) {
+    if (e.type !== 'chat_said') continue;
+    if (e.sessionId !== undefined) session = e.sessionId;
+    turns.push({
+      role: e.role,
+      text: e.text,
+      proposals: (e.proposals ?? []).map((p) => ({
+        ...p,
+        at: at++,
+        accepted: taken.has(JSON.stringify(p)),
+      })),
+      costUsd: e.costUsd ?? 0,
+    });
+  }
+
+  return { turns, session };
+}
+
+/**
+ * Where a proposal is written: a fenced block of JSON, tagged `wb-propose`. JSON
+ * rather than a marker line like everything else a stage announces, because a
+ * proposed ticket description is a paragraph and a marker line is a line.
+ *
+ * Here rather than beside the reader in `run/protocol.ts` because the pane needs
+ * it, and the board may not import anything from `run/`: those files talk to the
+ * SDK and to this machine, and the browser bundle would carry the first one that
+ * grew a `node:` import.
+ */
+export const PROPOSAL_BLOCK = /^```wb-propose[^\n]*\n([\s\S]*?)^```/gm;
+
+/**
+ * What the agent said, without the blocks. The pane draws those as buttons, and the
+ * JSON that made them is the same thing said twice — once for the manager and once
+ * for the workbench, and only one of the two is worth reading.
+ */
+export function withoutProposals(text: string): string {
+  return text.replace(PROPOSAL_BLOCK, '').trim();
 }
 
 /**

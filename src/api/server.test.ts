@@ -14,6 +14,8 @@ import { deleteDoc } from './documents.ts';
 import { openStore, type Store } from '../store/store.ts';
 import { loadSkills, parseSkill } from '../agents/load.ts';
 import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
+import type { Proposal } from '../domain/events.ts';
+import type { ChatRunner } from '../run/chat.ts';
 import { PRESET_VALUES } from './presets.ts';
 import type { Setting } from './settings.ts';
 
@@ -532,13 +534,174 @@ test('the plan gate is asked for when the ticket is written, and kept', async ()
   });
 });
 
+/**
+ * A chat agent that never leaves this process. What it says is what it was told to
+ * say — the interesting part is what the routes do with it, not what it thinks.
+ */
+function stubChat(proposals: Proposal[] = [], costUsd = 0.03): ChatRunner {
+  return async ({ message }) => ({
+    text: `heard: ${message}`,
+    proposals,
+    costUsd,
+    sessionId: 's1',
+  });
+}
+
+test('a chat turn appends what was said and what came back', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('Add a retry', 'It gives up too early.');
+      const chat = await wb.chat('t1', 'is this ready to start?');
+
+      assert.deepEqual(
+        chat.turns.map((t) => [t.role, t.text]),
+        [
+          ['manager', 'is this ready to start?'],
+          ['agent', 'heard: is this ready to start?'],
+        ],
+      );
+      assert.equal(chat.session, 's1', 'so the next turn carries on rather than re-reading');
+
+      assert.deepEqual(
+        store.eventsFor('t1').map((e) => e.type),
+        ['ticket_created', 'chat_said', 'chat_said'],
+      );
+      // Talking about a ticket must not be able to spend it past its ceiling and
+      // stop the work being talked about.
+      assert.equal(store.ticket('t1').costUsd, 0);
+    },
+    { chat: stubChat() },
+  );
+});
+
+test('a chat with nothing wired into it says so rather than failing', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('Add a retry', '');
+    await assert.rejects(() => wb.chat('t1', 'hello?'), /no chat agent/);
+    assert.equal(store.eventsFor('t1').length, 1, 'and nothing is said on its behalf');
+  });
+});
+
+test('accepting a proposal appends the event the button would, and says it came from the chat', async () => {
+  const rename: Proposal = { action: 'edit', why: 'it says nothing', title: 'Add a retry' };
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      const chat = await wb.chat('t1', 'what should it be called?');
+      assert.deepEqual(
+        chat.turns[1]?.proposals.map((p) => [p.at, p.accepted]),
+        [[0, false]],
+      );
+
+      const after = await wb.acceptProposal('t1', 0);
+      assert.equal(after.title, 'Add a retry');
+      assert.deepEqual(
+        store.eventsFor('t1').map((e) => e.type),
+        ['ticket_created', 'chat_said', 'chat_said', 'ticket_edited', 'chat_accepted'],
+      );
+
+      // And the pane says so, rather than offering the same thing again.
+      const said = await wb.chat('t1', 'done?');
+      assert.deepEqual(
+        said.turns[1]?.proposals.map((p) => p.accepted),
+        [true],
+      );
+    },
+    { chat: stubChat([rename]) },
+  );
+});
+
+test('a proposal that breaks the rule of the action it names is refused, and appends nothing', async () => {
+  const wrong: Proposal[] = [
+    { action: 'ship', why: 'good enough' },
+    { action: 'changes', why: 'nearly', text: 'fix the retry' },
+  ];
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'anything to do?');
+      const before = store.eventsFor('t1').length;
+
+      await assert.rejects(() => wb.acceptProposal('t1', 0), /may not propose "ship"/);
+      // The same refusal `/tickets/:id/changes` gives: no plan, nothing to work from.
+      await assert.rejects(() => wb.acceptProposal('t1', 1), /nothing has been planned yet/);
+      await assert.rejects(() => wb.acceptProposal('t1', 7), /has no proposal 7/);
+
+      assert.equal(store.eventsFor('t1').length, before);
+    },
+    { chat: stubChat(wrong) },
+  );
+});
+
+test('only a number names a proposal, so a request naming none accepts nothing', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'anything to do?');
+      const before = store.eventsFor('t1').length;
+
+      // Every one of these used to be `Number`ed into 0 — which is a real proposal,
+      // so a request that named nothing took the first offer up.
+      const accept = wb.acceptProposal as unknown as (id: string, at: unknown) => Promise<unknown>;
+      for (const at of [null, '', ' ', false, [], '0', undefined]) {
+        await assert.rejects(() => accept('t1', at), /has no proposal/, JSON.stringify(at ?? null));
+      }
+
+      assert.equal(store.eventsFor('t1').length, before);
+    },
+    { chat: stubChat([{ action: 'queue', why: 'it is ready' }]) },
+  );
+});
+
+test('a proposal accepted twice is performed once, and the second says why not', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'ready?');
+      await wb.acceptProposal('t1', 0);
+      const after = store.eventsFor('t1').map((e) => e.type);
+      assert.deepEqual(after.slice(-2), ['queued', 'chat_accepted']);
+
+      await assert.rejects(() => wb.acceptProposal('t1', 0), /already been accepted/);
+      assert.deepEqual(
+        store.eventsFor('t1').map((e) => e.type),
+        after,
+        'the second accept appends nothing at all',
+      );
+    },
+    { chat: stubChat([{ action: 'queue', why: 'it is ready' }]) },
+  );
+});
+
+test('two accepts of one proposal at once leave one event, not two', async () => {
+  await withApi(
+    async (wb, store) => {
+      await wb.create('thing', '');
+      await wb.chat('t1', 'is the plan right?');
+
+      const both = await Promise.allSettled([
+        wb.acceptProposal('t1', 0),
+        wb.acceptProposal('t1', 0),
+      ]);
+      assert.equal(both.filter((r) => r.status === 'fulfilled').length, 1);
+
+      assert.equal(
+        store.eventsFor('t1').filter((e) => e.type === 'plan_rejected').length,
+        1,
+        'the rejection is appended once however the two requests were interleaved',
+      );
+    },
+    { chat: stubChat([{ action: 'reject', why: 'wrong shape', text: 'start from the store' }]) },
+  );
+});
+
 test('the agents are readable, and what each declares is said with it', async () => {
   await withApi(async (wb) => {
     const agents = await wb.docs('agent');
     assert.deepEqual(
       agents.map((a) => a.name),
-      ['plan', 'implement', 'review', 'verify'],
-      'in the order they run',
+      ['plan', 'implement', 'review', 'verify', 'chat'],
+      'in the order they run, and then the one that is not in the loop at all',
     );
 
     const plan = agents[0]!;
@@ -711,7 +874,15 @@ test('adding and removing are refused for anything that is not a skill of its ow
     assert.throws(() => deleteDoc(config, 'skill', '..'), /not a skill name/);
 
     assert.deepEqual(fs.readdirSync(skills), before, 'and the disk is as it was');
-    assert.equal((await wb.docs('agent')).length, 4);
+    // The four stages and the one that talks about a ticket: fixed, every one of
+    // them, which is what refusing to add or remove any of them leaves.
+    assert.deepEqual((await wb.docs('agent')).map((d) => d.name).sort(), [
+      'chat',
+      'implement',
+      'plan',
+      'review',
+      'verify',
+    ]);
   });
 });
 

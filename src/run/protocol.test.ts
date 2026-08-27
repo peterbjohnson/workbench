@@ -5,10 +5,69 @@ import {
   readApproval,
   readDoneWhen,
   readLater,
+  readProposals,
   readScale,
   readStep,
   readSteps,
 } from './protocol.ts';
+
+/** A `wb-propose` block as an agent writes one. */
+function block(json: string): string {
+  return ['```wb-propose', json, '```'].join('\n');
+}
+
+test('a reply that proposes nothing proposes nothing', () => {
+  assert.deepEqual(readProposals(''), []);
+  assert.deepEqual(readProposals('I would leave it as it is.'), []);
+  // A block of something else is not a proposal, whatever is in it.
+  assert.deepEqual(readProposals('```json\n{"action":"queue"}\n```'), []);
+});
+
+test('one block is one proposal, with the fields it named', () => {
+  const said = `Worth committing to.\n\n${block('{"action": "queue", "why": "it is ready"}')}`;
+  assert.deepEqual(readProposals(said), [{ action: 'queue', why: 'it is ready' }]);
+});
+
+test('several blocks are several proposals, in the order they were written', () => {
+  const said = [
+    'Two things.',
+    block('{"action": "edit", "why": "the title says nothing", "title": "Add a retry"}'),
+    block('{"action": "queue", "why": "then it is ready"}'),
+  ].join('\n\n');
+
+  assert.deepEqual(readProposals(said), [
+    { action: 'edit', why: 'the title says nothing', title: 'Add a retry' },
+    { action: 'queue', why: 'then it is ready' },
+  ]);
+});
+
+test('a block that does not parse is ignored, and the ones around it are not', () => {
+  const said = [
+    block('{"action": "queue", "why": "first"'),
+    block('not JSON at all'),
+    // Nothing to do is nothing to propose.
+    block('{"why": "no action named"}'),
+    block('"a string is valid JSON and is not a proposal"'),
+    block('{"action": "approve", "why": "last"}'),
+  ].join('\n\n');
+
+  assert.deepEqual(readProposals(said), [{ action: 'approve', why: 'last' }]);
+});
+
+test('a proposed description may hold backticks and newlines', () => {
+  const body = 'Run `wb serve`.\n\nThen open the board.';
+  const said = block(JSON.stringify({ action: 'edit', why: 'says how', body }));
+
+  assert.deepEqual(readProposals(said), [{ action: 'edit', why: 'says how', body }]);
+});
+
+test('an action the chat may not propose still reads, so accepting it can say why', () => {
+  // Refusing here would leave the manager clicking nothing and told nothing. The
+  // list of what is allowed lives in `proposalEvent`, and is checked when accepted.
+  assert.deepEqual(readProposals(block('{"action": "ship", "why": "good enough"}')), [
+    { action: 'ship', why: 'good enough' },
+  ]);
+});
 
 test('plan and implement have no verdict to read', () => {
   assert.deepEqual(readApproval('plan', 'here is a plan'), {});

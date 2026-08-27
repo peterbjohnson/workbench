@@ -53,6 +53,28 @@ export type Refreshed =
     };
 
 /**
+ * Something the chat agent thinks should be done to the ticket, offered for the
+ * manager to accept with a click. Never one of its own powers: every proposal is
+ * an action the manager already had, so accepting one appends exactly the event
+ * the button would have.
+ *
+ * `action` is a plain string because this is read out of what a model wrote, and
+ * what a model wrote can say anything. Which strings are actions is `CHAT_ACTIONS`,
+ * and it is checked when the proposal is accepted rather than when it is read —
+ * so a proposal nobody can act on still comes back with a reason why.
+ */
+export type Proposal = {
+  action: string;
+  /** Why it is proposing this, in its own words. Shown beside the button. */
+  why: string;
+  /** For `edit`: whichever of these it wants to rewrite. */
+  title?: string;
+  body?: string;
+  /** For `changes`, what to put right; for `reject`, why the approach is wrong. */
+  text?: string;
+};
+
+/**
  * Everything else in the system is derived from this list.
  * Events are appended and never updated or deleted.
  *
@@ -281,7 +303,30 @@ export type EventBody =
    * merge asked for survives a restart, and every one of them is in the log.
    */
   | { type: 'merge_requested' }
-  | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string };
+  | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string }
+  /**
+   * One turn of the conversation about this ticket, by the manager or by the chat
+   * agent. Kept as events like everything else, so the pane is redrawn off the same
+   * stream the board is and a reload reads the conversation back rather than losing it.
+   *
+   * `costUsd` is recorded and deliberately not added to `ticket.costUsd`: talking
+   * about a ticket must not be able to push it past `maxTicketUsd` and stop the work.
+   */
+  | {
+      type: 'chat_said';
+      role: 'manager' | 'agent';
+      text: string;
+      proposals?: Proposal[];
+      costUsd?: number;
+      /** The agent's conversation, so the next turn resumes rather than re-reads. */
+      sessionId?: string;
+    }
+  /**
+   * The manager took a proposal up. Written beside the event the proposal actually
+   * is, which is appended first — this one only records that the chat is where it
+   * came from, so the pane can say which of its offers have been taken.
+   */
+  | { type: 'chat_accepted'; proposal: Proposal };
 
 export type Event = EventBody & {
   id: number;

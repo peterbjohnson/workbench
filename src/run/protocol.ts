@@ -1,4 +1,5 @@
-import type { Scale, Stage } from '../domain/events.ts';
+import { PROPOSAL_BLOCK } from '../domain/board.ts';
+import type { Proposal, Scale, Stage } from '../domain/events.ts';
 
 /**
  * What a stage says to the workbench, and how the workbench reads it.
@@ -102,6 +103,49 @@ export function readStep(text: string): number | undefined {
     if (announced?.[1]) reached = Number(announced[1]);
   }
   return reached;
+}
+
+/**
+ * What the chat agent offered to do to the ticket, as blocks at the end of a reply.
+ * Zero or more: a conversation that only answers a question proposes nothing, which
+ * is the ordinary case.
+ *
+ * A block that does not parse, or that names nothing to do, is ignored — the same
+ * way every other reader here treats silence. The reply is still worth reading, and
+ * a chat is not a stage: there is no verdict to fall back to and nothing to send back.
+ */
+export function readProposals(text: string): Proposal[] {
+  return [...text.matchAll(PROPOSAL_BLOCK)].flatMap((block) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(block[1] ?? '');
+    } catch {
+      return [];
+    }
+    const proposal = asProposal(parsed);
+    return proposal === undefined ? [] : [proposal];
+  });
+}
+
+function asProposal(value: unknown): Proposal | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const str = (key: string): string | undefined =>
+    typeof raw[key] === 'string' ? raw[key] : undefined;
+
+  const action = str('action');
+  if (action === undefined || action === '') return undefined;
+
+  // Built field by field rather than kept as it arrived: what is stored is a
+  // proposal, not whatever else the model happened to put in the block.
+  const proposal: Proposal = { action, why: str('why') ?? '' };
+  const title = str('title');
+  const body = str('body');
+  const said = str('text');
+  if (title !== undefined) proposal.title = title;
+  if (body !== undefined) proposal.body = body;
+  if (said !== undefined) proposal.text = said;
+  return proposal;
 }
 
 /**

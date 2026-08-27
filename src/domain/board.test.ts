@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   changesStand,
+  chatTurns,
   COLUMNS,
   columnFor,
   details,
@@ -19,6 +20,7 @@ import {
   toneOf,
   tweakable,
   waitingForSlot,
+  withoutProposals,
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
@@ -549,6 +551,119 @@ test('there is something to say no to once a ticket has started, and not before'
   // A run in flight still reports back, and its verdict would land on a ticket
   // that had already moved.
   assert.equal(sendableBack({ ...at('reviewing'), running: true }), false);
+});
+
+test('the chat reads back in order, with what each turn offered', () => {
+  const rename = { action: 'edit', why: 'the title says nothing', title: 'Add a retry' };
+  const chat = chatTurns(
+    log(
+      { type: 'ticket_created', title: 'x', body: '' },
+      { type: 'chat_said', role: 'manager', text: 'what should this be called?' },
+      {
+        type: 'chat_said',
+        role: 'agent',
+        text: 'Something that says what it does.',
+        proposals: [rename, { action: 'queue', why: 'it is ready' }],
+        costUsd: 0.02,
+        sessionId: 's1',
+      },
+      // Stage events are not chat, however much they look like a conversation.
+      { type: 'agent_said', runId: 'r1', text: 'not part of the chat' },
+    ),
+  );
+
+  assert.deepEqual(
+    chat.turns.map((turn) => [turn.role, turn.text]),
+    [
+      ['manager', 'what should this be called?'],
+      ['agent', 'Something that says what it does.'],
+    ],
+  );
+  assert.deepEqual(chat.turns[0]?.proposals, []);
+  // Counted across the whole conversation, which is how one is named to be accepted.
+  assert.deepEqual(
+    chat.turns[1]?.proposals.map((p) => [p.at, p.action, p.accepted]),
+    [
+      [0, 'edit', false],
+      [1, 'queue', false],
+    ],
+  );
+  assert.equal(chat.turns[1]?.costUsd, 0.02);
+  assert.equal(chat.session, 's1');
+});
+
+test('a proposal that was taken up says so, and the rest do not', () => {
+  const rename = { action: 'edit', why: 'the title says nothing', title: 'Add a retry' };
+  const chat = chatTurns(
+    log(
+      {
+        type: 'chat_said',
+        role: 'agent',
+        text: 'two ideas',
+        proposals: [rename, { action: 'queue', why: 'ready' }],
+      },
+      { type: 'chat_accepted', proposal: rename },
+    ),
+  );
+
+  assert.deepEqual(
+    chat.turns[0]?.proposals.map((p) => p.accepted),
+    [true, false],
+  );
+});
+
+test('the chat has no session until the agent has said something', () => {
+  const chat = chatTurns(log({ type: 'chat_said', role: 'manager', text: 'hello?' }));
+  assert.equal(chat.session, null);
+  // The last one wins: the next turn carries on from the most recent conversation.
+  const later = chatTurns(
+    log(
+      { type: 'chat_said', role: 'agent', text: 'one', sessionId: 's1' },
+      { type: 'chat_said', role: 'agent', text: 'two', sessionId: 's2' },
+    ),
+  );
+  assert.equal(later.session, 's2');
+});
+
+test('what the chat said is shown without the blocks that became buttons', () => {
+  // The manager reads this. A proposal is already on screen as the thing it offers
+  // to do, and the JSON that made it is the same offer written for the workbench.
+  const said = [
+    'Two things.',
+    '```wb-propose',
+    '{"action": "queue", "why": "it is ready"}',
+    '```',
+    'The second can wait.',
+    '```wb-propose',
+    '{"action": "edit", "why": "the title says nothing", "title": "Add a retry"}',
+    '```',
+  ].join('\n\n');
+
+  const shown = withoutProposals(said);
+  assert.match(shown, /^Two things\./);
+  assert.match(shown, /The second can wait\./);
+  assert.doesNotMatch(shown, /wb-propose|"action"/);
+
+  // A reply that proposed nothing is left exactly as it was written.
+  assert.equal(withoutProposals('  I would leave it as it is.  '), 'I would leave it as it is.');
+});
+
+test('proposals are numbered across the whole conversation, not within a turn', () => {
+  // This numbering is the only name a proposal has: the pane sends a position back
+  // and the route acts on what is at it, so both read this one list.
+  const events = log(
+    { type: 'chat_said', role: 'agent', text: 'a', proposals: [{ action: 'queue', why: 'one' }] },
+    { type: 'chat_said', role: 'manager', text: 'go on' },
+    { type: 'chat_said', role: 'agent', text: 'b', proposals: [{ action: 'approve', why: 'two' }] },
+  );
+
+  assert.deepEqual(
+    chatTurns(events).turns.flatMap((t) => t.proposals.map((p) => [p.at, p.why])),
+    [
+      [0, 'one'],
+      [1, 'two'],
+    ],
+  );
 });
 
 test('merged work can be sent back to be tweaked, and nothing else can', () => {
