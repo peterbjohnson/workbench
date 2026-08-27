@@ -455,12 +455,18 @@ header form {
 
 /* Panel ------------------------------------------------------------------- */
 
+/* How wide the ticket panel is. A property rather than a number because the chat
+   pane anchors to the panel's left edge, and the two have to agree. */
+:root {
+  --panel: min(38rem, 94vw);
+}
+
 aside {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
-  width: min(38rem, 94vw);
+  width: var(--panel);
   background: var(--card);
   border-left: 1px solid var(--line);
   padding: 1.2rem;
@@ -857,6 +863,74 @@ summary {
   text-transform: uppercase;
   letter-spacing: 0.07em;
   font-weight: 600;
+}
+
+/* The chat, out beside the ticket rather than in the middle of it: a conversation
+   that runs long used to push the description and the log below it out of reach.
+   Both forms hang off the panel's left edge, so they move with its width. */
+.chatpane,
+.chatrail {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  right: var(--panel);
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-panel);
+  z-index: 3;
+}
+
+.chatpane {
+  display: flex;
+  flex-direction: column;
+  width: min(24rem, 60vw);
+  padding: 1.2rem;
+  font-size: 0.85rem;
+}
+
+.chatpane header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+
+.chatpane header button {
+  margin-left: auto;
+}
+
+/* Only the turns scroll, so the composer stays where you left it and the newest
+   turn is what the pane opens on. */
+.chatpane .turns {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Collapsed: a column narrow enough to give the ticket its width back, and all of
+   it is the way to open the chat again. */
+.chatrail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 2.2rem;
+  padding: 0.8rem 0;
+  border: none;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chatrail:hover {
+  color: var(--ink);
+  background: var(--bg);
 }
 
 /* The conversation about a ticket. Turns read as a chat rather than as a log —
