@@ -14,6 +14,7 @@ import { deleteDoc } from './documents.ts';
 import { openStore, type Store } from '../store/store.ts';
 import { loadSkills, parseSkill } from '../agents/load.ts';
 import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
+import { PRESET_VALUES } from './presets.ts';
 import type { Setting } from './settings.ts';
 
 /**
@@ -674,13 +675,17 @@ test('the instance colour is kept in the config file, and clearing it takes the 
       JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
 
     const colour = (all: Setting[]) => all.find((s) => s.key === 'colour');
-    assert.equal(colour(await wb.settings())?.value, '', 'no colour until one is chosen');
+    const before = colour(await wb.settings());
+    assert.equal(before?.value, '', 'no colour until one is chosen');
+    // The board draws swatches by walking these, so they have to come with the setting.
+    assert.deepEqual(before?.choices, PRESET_VALUES);
 
-    const after = await wb.setSettings({ colour: '#3A7D6F' });
-    assert.equal(colour(after)?.value, '#3a7d6f', 'and it is written the one way');
+    const preset = PRESET_VALUES[0] as string;
+    const after = await wb.setSettings({ colour: preset.toUpperCase() });
+    assert.equal(colour(after)?.value, preset, 'and it is written the one way');
     // The board reads it every time it loads, so saying "next start" would be a lie.
     assert.equal(colour(after)?.restart, false);
-    assert.equal(file()['colour'], '#3a7d6f');
+    assert.equal(file()['colour'], preset);
 
     // No colour is the default, so the file stops mentioning it rather than holding
     // an empty string nobody can read a decision out of.
@@ -710,14 +715,17 @@ test('the ticket prefixes are a list in the config file, and the default is take
   });
 });
 
-test('something that is not a colour is refused, and nothing is written', async () => {
+test('a colour that is not one of the presets is refused, and nothing is written', async () => {
   await withApi(async (wb) => {
     const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
     const file = () =>
       JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
 
-    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), /Instance colour must be a/);
-    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), /Instance colour must be a/);
+    const complaint = /Instance colour must be one of/;
+    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), complaint);
+    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), complaint);
+    // Well formed and still not on offer: the point of the set is that it is the set.
+    await assert.rejects(() => wb.setSettings({ colour: '#3a7d6f' }), complaint);
     assert.equal('colour' in file(), false);
   });
 });
