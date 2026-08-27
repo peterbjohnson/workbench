@@ -151,6 +151,12 @@ export function createClient(baseUrl: string) {
     checkName: (title: string, body: string) =>
       post<{ name: string | null; why?: string }>('/name-check', { title, body }),
 
+    /**
+     * A name is about to be asked about, so whatever answers it can get ready now.
+     * Nothing comes back but the acknowledgement: this is the wait, moved earlier.
+     */
+    warmNameCheck: () => post<{ ok: true }>('/name-check/warm'),
+
     /** Everything the workbench is set to, editable and not. */
     settings: () => call<{ settings: Setting[] }>('/settings').then((r) => r.settings),
     setSettings: (patch: Record<string, unknown>) =>

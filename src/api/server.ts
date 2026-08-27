@@ -41,6 +41,11 @@ export type ApiDeps = {
    * the exception — and then the route answers that it has no suggestion.
    */
   checkName?: NameChecker;
+  /**
+   * Someone has opened the ticket form, so a name check is coming. Absent for the
+   * same reason `checkName` is, and getting ready costs nothing to skip.
+   */
+  warmNameCheck?: () => void;
   /** The conversation about a ticket. Absent means the workbench has no chat. */
   chat?: ChatRunner;
 };
@@ -147,6 +152,14 @@ async function handle(
         ? null
         : await deps.checkName(name, String(body ?? ''));
     return send(res, 200, suggestion ?? { name: null });
+  }
+
+  // The ticket form saying it is open. Almost all of what a name check costs is
+  // starting something to ask, and that can be started now rather than when the
+  // question arrives — so the answer lands while the form is still there to show it.
+  if (method === 'POST' && route === '/name-check/warm') {
+    deps.warmNameCheck?.();
+    return send(res, 200, { ok: true });
   }
 
   if (method === 'GET' && (route === '/agents' || route === '/skills')) {

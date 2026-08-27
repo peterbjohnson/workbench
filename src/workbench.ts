@@ -9,6 +9,7 @@ import { createOrchestrator, type Orchestrator } from './orchestrator/loop.ts';
 import { createStageRunner } from './run/runStage.ts';
 import { createChatRunner } from './run/chat.ts';
 import { createNameChecker } from './run/nameCheck.ts';
+import { createWarmPool } from './run/warmPool.ts';
 import { cachedCredentials } from './run/credentials.ts';
 import { createFakeRunner } from './run/fakeRunner.ts';
 import { createFakeChatRunner } from './run/fakeChatRunner.ts';
@@ -85,6 +86,11 @@ export async function startWorkbench(
     { pollMs: config.pollMs },
   );
 
+  // Where a one-shot question is asked from, and nothing is running in it until
+  // something asks for it to be — a board nobody is writing a ticket on holds no
+  // subprocess open.
+  const pool = fake ? undefined : createWarmPool();
+
   // Fake agents spend nothing, and a name check is a model call like any other:
   // trying the workbench out must not be the one thing that quietly costs money.
   const api = createApi(store, config, {
@@ -101,7 +107,9 @@ export async function startWorkbench(
           protectedPaths: config.protectedPaths,
           about: readAbout(config),
         }),
-    ...(fake ? {} : { checkName: createNameChecker(config) }),
+    ...(pool === undefined
+      ? {}
+      : { checkName: createNameChecker(config, pool.ask), warmNameCheck: pool.warm }),
   });
   const port = await api.listen(config.port);
 
@@ -112,6 +120,7 @@ export async function startWorkbench(
     close: async () => {
       await orchestrator.stop();
       await api.close();
+      await pool?.close();
       store.close();
     },
   };

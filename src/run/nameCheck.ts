@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { query, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-
 import { PACKAGE_ROOT, type Config } from '../config.ts';
+import type { Asker } from './warmPool.ts';
 
 /** A better name for a ticket than the one typed, and the one line saying why. */
 export type Suggestion = { name: string; why: string };
@@ -19,34 +18,10 @@ export type NameChecker = (title: string, body: string) => Promise<Suggestion | 
 /** The skill saying what a good ticket name is, wherever it is being read from. */
 const SKILL = path.join('skills', 'naming-a-ticket', 'SKILL.md');
 
-export function createNameChecker(config: Config, run: typeof query = query): NameChecker {
+export function createNameChecker(config: Config, ask: Asker): NameChecker {
   return async (title, body) => {
     try {
-      let reply = '';
-      const session = run({
-        prompt: ask(skillText(config), title, body),
-        options: {
-          // One cheap question with one line of answer, and nothing else: the
-          // person is mid-sentence, so this costs almost nothing and comes back
-          // before they have finished typing the instructions.
-          model: 'claude-haiku-4-5',
-          maxTurns: 1,
-          allowedTools: [],
-          // Nothing from this machine, for the same reason a stage takes nothing:
-          // what is asked here is what this file says and no more.
-          settingSources: [],
-          strictMcpConfig: true,
-          canUseTool: async (toolName): Promise<PermissionResult> => ({
-            behavior: 'deny',
-            message: `${toolName} is not part of answering this`,
-          }),
-        },
-      });
-
-      for await (const message of session) {
-        if (message.type === 'result' && message.subtype === 'success') reply = message.result;
-      }
-      return readSuggestion(reply, title);
+      return readSuggestion(await ask(prompt(skillText(config), title, body)), title);
     } catch {
       return null;
     }
@@ -65,7 +40,7 @@ function skillText(config: Config): string {
   return fs.readFileSync(fs.existsSync(own) ? own : path.join(PACKAGE_ROOT, SKILL), 'utf8');
 }
 
-function ask(skill: string, title: string, body: string): string {
+function prompt(skill: string, title: string, body: string): string {
   return [
     skill,
     '',

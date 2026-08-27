@@ -83,6 +83,14 @@ export function TicketForm(props: {
   const titleNow = useRef(title);
   titleNow.current = title;
 
+  // Someone is writing a ticket, so a question about its name is coming. Almost all
+  // of what one costs is getting something ready to ask, and told now that is over
+  // before the typing stops — which is the difference between a hint that lands
+  // while the form is open and one that lands after it has gone.
+  useEffect(() => {
+    void wb.warmNameCheck().catch(() => {});
+  }, []);
+
   useEffect(() => {
     const name = title.trim();
     if (name === '' || asked.current.has(name)) return;

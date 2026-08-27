@@ -4,35 +4,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-
 import { createNameChecker, readSuggestion } from './nameCheck.ts';
+import type { Asker } from './warmPool.ts';
 import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
 
-type Query = NonNullable<Parameters<typeof createNameChecker>[1]>;
-
 /** A model service that never leaves the machine: one reply, or one failure. */
-function service(reply: string | Error): { query: Query; prompts: string[] } {
+function service(reply: string | Error): { ask: Asker; prompts: string[] } {
   const prompts: string[] = [];
 
-  const query: Query = ({ prompt }) => {
-    prompts.push(String(prompt));
-
-    async function* messages(): AsyncGenerator<SDKMessage, void> {
-      if (reply instanceof Error) throw reply;
-      yield {
-        type: 'result',
-        subtype: 'success',
-        result: reply,
-        total_cost_usd: 0,
-        session_id: 'session-1',
-      } as unknown as SDKMessage;
-    }
-
-    return messages() as ReturnType<Query>;
+  const ask: Asker = async (prompt) => {
+    prompts.push(prompt);
+    if (reply instanceof Error) throw reply;
+    return reply;
   };
 
-  return { query, prompts };
+  return { ask, prompts };
 }
 
 /** A throwaway home, with no skills of its own unless a test writes one. */
@@ -70,7 +56,7 @@ test('the skill that ships is what is asked, when the home has none of its own',
   const config = scratchConfig();
   const model = service('NAME: Retry failed pushes\nWHY: it named no verb');
 
-  const suggestion = await createNameChecker(config, model.query)('Pushes', 'They give up early.');
+  const suggestion = await createNameChecker(config, model.ask)('Pushes', 'They give up early.');
 
   assert.deepEqual(suggestion, { name: 'Retry failed pushes', why: 'it named no verb' });
   assert.match(model.prompts[0] ?? '', /imperative verb/, 'the rules reached the model');
@@ -89,7 +75,7 @@ test("the home's own copy of the skill beats the one that ships", async () => {
   );
 
   const model = service('KEEP');
-  await createNameChecker(config, model.query)('Pushes', '');
+  await createNameChecker(config, model.ask)('Pushes', '');
 
   assert.match(model.prompts[0] ?? '', /starts with a moon/);
   assert.doesNotMatch(model.prompts[0] ?? '', /imperative verb/, 'not both — the nearest wins');
@@ -100,6 +86,6 @@ test('a call that fails offers nothing, rather than failing', async () => {
   const config = scratchConfig();
   const model = service(new Error('the model service is down'));
 
-  assert.equal(await createNameChecker(config, model.query)('Pushes', ''), null);
+  assert.equal(await createNameChecker(config, model.ask)('Pushes', ''), null);
   fs.rmSync(config.home, { recursive: true, force: true });
 });
