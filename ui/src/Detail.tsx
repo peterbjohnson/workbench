@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   changesStand,
   details,
+  grouped,
   headline,
   madeInto,
   rejectionStands,
@@ -13,6 +14,7 @@ import {
   suggestion,
   toneOf,
   tweakable,
+  type LogItem,
   type Run,
 } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
@@ -256,9 +258,13 @@ export function Detail(props: {
         <details>
           <summary>Everything that happened ({events.length})</summary>
           <div className="log">
-            {events.map((e) => (
-              <LogLine key={e.id} event={e} />
-            ))}
+            {grouped(events).map((item) =>
+              item.kind === 'one' ? (
+                <LogLine key={item.event.id} event={item.event} />
+              ) : (
+                <ToolGroup key={item.calls[0]?.id} group={item} />
+              ),
+            )}
           </div>
         </details>
       </aside>
@@ -957,6 +963,27 @@ function LogLine({ event }: { event: Event }) {
           <div>{value}</div>
         </div>
       ))}
+    </details>
+  );
+}
+
+/**
+ * A turn's tool calls as one line, which opens on to the calls themselves — each of
+ * which still opens on to its own arguments. Five `Read`s were five near-identical
+ * rows of the log before this, and what a burst was is the count and the tools.
+ */
+function ToolGroup({ group }: { group: Extract<LogItem, { kind: 'tools' }> }) {
+  return (
+    <details>
+      <summary>
+        {group.at.slice(11, 19)} <b>{group.calls.length} tool calls</b> {group.said}
+        {group.refused > 0 && ` — ${group.refused} REFUSED`}
+      </summary>
+      <div className="calls">
+        {group.calls.map((call) => (
+          <LogLine key={call.id} event={call} />
+        ))}
+      </div>
     </details>
   );
 }
