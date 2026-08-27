@@ -163,13 +163,18 @@ test('the headline is what the panel is opened to find out', () => {
 
 test('a rejection stands only while the ticket is doing something about it', () => {
   const standing = EVERY_STATUS.filter((s) => rejectionStands(at(s)));
-  assert.deepEqual(standing, ['planning']);
+  assert.deepEqual(standing, ['planning', 'plan_gate']);
   assert.equal(rejectionStands(at('blocked', 'plan')), true, 'stuck part-way through replanning');
   assert.equal(rejectionStands(at('blocked', 'implement')), false);
 
-  // Everywhere else it is history. Neither is ever cleared — the brief and the
-  // hand-over message read them — so this is the only thing keeping a rejection
-  // three stages old from being the loudest line on the ticket.
+  // The gate counts because `plan_approved` is what clears a rejection: until
+  // then the plan sitting at the gate is the answer to it, and you cannot judge
+  // the answer with the objection folded away under Earlier.
+
+  // Everywhere else it is history. Neither is cleared until the stage answering
+  // it lands — the brief and the hand-over message read them — so this is the
+  // only thing keeping a rejection three stages old from being the loudest line
+  // on the ticket.
   assert.equal(rejectionStands({ ...at('awaiting_verdict'), rejection: 'wrong problem' }), false);
 
   const changing = EVERY_STATUS.filter((s) => changesStand(at(s)));

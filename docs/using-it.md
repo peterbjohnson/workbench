@@ -62,8 +62,9 @@ the buttons that answer it.
 
 **Only what the ticket is acting on is at the top.** A rejection or a set of changes stays
 on the ticket for good, because the next plan and the hand-over message both read it — so
-it leads the panel only while the stage answering it is the one running, and otherwise
-folds into **Earlier**, below the buttons. Without that, a ticket in a pull request opened
+it leads the panel only while the stage answering it is the one running, or while the plan
+answering it waits at the gate for you, and otherwise folds into **Earlier**, below the
+buttons. Without that, a ticket in a pull request opened
 on why it was sent back three stages ago.
 
 Everything you can do to a ticket is in that one block:
