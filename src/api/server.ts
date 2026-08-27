@@ -275,6 +275,22 @@ async function handle(
         case 'restart':
           store.append(id, { type: 'stage_restarted' });
           return send(res, 200, { ticket: store.ticket(id) });
+        // The other half of restarting: same stage, keeping its conversation.
+        // Only for a ticket that was stopped mid-run, though — a ticket blocked on
+        // a question is parked in the same place with no run to carry on, and
+        // appending this to it would throw the question away for nothing.
+        case 'continue': {
+          const t = store.ticket(id);
+          if (!t.interrupted) {
+            return send(res, 400, {
+              error: t.question
+                ? `${id} is waiting on an answer, not on being picked up — answer it instead`
+                : `${id} was not stopped mid-stage — there is no run to carry on, so restart it`,
+            });
+          }
+          store.append(id, { type: 'stage_continued' });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
         case 'approve':
           store.append(id, { type: 'plan_approved' });
           return send(res, 200, { ticket: store.ticket(id) });

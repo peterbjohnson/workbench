@@ -134,6 +134,39 @@ test('answering a blocked ticket resumes it', async () => {
   });
 });
 
+test('an interrupted ticket can be carried on, or restarted from the top', async () => {
+  await withApi(async (wb, store) => {
+    /** What `reconcile` leaves behind for a stage the workbench was stopped in. */
+    const stoppedMidStage = () => {
+      store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+      store.append('t1', { type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+      store.append('t1', {
+        type: 'stage_finished',
+        runId: 'interrupted',
+        outcome: 'interrupted',
+        summary: 'the workbench stopped while this stage was running',
+        sessionId: 'sess-abc',
+      });
+    };
+
+    await wb.create('a thing', '');
+    stoppedMidStage();
+    const parked = (await wb.ticket('t1')).ticket;
+    assert.equal(parked.status, 'blocked');
+    assert.equal(parked.interrupted, true, 'stopped, not broken');
+
+    await wb.carryOn('t1');
+    const carrying = (await wb.ticket('t1')).ticket;
+    assert.equal(carrying.status, 'planning');
+    assert.equal(carrying.session, 'sess-abc', 'with the run it stopped in the middle of');
+
+    // And the other way round: restarting is still there, and still throws it away.
+    stoppedMidStage();
+    await wb.restart('t1');
+    assert.equal((await wb.ticket('t1')).ticket.session, null);
+  });
+});
+
 test('asking for the merge records it, and only where there is an offer to merge', async () => {
   await withApi(async (wb, store) => {
     await wb.create('a thing', '');
@@ -160,7 +193,7 @@ test('the work-in-progress limit is readable and settable', async () => {
 });
 
 test('bad requests are refused with a reason, not a stack trace', async () => {
-  await withApi(async (wb) => {
+  await withApi(async (wb, store) => {
     await assert.rejects(() => wb.create('', ''), /needs a title/);
 
     await wb.create('a thing', '');
@@ -168,6 +201,29 @@ test('bad requests are refused with a reason, not a stack trace', async () => {
     await assert.rejects(() => wb.answer('t1', ''), /answer is needed/);
     await assert.rejects(() => wb.ticket('nope'), /no ticket nope/);
     await assert.rejects(() => wb.approve('nope'), /no ticket nope/);
+
+    // Carrying on is only for a ticket the workbench stopped mid-run. Anywhere
+    // else there is no run to come back to, and the refusal says which of the two
+    // moves was the one wanted rather than appearing to work.
+    await assert.rejects(() => wb.carryOn('t1'), /no run to carry on, so restart/);
+
+    store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+    store.append('t1', {
+      type: 'question_asked',
+      runId: 'r1',
+      question: 'which config?',
+      reasoning: 'two disagree',
+    });
+    store.append('t1', {
+      type: 'stage_finished',
+      runId: 'r1',
+      outcome: 'blocked',
+      summary: 'waiting',
+      sessionId: 'sess-abc',
+    });
+    const asked = await wb.ticket('t1');
+    await assert.rejects(() => wb.carryOn('t1'), /waiting on an answer/);
+    assert.deepEqual(await wb.ticket('t1'), asked, 'and nothing was written down');
   });
 });
 

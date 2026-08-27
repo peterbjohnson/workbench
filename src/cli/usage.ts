@@ -31,6 +31,7 @@ workbench — a board of tickets that agents work through
   wb changes <id> <text>       keep the work and put these right; back to implement
   wb answer <id> <text>        answer a blocked ticket and let it carry on
   wb restart <id>              run a failed stage again, from the top
+  wb continue <id>             carry on a stage the workbench stopped, keeping its run
   wb ship <id>                 offer what it has as a pull request, and decide there
   wb merge <id>                squash the offered work onto the base and accept it
   wb cancel <id> [why]         stop a ticket, including one that is running

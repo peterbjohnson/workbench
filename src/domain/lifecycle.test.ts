@@ -233,6 +233,193 @@ test('a stage that failed can be restarted, carrying nothing over', () => {
   assert.equal(j.add({ type: 'stage_restarted' }).status, 'implementing');
 });
 
+/** A stage that the workbench was stopped in the middle of, as `reconcile` closes it. */
+function stoppedMidStage(
+  j: Journal,
+  stage: 'plan' | 'implement' | 'review',
+  sessionId?: string,
+): Ticket {
+  j.add({ type: 'stage_started', stage, runId: 'r1' });
+  if (sessionId !== undefined) j.add({ type: 'session_started', runId: 'r1', sessionId });
+  return j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+    sessionId,
+  });
+}
+
+test('the workbench being stopped is not the stage failing', () => {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({ type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+  assert.equal(
+    j.ticket().session,
+    'sess-abc',
+    'the conversation is written down while the run is still going, not when it ends',
+  );
+
+  const stopped = j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+    sessionId: 'sess-abc',
+  });
+
+  assert.equal(stopped.status, 'blocked', 'it parks, like anything else that is stuck');
+  assert.equal(stopped.interrupted, true, 'and says which of the two it was');
+  assert.equal(stopped.session, 'sess-abc', 'the run is still there to be carried on');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'but nothing picks it back up on its own');
+});
+
+test('continuing an interrupted stage keeps its conversation', () => {
+  const j = newTicket();
+  stoppedMidStage(j, 'implement', 'sess-abc');
+
+  const carrying = j.add({ type: 'stage_continued' });
+  assert.equal(carrying.status, 'implementing', 'back into the stage it stopped in');
+  assert.equal(carrying.session, 'sess-abc', 'carrying what it had already thought');
+  assert.equal(carrying.interrupted, false, 'and no longer waiting to be picked up');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
+
+  // Guarded like a restart: it cannot reach into work that is already going.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' });
+  assert.equal(j.add({ type: 'stage_continued' }).running, true, 'left alone while it runs');
+});
+
+test('a ticket blocked on a question is not one to carry on', () => {
+  // `blocked` is two states and this is the other one: nothing was interrupted,
+  // there is a question waiting for an answer. Carrying it on would clear the
+  // question and resume the agent into its own unanswered one, told nothing was
+  // wrong — the question, the box the manager types into, and the reply all lost.
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  j.add({
+    type: 'question_asked',
+    runId: 'r1',
+    question: 'which config is live?',
+    reasoning: 'two disagree',
+  });
+  const asked = j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+    sessionId: 'sess-abc',
+  });
+  assert.equal(asked.status, 'blocked');
+  assert.equal(asked.interrupted, false, 'stopped by its own question, not by the workbench');
+
+  const unmoved = j.add({ type: 'stage_continued' });
+  assert.deepEqual(unmoved, asked, 'so the move leaves it exactly as it was');
+  assert.equal(unmoved.question?.question, 'which config is live?', 'still to be answered');
+  assert.equal(unmoved.status, 'blocked');
+  assert.equal(unmoved.session, 'sess-abc', 'and still there for the answer to resume');
+  assert.deepEqual(j.next(), { kind: 'wait' }, 'nothing runs it in the meantime');
+});
+
+test('restarting an interrupted stage still throws the conversation away', () => {
+  const j = newTicket();
+  stoppedMidStage(j, 'implement', 'sess-abc');
+
+  const restarted = j.add({ type: 'stage_restarted' });
+  assert.equal(restarted.status, 'implementing');
+  assert.equal(restarted.session, null, 'from the top means from the top');
+  assert.equal(restarted.interrupted, false, 'and it is no longer one to pick back up');
+});
+
+test('a stage stopped before it had a conversation can still be continued', () => {
+  // Killed between the run starting and the model service naming it. There is
+  // nothing to resume, and the ticket must still be offered and still move —
+  // otherwise the one thing this must never do, lose a ticket, is what it does.
+  const j = newTicket();
+  const stopped = stoppedMidStage(j, 'plan');
+  assert.equal(stopped.interrupted, true, 'still one to pick back up');
+  assert.equal(stopped.session, null, 'with nothing to pick up from');
+
+  assert.equal(j.add({ type: 'stage_continued' }).status, 'planning');
+  assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'plan' }, 'so it runs from the top');
+});
+
+/** Blocked mid-review, holding that review's conversation, with work committed. */
+function parkedMidReview(): Journal {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r-impl' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r-impl',
+    outcome: 'completed',
+    summary: 'built',
+    commit: 'c1',
+  });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r-review' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r-review',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+    sessionId: 'sess-review',
+  });
+  return j;
+}
+
+test('a move that is not back to the parked run leaves its conversation behind', () => {
+  // The stage about to run resumes whatever session it finds and nothing else, so
+  // one kept past the move that went elsewhere is the wrong conversation picked up
+  // with the wrong prompt: the review's chat told the workbench had stopped, and
+  // what the manager actually asked for never delivered at all.
+  assert.equal(parkedMidReview().ticket().session, 'sess-review', 'there is one to leave');
+
+  for (const move of [
+    { type: 'plan_approved' },
+    { type: 'plan_rejected', reason: 'wrong shape' },
+    { type: 'changes_requested', changes: 'put the units right' },
+    { type: 'shipped' },
+  ] as const) {
+    assert.equal(parkedMidReview().add(move).session, null, `${move.type} kept the review's`);
+  }
+
+  const changed = parkedMidReview().add({
+    type: 'changes_requested',
+    changes: 'put the units right',
+  });
+  assert.equal(changed.status, 'implementing');
+  assert.equal(changed.changes, 'put the units right', 'which is how the ask gets delivered');
+
+  // And the long way round to the same place: shipped, offered, and turned down.
+  const j = parkedMidReview();
+  assert.equal(j.add({ type: 'shipped' }).status, 'ready_for_pr');
+  j.add({ type: 'pr_opened', url: 'https://example.test/pr/1' });
+  const rejected = j.add({ type: 'verdict', verdict: 'rejected', reason: 'not what I asked for' });
+  assert.equal(rejected.status, 'planning');
+  assert.equal(rejected.session, null, 'the plan that answers this is not the review that stopped');
+});
+
+test('a ticket picked up some other way stops asking to be picked up', () => {
+  // Stopped mid-review, and the manager ships the work rather than carrying the
+  // run on. A flag that outlives what it describes is a modal that comes back
+  // every load, offering a button `stage_continued` will decline to act on.
+  const j = parkedMidReview();
+  assert.equal(stoppedMidStage(j, 'review', 'sess-abc').interrupted, true);
+
+  const shipped = j.add({ type: 'shipped' });
+  assert.equal(shipped.status, 'ready_for_pr');
+  assert.equal(shipped.interrupted, false, 'shipping it is what became of it instead');
+  assert.equal(j.add({ type: 'pr_opened', url: 'https://example.test/pr/1' }).interrupted, false);
+
+  // Answering it is picking it up too, by the other of the two doors that go back
+  // to the run — so that one keeps the conversation and drops the flag.
+  const a = newTicket();
+  stoppedMidStage(a, 'implement', 'sess-def');
+  const answered = a.add({ type: 'question_answered', answer: 'the one in etc/' });
+  assert.equal(answered.interrupted, false, 'it has just been picked back up');
+  assert.equal(answered.session, 'sess-def', 'by the door that goes back to it');
+});
+
 test('the plan carries the steps, and a new plan drops the old ones', () => {
   const j = newTicket();
   j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });

@@ -278,6 +278,12 @@ test('a run that rejected the work did not just complete', () => {
   assert.equal(statusOf(run({ outcome: 'blocked' })), 'asked you');
   assert.equal(statusOf(run({ checks: { passed: 1, failed: 2 } })), 'checks failed');
 
+  // The workbench stopping under a run is neither of the two it would otherwise
+  // fall into: not `failed`, because nothing went wrong, and not `done`, because
+  // it did not finish. Both were wrong on the panel in different directions.
+  assert.equal(statusOf(run({ outcome: 'interrupted' })), 'stopped');
+  assert.equal(toneOf(run({ outcome: 'interrupted' })), 'note');
+
   // A review that sent the work back to be fixed did not merely finish. Without
   // this it read as `done`, and the implement stage after it looked unexplained.
   assert.equal(statusOf(run({ changes: '- the units are wrong' })), 'asked for changes');
@@ -300,7 +306,7 @@ test('a stage the workbench died in ends that stage, rather than adding a run', 
       {
         type: 'stage_finished',
         runId: 'interrupted',
-        outcome: 'failed',
+        outcome: 'interrupted',
         summary: 'the workbench stopped while this stage was running',
       },
     ),
@@ -308,7 +314,7 @@ test('a stage the workbench died in ends that stage, rather than adding a run', 
 
   assert.equal(summarised.length, 1);
   assert.equal(summarised[0]?.stage, 'implement');
-  assert.equal(summarised[0]?.outcome, 'failed');
+  assert.equal(summarised[0]?.outcome, 'interrupted');
 });
 
 test('a suggestion is a named ticket, and its description is what the stage said', () => {

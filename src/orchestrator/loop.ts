@@ -30,7 +30,9 @@ export type RunResult = {
   question?: { question: string; reasoning: string };
   /**
    * The conversation this run was, kept only when it stopped with something left
-   * to say. Answering the question resumes it rather than starting again.
+   * to say. Answering the question resumes it rather than starting again. A run
+   * that is still going says the same thing with `session_started`, which is what
+   * survives the workbench being killed under it.
    */
   sessionId?: string;
   /** What the run cost, as the model service reported it. */
@@ -61,9 +63,10 @@ export type StageRunner = (args: {
    */
   conflict?: { base: string; paths: string[] };
   /**
-   * The conversation to pick back up, when this run is answering a question that
-   * stopped an earlier one. Best-effort: a runner that cannot resume must start
-   * the stage afresh rather than fail.
+   * The conversation to pick back up, when there is one: a question the manager
+   * has now answered, or a run the workbench was stopped in the middle of. Still
+   * best-effort — a runner that cannot resume must start the stage afresh rather
+   * than fail, because the session lives on one machine and can simply be gone.
    */
   resume?: string;
   /** Called as the run proceeds, for the live record. */
@@ -165,6 +168,11 @@ export type Orchestrator = {
  * Closing those runs off at startup parks them as blocked — visible and answerable
  * — instead of wedged.
  *
+ * Closed as `interrupted` rather than `failed`, carrying whatever conversation the
+ * run had got as far as naming. That is the difference between a stage that can
+ * carry on and one that has to be bought again, and restarting is routine now: it
+ * is how an update is picked up.
+ *
  * @returns the tickets that were picked up mid-stage.
  */
 export function reconcile(store: Store): string[] {
@@ -174,8 +182,9 @@ export function reconcile(store: Store): string[] {
     store.append(ticket.id, {
       type: 'stage_finished',
       runId: 'interrupted',
-      outcome: 'failed',
+      outcome: 'interrupted',
       summary: 'the workbench stopped while this stage was running',
+      sessionId: ticket.session ?? undefined,
     });
   }
 
@@ -472,13 +481,16 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         scratch,
         checks,
         conflict,
-        // Only when there is an answer to carry in. A session with nothing new to
-        // say to it is not worth resuming — and never when a merge is waiting,
-        // because a resumed run is not given a brief and the merge is in the brief.
-        resume:
-          conflict === undefined && ticket.answer !== null
-            ? (ticket.session ?? undefined)
-            : undefined,
+        // Whatever conversation the ticket is holding. It is holding one only if it
+        // stopped with something to come back to — a question it asked, or a
+        // workbench that stopped underneath it — and only if what moved it here was
+        // one of the two moves that goes back to that run: `movedOn` in ticket.ts
+        // drops the session on every other one. So the rule can be that single
+        // fact, rather than a list of the reasons it might be true.
+        //
+        // Never while a merge is waiting, though: a resumed run is not given a
+        // brief, and the merge is in the brief.
+        resume: conflict === undefined ? (ticket.session ?? undefined) : undefined,
         // A stage announcing which step it has reached is recorded as a fact of its
         // own, so the board shows progress without anyone reading prose. Done here
         // rather than in a runner: it is what a stage *said* that counts, so every

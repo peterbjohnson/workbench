@@ -817,6 +817,7 @@ test('a ticket left running by a crash is picked up rather than wedged', async (
   try {
     create(store);
     store.append('t1', { type: 'stage_started', stage: 'implement', runId: 'r1' });
+    store.append('t1', { type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
     assert.equal(store.ticket('t1').running, true, 'nothing will ever finish this run');
 
     assert.deepEqual(reconcile(store), ['t1']);
@@ -824,9 +825,62 @@ test('a ticket left running by a crash is picked up rather than wedged', async (
     const ticket = store.ticket('t1');
     assert.equal(ticket.running, false, 'it no longer holds a slot for ever');
     assert.equal(ticket.status, 'blocked', 'and it shows up as needing the manager');
+    assert.equal(ticket.interrupted, true, 'as stopped rather than as broken');
+    assert.equal(ticket.session, 'sess-abc', 'holding the run it can carry on from');
     assert.deepEqual(reconcile(store), [], 'a second start has nothing left to pick up');
   } finally {
     store.close();
+  }
+});
+
+test('continuing an interrupted stage runs it on the conversation it had', async () => {
+  // Everything an interrupted run spent used to be spent again from the top, and
+  // restarting is routine now: it is how an update is picked up.
+  const resumedWith: (string | undefined)[] = [];
+  const h = harness({
+    runStage: async ({ resume }) => {
+      resumedWith.push(resume);
+      return ok('planned');
+    },
+  });
+
+  try {
+    create(h.store);
+    h.store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+    h.store.append('t1', { type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+    assert.deepEqual(reconcile(h.store), ['t1']);
+
+    h.store.append('t1', { type: 'stage_continued' });
+    await h.orch.idle();
+
+    assert.deepEqual(resumedWith, ['sess-abc'], 'it picked the run back up');
+    assert.equal(h.store.ticket('t1').status, 'plan_gate', 'and the stage finished');
+  } finally {
+    await h.close();
+  }
+});
+
+test('restarting an interrupted stage runs it from the top instead', async () => {
+  const resumedWith: (string | undefined)[] = [];
+  const h = harness({
+    runStage: async ({ resume }) => {
+      resumedWith.push(resume);
+      return ok('planned');
+    },
+  });
+
+  try {
+    create(h.store);
+    h.store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+    h.store.append('t1', { type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+    reconcile(h.store);
+
+    h.store.append('t1', { type: 'stage_restarted' });
+    await h.orch.idle();
+
+    assert.deepEqual(resumedWith, [undefined], 'nothing carried over');
+  } finally {
+    await h.close();
   }
 });
 
