@@ -1,0 +1,274 @@
+import {
+  query,
+  type HookCallback,
+  type Options,
+  type PermissionResult,
+} from '@anthropic-ai/claude-agent-sdk';
+
+import type { Event, Proposal } from '../domain/events.ts';
+import type { Ticket } from '../domain/ticket.ts';
+import { runs, statusOf } from '../domain/board.ts';
+import type { ChatAgentDef } from '../agents/load.ts';
+import { wbServer } from '../tools/server.ts';
+import { guard, type GuardContext } from './guard.ts';
+import { readProposals } from './protocol.ts';
+
+/**
+ * One turn of the manager's conversation with a ticket, and what came back. The API
+ * holds one of these and knows nothing else about how a chat happens — the same way
+ * the orchestrator holds a `StageRunner`.
+ */
+export type ChatRunner = (ask: ChatAsk) => Promise<ChatReply>;
+
+export type ChatAsk = {
+  ticket: Ticket;
+  /** The ticket's whole history, which is what the agent is briefed from. */
+  events: readonly Event[];
+  /** What the manager just said. */
+  message: string;
+  /** The conversation to carry on, when the agent has one. */
+  resumeFrom?: string;
+  signal: AbortSignal;
+};
+
+export type ChatReply = {
+  text: string;
+  proposals: Proposal[];
+  costUsd: number;
+  sessionId?: string;
+};
+
+/**
+ * How one attempt at a turn ended. `failed` is why it has no answer, and is here so
+ * that a resume which never reached the model can be told from a run that reached it
+ * and went wrong: only the first is worth starting again from the top.
+ */
+type Attempt = { text: string; costUsd: number; sessionId?: string; failed?: string };
+
+export type ChatRunnerDeps = {
+  /** Asked for per turn, not held: the board edits this file like the other four. */
+  agent: () => ChatAgentDef;
+  /**
+   * Where the chat may read. The ticket's own worktree once it has one, so a
+   * conversation about work in progress is about that work — and the repository
+   * itself before then, when there is nothing else to look at.
+   */
+  cwd: (ticket: Ticket) => string;
+  protectedPaths: readonly string[];
+  /** What the project is, the same text every stage is given. */
+  about: string;
+  /** The SDK's own unless a test hands over one that answers without a network. */
+  query?: typeof query;
+};
+
+/**
+ * The chat agent, as a runner. It reads and it talks: the tool grant says what it may
+ * do at all, and the same guard every stage runs under says where — a read is confined
+ * to where the chat is reading like any other tool call, which for a ticket that has
+ * not started is the repository itself.
+ *
+ * What it costs is reported and recorded on the turn, and never added to the ticket's
+ * own spend: talking about a ticket must not be able to push it past `maxTicketUsd`
+ * and stop the work being talked about.
+ */
+export function createChatRunner(deps: ChatRunnerDeps): ChatRunner {
+  return async function chat({ ticket, events, message, resumeFrom, signal }): Promise<ChatReply> {
+    const agent = deps.agent();
+    const cwd = deps.cwd(ticket);
+
+    // Resuming is worth a try but must never be worth a chat that cannot be had
+    // again. The session lives in ~/.claude/projects on one machine and can simply
+    // be gone — and it goes for certain the first time a ticket is queued, because
+    // the cwd moves from the repository to the ticket's own worktree, and the
+    // session is looked for under the path it was started from.
+    //
+    // A resumed conversation already holds the ticket and everything the agent read
+    // to answer the last turn, so it is told the message alone: rebuilding the brief
+    // would be paying twice for it.
+    if (resumeFrom !== undefined) {
+      const resumed = await runOnce(message, resumeFrom);
+      // Only start again if the attempt got nowhere. One that spent money reached
+      // the model, so the session was there and this is its answer however bad;
+      // running it again would pay twice for the same turn.
+      if (resumed.failed === undefined || resumed.costUsd > 0) return replyTo(resumed);
+    }
+
+    // Either a first turn or a conversation the agent has lost, which comes to the
+    // same thing: it is told the whole ticket, and the reply carries the new session
+    // for the next turn to resume — so the chat is never stuck on a dead one.
+    return replyTo(await runOnce(brief(deps, agent, ticket, events, message)));
+
+    async function runOnce(prompt: string, resume?: string): Promise<Attempt> {
+      const abortController = new AbortController();
+      const relayAbort = () => abortController.abort();
+      signal.addEventListener('abort', relayAbort, { once: true });
+      if (signal.aborted) relayAbort();
+
+      const options: Options = {
+        ...(resume !== undefined ? { resume } : {}),
+        cwd,
+        model: agent.model,
+        effort: agent.effort,
+        permissionMode: agent.permissionMode,
+        allowedTools: [...agent.allowedTools],
+        disallowedTools: [...agent.disallowedTools],
+        maxTurns: agent.maxTurns,
+        maxBudgetUsd: agent.maxBudgetUsd,
+        abortController,
+        // Nothing from this machine, and no skills: this agent is a reader and a
+        // talker, and expertise about how work is done here is for the stages doing it.
+        settingSources: [],
+        mcpServers: wbServer(
+          { worktree: cwd, protectedPaths: deps.protectedPaths },
+          agent.allowedTools,
+        ),
+        strictMcpConfig: true,
+        env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                toolHook({
+                  worktree: cwd,
+                  allowedTools: agent.allowedTools,
+                  protectedPaths: deps.protectedPaths,
+                }),
+              ],
+            },
+          ],
+        },
+        canUseTool: async (toolName): Promise<PermissionResult> => ({
+          behavior: 'deny',
+          message: `${toolName} is not available to the chat`,
+        }),
+      };
+
+      let text = '';
+      let costUsd = 0;
+      let sessionId: string | undefined;
+      let failed: string | undefined;
+
+      try {
+        for await (const said of (deps.query ?? query)({ prompt, options })) {
+          sessionId ??= said.session_id;
+          if (said.type === 'result') {
+            costUsd += said.total_cost_usd;
+            if (said.subtype === 'success') text = said.result;
+            else failed = `the chat stopped: ${said.subtype}`;
+          }
+        }
+      } catch (error) {
+        // Caught rather than left to escape: a resume that could not find its session
+        // throws, and that is the one failure this runner can do something about.
+        failed = error instanceof Error ? error.message : String(error);
+      }
+
+      return { text, costUsd, sessionId, failed };
+    }
+
+    function replyTo(attempt: Attempt): ChatReply {
+      // Thrown rather than reported as an empty turn: unlike a stage, a chat has
+      // nobody downstream to make sense of silence, and the manager is sitting in
+      // front of it. The route turns this into the reason the pane shows.
+      if (attempt.failed !== undefined) throw new Error(attempt.failed);
+
+      return {
+        text: attempt.text,
+        proposals: readProposals(attempt.text),
+        costUsd: attempt.costUsd,
+        ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
+      };
+    }
+  };
+}
+
+/**
+ * Where the chat may read, decided before every tool call. A hook rather than
+ * `canUseTool` for the reason the stages use one: a tool named in `allowedTools` is
+ * auto-approved before that callback is ever consulted, so `Read` would otherwise
+ * reach anywhere on the machine — and whatever it read would come back in a reply
+ * the workbench stores on the ticket.
+ *
+ * Nothing is recorded, unlike a stage's: a chat has no run to record against, and
+ * the manager is sitting in front of the refusal as it happens.
+ */
+function toolHook(ctx: GuardContext): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return {};
+
+    const verdict = guard(ctx, input.tool_name, input.tool_input);
+    if (verdict.allow) return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse' as const,
+        permissionDecision: 'deny' as const,
+        permissionDecisionReason: verdict.reason,
+      },
+    };
+  };
+}
+
+/**
+ * What the chat agent is told before the first thing the manager says. Short on
+ * purpose: it can read the repository, and everything here is what it could not find
+ * out by reading — the ticket, where it has got to, and what the stages made of it.
+ */
+function brief(
+  deps: ChatRunnerDeps,
+  agent: ChatAgentDef,
+  ticket: Ticket,
+  events: readonly Event[],
+  message: string,
+): string {
+  const sections: [string, string | undefined][] = [
+    ['About this project', deps.about.trim() || undefined],
+    ['Where you are reading', `\`${deps.cwd(ticket)}\``],
+    ['Ticket', `**${ticket.id} — ${ticket.title}**\n\n${ticket.body}`.trim()],
+    ['Where it has got to', whereItIs(ticket)],
+    ['The plan', ticket.plan ?? undefined],
+    [
+      'Completion criteria',
+      ticket.completionCriteria.map((c) => `- ${c}`).join('\n') || undefined,
+    ],
+    ['What the stages said', whatTheStagesSaid(events)],
+    ['What the manager just said', message],
+  ];
+
+  const body = sections
+    .filter((s): s is [string, string] => s[1] !== undefined && s[1] !== '')
+    .map(([heading, text]) => `## ${heading}\n\n${text}`)
+    .join('\n\n');
+
+  return `${agent.instructions}\n\n---\n\n${body}\n`;
+}
+
+function whereItIs(ticket: Ticket): string {
+  const notes = [
+    `Status: ${ticket.status.replace(/_/g, ' ')}${ticket.running ? ' (a stage is running)' : ''}`,
+    ticket.question !== null ? `Waiting on the manager: ${ticket.question.question}` : undefined,
+    ticket.rejection !== null ? `Sent back because: ${ticket.rejection}` : undefined,
+    ticket.changes !== null ? `Changes asked for: ${ticket.changes}` : undefined,
+    ticket.commits.length > 0
+      ? `${ticket.commits.length} commit(s) on ${ticket.branch}`
+      : undefined,
+  ];
+  return notes.filter((n) => n !== undefined).join('\n');
+}
+
+/**
+ * Each stage run in a line: what it was, how it went, and the first thing it said.
+ * The whole of what a stage wrote is pages, and a conversation that needed all of it
+ * would have to be paid for on every turn.
+ */
+function whatTheStagesSaid(events: readonly Event[]): string | undefined {
+  const stages = runs(events);
+  if (stages.length === 0) return undefined;
+
+  return stages
+    .map((run) => {
+      const said = run.rejected ?? run.changes ?? run.summary;
+      const first = said.trim().split('\n\n')[0]?.trim() ?? '';
+      return `- **${run.stage}** — ${statusOf(run)}${first === '' ? '' : `: ${first}`}`;
+    })
+    .join('\n');
+}

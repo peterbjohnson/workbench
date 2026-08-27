@@ -95,12 +95,12 @@ export function loadAgents(dirs: readonly string[]): Record<Stage, AgentDef> {
 }
 
 /**
- * The first directory holding this stage. The last is returned when none does, so the
+ * The first directory holding this file. The last is returned when none does, so the
  * error naming the missing file comes from `loadAgent` and names a real path, rather
  * than being a different complaint from here about a list.
  */
-function nearest(dirs: readonly string[], stage: Stage): string {
-  const found = dirs.find((dir) => fs.existsSync(path.join(dir, `${stage}.md`)));
+function nearest(dirs: readonly string[], name: string): string {
+  const found = dirs.find((dir) => fs.existsSync(path.join(dir, `${name}.md`)));
   return found ?? dirs[dirs.length - 1] ?? '';
 }
 
@@ -116,12 +116,42 @@ export function loadAgent(dir: string, stage: Stage): AgentDef {
  * workbench running.
  */
 export function parseAgent(raw: string, stage: Stage): AgentDef {
-  const { data, content } = matter(raw);
   const where = `${stage}.md`;
+  const { def, data, field } = parseCommon(raw, where);
+
+  if (data['stage'] !== undefined && data['stage'] !== stage) {
+    throw new Error(`${where}: declares stage "${data['stage']}" but is named for "${stage}"`);
+  }
+
+  return { ...def, stage, scales: field.scales() };
+}
+
+/** The name of the one agent that is not a stage. */
+export const CHAT_AGENT = 'chat';
+
+/**
+ * The agent the manager talks to about a ticket. Not a stage: it is not in the loop,
+ * has no run to report and no verdict to give, and nothing decides to start it — the
+ * manager does, by saying something. So it has no `stage` and no per-scale ceilings,
+ * and everything else about it is an agent definition, checked exactly as one.
+ */
+export type ChatAgentDef = Omit<AgentDef, 'stage' | 'scales'>;
+
+export function loadChatAgent(dirs: readonly string[]): ChatAgentDef {
+  const file = path.join(nearest(dirs, CHAT_AGENT), `${CHAT_AGENT}.md`);
+  return parseChatAgent(fs.readFileSync(file, 'utf8'));
+}
+
+export function parseChatAgent(raw: string): ChatAgentDef {
+  return parseCommon(raw, `${CHAT_AGENT}.md`).def;
+}
+
+/** Everything every agent file declares, and the reader that found it. */
+function parseCommon(raw: string, where: string) {
+  const { data, content } = matter(raw);
   const field = fields(data, where);
 
-  const def: AgentDef = {
-    stage,
+  const def: ChatAgentDef = {
     model: field.string('model'),
     effort: field.oneOf('effort', EFFORTS) as Effort,
     permissionMode: field.oneOf('permissionMode', MODES) as PermissionMode,
@@ -129,13 +159,9 @@ export function parseAgent(raw: string, stage: Stage): AgentDef {
     maxBudgetUsd: field.number('maxBudgetUsd'),
     allowedTools: field.tools('allowedTools'),
     disallowedTools: field.tools('disallowedTools'),
-    scales: field.scales(),
     instructions: content.trim(),
   };
 
-  if (data['stage'] !== undefined && data['stage'] !== stage) {
-    throw new Error(`${where}: declares stage "${data['stage']}" but is named for "${stage}"`);
-  }
   if (def.instructions === '') throw new Error(`${where}: has no instructions`);
   if (def.allowedTools.length === 0) throw new Error(`${where}: grants no tools`);
 
@@ -144,7 +170,7 @@ export function parseAgent(raw: string, stage: Stage): AgentDef {
     throw new Error(`${where}: ${both.join(', ')} is both allowed and disallowed`);
   }
 
-  return def;
+  return { def, data, field };
 }
 
 /**

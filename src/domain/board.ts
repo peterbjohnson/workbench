@@ -1,4 +1,4 @@
-import type { Event, RunOutcome, Stage } from './events.ts';
+import type { Event, Proposal, RunOutcome, Stage } from './events.ts';
 import { nextAction, type Policy } from './rules.ts';
 import { ended, type Status, type Ticket } from './ticket.ts';
 
@@ -199,11 +199,17 @@ function atStage(t: Ticket, state: string, stage: Stage, held: readonly Ticket[]
 
 /**
  * Whether the rejection on the ticket is what it is doing now, rather than what
- * happened to it once. It is never cleared — the brief and the hand-over message
- * both read it — so only the ticket actually acting on it should lead with it.
+ * happened to it once. It is cleared only when the plan answering it is approved
+ * — the brief and the hand-over message read it until then — so it stands for
+ * that whole span, the gate included: the plan waiting there is the answer to
+ * that objection, and approving it is judging whether it answers.
  */
 export function rejectionStands(t: Ticket): boolean {
-  return t.status === 'planning' || (t.status === 'blocked' && t.stage === 'plan');
+  return (
+    t.status === 'planning' ||
+    t.status === 'plan_gate' ||
+    (t.status === 'blocked' && t.stage === 'plan')
+  );
 }
 
 /** The same for the changes asked for: the stage putting them right, and no other. */
@@ -222,6 +228,21 @@ export function changesStand(t: Ticket): boolean {
  */
 export function sendableBack(t: Ticket): boolean {
   return !ended(t) && !t.running && t.status !== 'backlog' && t.status !== 'queued';
+}
+
+/**
+ * Whether a finished ticket can be sent back to be tweaked. `done` is the one thing
+ * `sendableBack` refuses that there is still something to say to: the work merged,
+ * and now it wants adjusting. Sending it back is the same move as *Replan it* — a
+ * new plan, carrying what to change — so it is the same event, from the one status
+ * that had no way back at all.
+ *
+ * Its own predicate rather than a looser `sendableBack`, which also gates *Ask for
+ * changes*: the API refuses that one for an ended ticket, so widening it would put
+ * a button on the panel that answers with an error.
+ */
+export function tweakable(t: Ticket): boolean {
+  return t.status === 'done';
 }
 
 /**
@@ -288,6 +309,93 @@ export function madeInto(
 ): Ticket | undefined {
   const { title, body } = suggestion(from, stage, idea);
   return tickets.find((t) => t.title === title && t.body === body);
+}
+
+/** A proposal with what the pane needs in order to offer it: where it is, and its fate. */
+export type Offered = Proposal & {
+  /**
+   * Its place in the conversation, counting every proposal ever made on this
+   * ticket. This is how one is named to be accepted — the events are appended and
+   * never rewritten, so the count of what came before it never changes.
+   */
+  at: number;
+  accepted: boolean;
+};
+
+/** One turn of the conversation about a ticket. */
+export type ChatTurn = {
+  role: 'manager' | 'agent';
+  text: string;
+  /** What that turn offered to do. Empty for everything the manager says. */
+  proposals: Offered[];
+  costUsd: number;
+};
+
+export type Chat = {
+  turns: ChatTurn[];
+  /**
+   * The agent's last conversation, so the next turn carries on rather than paying
+   * to read the whole ticket again. Null before it has said anything.
+   */
+  session: string | null;
+};
+
+/**
+ * The chat about a ticket, read back out of its events — which is the only place it
+ * is: nothing about a conversation belongs on the `Ticket` projection, which is sent
+ * for every card on the board.
+ *
+ * A proposal is marked accepted by matching what was accepted against what was
+ * offered, because that is what `chat_accepted` records. Two identical proposals in
+ * two turns therefore both read as accepted; they are the same offer, and taking it
+ * up once is the honest answer for both.
+ */
+export function chatTurns(events: readonly Event[]): Chat {
+  const taken = new Set(
+    events.flatMap((e) => (e.type === 'chat_accepted' ? [JSON.stringify(e.proposal)] : [])),
+  );
+
+  const turns: ChatTurn[] = [];
+  let session: string | null = null;
+  let at = 0;
+
+  for (const e of events) {
+    if (e.type !== 'chat_said') continue;
+    if (e.sessionId !== undefined) session = e.sessionId;
+    turns.push({
+      role: e.role,
+      text: e.text,
+      proposals: (e.proposals ?? []).map((p) => ({
+        ...p,
+        at: at++,
+        accepted: taken.has(JSON.stringify(p)),
+      })),
+      costUsd: e.costUsd ?? 0,
+    });
+  }
+
+  return { turns, session };
+}
+
+/**
+ * Where a proposal is written: a fenced block of JSON, tagged `wb-propose`. JSON
+ * rather than a marker line like everything else a stage announces, because a
+ * proposed ticket description is a paragraph and a marker line is a line.
+ *
+ * Here rather than beside the reader in `run/protocol.ts` because the pane needs
+ * it, and the board may not import anything from `run/`: those files talk to the
+ * SDK and to this machine, and the browser bundle would carry the first one that
+ * grew a `node:` import.
+ */
+export const PROPOSAL_BLOCK = /^```wb-propose[^\n]*\n([\s\S]*?)^```/gm;
+
+/**
+ * What the agent said, without the blocks. The pane draws those as buttons, and the
+ * JSON that made them is the same thing said twice — once for the manager and once
+ * for the workbench, and only one of the two is worth reading.
+ */
+export function withoutProposals(text: string): string {
+  return text.replace(PROPOSAL_BLOCK, '').trim();
 }
 
 /**
@@ -357,6 +465,9 @@ export function statusOf(run: Run): string {
   if (run.outcome === 'running') return 'running';
   if (run.outcome === 'blocked') return 'asked you';
   if (run.outcome === 'failed') return 'failed';
+  // The workbench stopped under it. Nothing went wrong, and the run is still there
+  // to be carried on — reading it as either `failed` or `done` says the opposite.
+  if (run.outcome === 'interrupted') return 'stopped';
   if (run.rejected !== null) return 'did not approve';
   if (run.changes !== null) return 'asked for changes';
   if (run.checks !== null && run.checks.failed > 0) return 'checks failed';
@@ -366,10 +477,12 @@ export function statusOf(run: Run): string {
 /**
  * How that word should read: as progress, as a problem, or as still going. Asking
  * for changes is none of the three — the work was sound and is being finished —
- * so it gets no colour rather than borrowing one that means something else.
+ * so it gets no colour rather than borrowing one that means something else. Being
+ * stopped is the same kind of thing, for the same reason.
  */
 export function toneOf(run: Run): Tone {
   if (run.outcome === 'running') return 'going';
+  if (run.outcome === 'interrupted') return 'note';
   if (run.outcome === 'failed' || run.rejected !== null) return 'bad';
   if (run.checks !== null && run.checks.failed > 0) return 'bad';
   if (run.changes !== null) return 'note';

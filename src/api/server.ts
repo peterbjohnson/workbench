@@ -7,8 +7,12 @@ import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
 import { ended } from '../domain/ticket.ts';
 import type { Config } from '../config.ts';
+import { chatTurns } from '../domain/board.ts';
+import { proposalEvent } from '../domain/proposals.ts';
+import type { ChatRunner } from '../run/chat.ts';
 import { createDoc, deleteDoc, listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
+import type { NameChecker } from '../run/nameCheck.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
 export const UI_DIST = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -24,6 +28,23 @@ const CONTENT_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+/**
+ * What the API needs that is not state: the things here that talk to a model
+ * service. Each is optional, and a workbench without one simply does not have that
+ * feature — the routes say so rather than pretending, and everything else works
+ * exactly as before.
+ */
+export type ApiDeps = {
+  /**
+   * What a ticket being written might better be called. Absent when nothing should
+   * be asked — a workbench running fake agents spends nothing, and this must not be
+   * the exception — and then the route answers that it has no suggestion.
+   */
+  checkName?: NameChecker;
+  /** The conversation about a ticket. Absent means the workbench has no chat. */
+  chat?: ChatRunner;
+};
+
 export type Api = {
   /** Returns the port it really got, which is not the one asked for when that is 0. */
   listen: (port: number) => Promise<number>;
@@ -35,9 +56,9 @@ export type Api = {
  * is reachable from one and not the other. It decides nothing: every endpoint
  * either reads derived state or appends one event and lets the rules react.
  */
-export function createApi(store: Store, config: Config): Api {
+export function createApi(store: Store, config: Config, deps: ApiDeps = {}): Api {
   const server = http.createServer((req, res) => {
-    handle(store, config, req, res).catch((error: unknown) => {
+    handle(store, config, deps, req, res).catch((error: unknown) => {
       send(res, 500, { error: error instanceof Error ? error.message : String(error) });
     });
   });
@@ -75,13 +96,14 @@ export function createApi(store: Store, config: Config): Api {
 async function handle(
   store: Store,
   config: Config,
+  deps: ApiDeps,
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname.replace(/\/+$/, '') || '/';
   const method = req.method ?? 'GET';
-  const ticketPath = /^\/tickets\/([^/]+)(\/[a-z]+)?$/.exec(route);
+  const ticketPath = /^\/tickets\/([^/]+)(\/[a-z-]+)?$/.exec(route);
   const docPath = /^\/(agents|skills)\/([\w.-]+)$/.exec(route);
 
   // Who is answering, not merely that something is. `wb serve` asks this of a port
@@ -112,6 +134,19 @@ async function handle(
       const patch = await readJson(req);
       return refusable(res, () => ({ settings: applySettings(store, config, patch) }));
     }
+  }
+
+  // What this ticket might better be called, asked while it is being typed. It
+  // creates nothing and refuses nothing: `{name: null}` is the ordinary answer,
+  // and the one given when there is nobody to ask.
+  if (method === 'POST' && route === '/name-check') {
+    const { title, body } = await readJson(req);
+    const name = typeof title === 'string' ? title.trim() : '';
+    const suggestion =
+      name === '' || deps.checkName === undefined
+        ? null
+        : await deps.checkName(name, String(body ?? ''));
+    return send(res, 200, suggestion ?? { name: null });
   }
 
   if (method === 'GET' && (route === '/agents' || route === '/skills')) {
@@ -275,6 +310,22 @@ async function handle(
         case 'restart':
           store.append(id, { type: 'stage_restarted' });
           return send(res, 200, { ticket: store.ticket(id) });
+        // The other half of restarting: same stage, keeping its conversation.
+        // Only for a ticket that was stopped mid-run, though — a ticket blocked on
+        // a question is parked in the same place with no run to carry on, and
+        // appending this to it would throw the question away for nothing.
+        case 'continue': {
+          const t = store.ticket(id);
+          if (!t.interrupted) {
+            return send(res, 400, {
+              error: t.question
+                ? `${id} is waiting on an answer, not on being picked up — answer it instead`
+                : `${id} was not stopped mid-stage — there is no run to carry on, so restart it`,
+            });
+          }
+          store.append(id, { type: 'stage_continued' });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
         case 'approve':
           store.append(id, { type: 'plan_approved' });
           return send(res, 200, { ticket: store.ticket(id) });
@@ -311,6 +362,90 @@ async function handle(
         case 'cancel': {
           const reason = String(payload['reason'] ?? '').trim() || 'no reason given';
           store.append(id, { type: 'cancelled', reason });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
+
+        /**
+         * One turn of the conversation about this ticket: what the manager said,
+         * then what the agent answered, both appended as events. The manager's turn
+         * is written before the agent runs, so a run that fails still leaves what was
+         * said — losing it would mean retyping the thought as well as the request.
+         */
+        case 'chat': {
+          if (deps.chat === undefined) {
+            return send(res, 503, { error: 'this workbench has no chat agent wired into it' });
+          }
+          const message = String(payload['message'] ?? '').trim();
+          if (message === '') return send(res, 400, { error: 'say something first' });
+
+          const { session } = chatTurns(store.eventsFor(id));
+          store.append(id, { type: 'chat_said', role: 'manager', text: message });
+
+          // The manager closing the panel mid-turn stops the run rather than paying
+          // for an answer nobody is waiting for. Harmless once the reply has been sent.
+          const stop = new AbortController();
+          res.on('close', () => stop.abort());
+
+          let reply;
+          try {
+            reply = await deps.chat({
+              ticket: store.ticket(id),
+              events: store.eventsFor(id),
+              message,
+              ...(session === null ? {} : { resumeFrom: session }),
+              signal: stop.signal,
+            });
+          } catch (error: unknown) {
+            return send(res, 502, {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+
+          store.append(id, {
+            type: 'chat_said',
+            role: 'agent',
+            text: reply.text,
+            // Written only when there is something to say. A turn that proposed
+            // nothing and cost nothing should read as one, not as empty fields.
+            ...(reply.proposals.length > 0 ? { proposals: reply.proposals } : {}),
+            ...(reply.costUsd > 0 ? { costUsd: reply.costUsd } : {}),
+            ...(reply.sessionId === undefined ? {} : { sessionId: reply.sessionId }),
+          });
+          return send(res, 200, { chat: chatTurns(store.eventsFor(id)) });
+        }
+
+        /**
+         * The manager took a proposal up. It appends exactly the event the equivalent
+         * button appends and is refused by exactly the same rules — the chat is a way
+         * of reaching those actions, never a way around them.
+         */
+        case 'chat-accept': {
+          // A number, and nothing that merely looks like one: `Number(null)`,
+          // `Number('')` and `Number([])` are all 0, so a request naming no
+          // proposal at all used to take up the first one.
+          const at = payload['at'];
+          // The list the pane offered from, so the position it sends back and the
+          // fate of what is at that position are read the same way at both ends.
+          const offered =
+            typeof at === 'number' && Number.isInteger(at)
+              ? chatTurns(store.eventsFor(id)).turns.flatMap((t) => t.proposals)[at]
+              : undefined;
+          if (offered === undefined) {
+            return send(res, 400, { error: `${id} has no proposal ${String(at)}` });
+          }
+          if (offered.accepted) {
+            return send(res, 400, { error: 'that proposal has already been accepted' });
+          }
+
+          const { at: _at, accepted: _accepted, ...proposal } = offered;
+          const taken = proposalEvent(store.ticket(id), proposal);
+          if ('refused' in taken) return send(res, 400, { error: taken.refused });
+
+          // Nothing is awaited between reading `accepted` above and these appends,
+          // so two accepts arriving together run one after the other rather than
+          // interleaving — the second reads the first's `chat_accepted` and stops.
+          store.append(id, taken.event);
+          store.append(id, { type: 'chat_accepted', proposal });
           return send(res, 200, { ticket: store.ticket(id) });
         }
       }

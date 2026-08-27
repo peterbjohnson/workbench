@@ -32,13 +32,17 @@ function service(scripts: Script[]): {
   query: NonNullable<StageRunnerDeps['query']>;
   /** The options every call was made with, so a test can see what was resumed. */
   calls: Options[];
+  /** What each call was sent, so a test can see whether the brief was rebuilt. */
+  prompts: string[];
 } {
   const calls: Options[] = [];
+  const prompts: string[] = [];
   const remaining = [...scripts];
 
-  const query: NonNullable<StageRunnerDeps['query']> = ({ options }) => {
+  const query: NonNullable<StageRunnerDeps['query']> = ({ prompt, options }) => {
     const script = remaining.shift() ?? {};
     calls.push(options ?? {});
+    prompts.push(typeof prompt === 'string' ? prompt : '');
 
     async function* messages(): AsyncGenerator<SDKMessage, void> {
       if (script.asks === true) {
@@ -71,7 +75,7 @@ function service(scripts: Script[]): {
     return session;
   };
 
-  return { query, calls };
+  return { query, calls, prompts };
 }
 
 const AGENT: AgentDef = {
@@ -110,7 +114,7 @@ function aTicket(over: Partial<Ticket> = {}): Ticket {
 async function runStage(
   scripts: Script[],
   opts: { resume?: string; ticket?: Ticket } = {},
-): Promise<{ result: RunResult; calls: Options[]; said: EventBody[] }> {
+): Promise<{ result: RunResult; calls: Options[]; prompts: string[]; said: EventBody[] }> {
   const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-run-'));
   const model = service(scripts);
   const said: EventBody[] = [];
@@ -135,7 +139,7 @@ async function runStage(
       emit: (body) => said.push(body),
       signal: new AbortController().signal,
     });
-    return { result, calls: model.calls, said };
+    return { result, calls: model.calls, prompts: model.prompts, said };
   } finally {
     fs.rmSync(worktree, { recursive: true, force: true });
   }
@@ -197,6 +201,45 @@ test('a resumed run that spent money before throwing is not paid for twice', asy
   assert.equal(calls.length, 1, 'it did not run the stage again');
   assert.equal(result.outcome, 'failed');
   assert.equal(result.costUsd, 1.4, 'and the money it burned is on the record');
+});
+
+test('the conversation is recorded while the run is going, not when it ends', async () => {
+  // The whole of the fix: a run that is killed never gets to report anything, so a
+  // session written down only at the end is one that never survives an interruption.
+  const { said } = await runStage([{ costs: [0.5, 0.25] }]);
+
+  assert.deepEqual(
+    said.filter((e) => e.type === 'session_started'),
+    [{ type: 'session_started', runId: 'r1', sessionId: 'session-1' }],
+    'once, the moment the conversation had a name',
+  );
+});
+
+test('a run picked back up after the workbench stopped is told that, and not rebriefed', async () => {
+  // No answer on the ticket: nothing was asked. The agent has to be told what
+  // happened, or it goes looking for what it did wrong.
+  const { result, calls, prompts } = await runStage([{ costs: [0.5] }], { resume: 'sess-abc' });
+
+  assert.equal(calls.length, 1, 'it did not start the stage again');
+  assert.equal(calls[0]?.resume, 'sess-abc');
+  assert.match(prompts[0] ?? '', /workbench was stopped/);
+  assert.doesNotMatch(prompts[0] ?? '', /answered the question/, 'nothing was asked');
+  assert.doesNotMatch(prompts[0] ?? '', /## Ticket/, 'and the brief was not built again');
+  assert.equal(result.outcome, 'completed');
+});
+
+test('a picked-up run whose conversation is gone still runs the stage, from the top', async () => {
+  // The one thing this must never do is lose a ticket. A session lives on one
+  // machine and can simply be gone; the stage still has to happen.
+  const { result, calls, prompts } = await runStage(
+    [{ throws: 'no conversation found with that id' }, { costs: [0.6] }],
+    { resume: 'sess-gone' },
+  );
+
+  assert.equal(calls.length, 2, 'it tried again');
+  assert.equal(calls[1]?.resume, undefined, 'as a fresh conversation');
+  assert.match(prompts[1] ?? '', /## Ticket/, 'briefed in full, because it knows nothing');
+  assert.equal(result.outcome, 'completed');
 });
 
 test('a resumed run that failed without throwing is that stage answer', async () => {

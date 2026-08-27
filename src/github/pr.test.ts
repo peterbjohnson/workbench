@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mergeArgs, readVerdict } from './pr.ts';
+import { mergeArgs, readVerdict, reusablePr } from './pr.ts';
 
 test('a merged pull request is an acceptance', () => {
   assert.deepEqual(readVerdict({ state: 'MERGED' }), { kind: 'accepted' });
@@ -81,6 +81,22 @@ test('merging squashes the ticket into one commit on the base', () => {
     'https://example/pr/7',
     '--squash',
   ]);
+});
+
+test('a branch keeps its pull request when it is offered again — unless that one merged', () => {
+  const view = (state: string) => JSON.stringify({ url: 'https://example/pr/7', state });
+
+  // A ticket reworked after an objection must come back to the pull request that
+  // objection was written on, whether it is still open or was closed.
+  assert.equal(reusablePr(view('OPEN')), 'https://example/pr/7');
+  assert.equal(reusablePr(view('CLOSED')), 'https://example/pr/7');
+
+  // A ticket sent back to be tweaked after it merged is offered on the same branch.
+  // Reusing the merged pull request would have the workbench poll it, read MERGED
+  // as an acceptance, and call the ticket done with the tweak never merged.
+  assert.equal(reusablePr(view('MERGED')), null);
+
+  assert.equal(reusablePr('{}'), null, 'and no pull request is no pull request');
 });
 
 test('an approving review alone does not accept — only merging does', () => {

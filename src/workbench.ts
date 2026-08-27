@@ -3,12 +3,15 @@ import path from 'node:path';
 
 import type { Config } from './config.ts';
 import { openStore, type Store } from './store/store.ts';
-import { loadAgents, loadSkills } from './agents/load.ts';
+import { loadAgents, loadChatAgent, loadSkills } from './agents/load.ts';
 import { whatHappenedTo } from './agents/brief.ts';
 import { createOrchestrator, type Orchestrator } from './orchestrator/loop.ts';
 import { createStageRunner } from './run/runStage.ts';
+import { createChatRunner } from './run/chat.ts';
+import { createNameChecker } from './run/nameCheck.ts';
 import { cachedCredentials } from './run/credentials.ts';
 import { createFakeRunner } from './run/fakeRunner.ts';
+import { createFakeChatRunner } from './run/fakeChatRunner.ts';
 import { createCheckRunner } from './run/checks.ts';
 import { diff, gitWorkspace, worktreeFor } from './git/worktree.ts';
 import { githubHost } from './github/pr.ts';
@@ -53,6 +56,7 @@ export async function startWorkbench(
   // failing the first stage that needs it; read again per run, because the board
   // edits them.
   loadAgents(config.agentDirs);
+  loadChatAgent(config.agentDirs);
   const agents = () => loadAgents(config.agentDirs);
   const fake = config.runner === 'fake';
 
@@ -81,7 +85,24 @@ export async function startWorkbench(
     { pollMs: config.pollMs },
   );
 
-  const api = createApi(store, config);
+  // Fake agents spend nothing, and a name check is a model call like any other:
+  // trying the workbench out must not be the one thing that quietly costs money.
+  const api = createApi(store, config, {
+    chat: fake
+      ? createFakeChatRunner()
+      : createChatRunner({
+          agent: () => loadChatAgent(config.agentDirs),
+          // A ticket has no worktree until it starts, and a conversation about one
+          // that has not started is a conversation about this repository.
+          cwd: (ticket) => {
+            const worktree = worktreeFor(config, ticket.id).path;
+            return fs.existsSync(worktree) ? worktree : config.repoRoot;
+          },
+          protectedPaths: config.protectedPaths,
+          about: readAbout(config),
+        }),
+    ...(fake ? {} : { checkName: createNameChecker(config) }),
+  });
   const port = await api.listen(config.port);
 
   return {

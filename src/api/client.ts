@@ -1,4 +1,5 @@
 import type { Event } from '../domain/events.ts';
+import type { Chat } from '../domain/board.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import type { Policy } from '../domain/rules.ts';
 import type { Doc, DocKind } from './documents.ts';
@@ -95,11 +96,27 @@ export function createClient(baseUrl: string) {
     answer: (id: string, answer: string) => post<unknown>(`/tickets/${id}/answer`, { answer }),
     /** Run the stage again from the top. For one that failed, not one that asked. */
     restart: (id: string) => post<unknown>(`/tickets/${id}/restart`),
+    /**
+     * Run the stage again from where it got to, keeping its conversation. For one
+     * the workbench was stopped in the middle of — which is not the same as one
+     * that broke, and is not worth paying for twice.
+     */
+    carryOn: (id: string) => post<unknown>(`/tickets/${id}/continue`),
     /** Offer what it has as a pull request, whatever the agents made of it. */
     ship: (id: string) => post<unknown>(`/tickets/${id}/ship`),
     /** Squash the offered work onto the base. The orchestrator does it, and accepts it. */
     merge: (id: string) => post<{ ticket: Ticket }>(`/tickets/${id}/merge`).then((r) => r.ticket),
     cancel: (id: string, reason: string) => post<unknown>(`/tickets/${id}/cancel`, { reason }),
+
+    /**
+     * Say something to the ticket's chat, and wait for the answer. The whole
+     * conversation comes back, because a turn is only worth reading in one.
+     */
+    chat: (id: string, message: string) =>
+      post<{ chat: Chat }>(`/tickets/${id}/chat`, { message }).then((r) => r.chat),
+    /** Take a proposal up. `at` is its place in the conversation, as the chat gives it. */
+    acceptProposal: (id: string, at: number) =>
+      post<{ ticket: Ticket }>(`/tickets/${id}/chat-accept`, { at }).then((r) => r.ticket),
 
     policy: () => call<Policy>('/policy'),
     /** Change some of the limits, leaving the rest. Takes effect at once. */
@@ -126,6 +143,13 @@ export function createClient(baseUrl: string) {
     /** Remove it, directory and all. Skills only, and there is no undoing it. */
     deleteDoc: (kind: DocKind, name: string) =>
       call<{ deleted: string }>(`/${kind}s/${name}`, { method: 'DELETE' }).then((r) => r.deleted),
+
+    /**
+     * What this ticket might better be called, while it is being written. `name`
+     * is null when the name given is fine, or when there was nobody to ask.
+     */
+    checkName: (title: string, body: string) =>
+      post<{ name: string | null; why?: string }>('/name-check', { title, body }),
 
     /** Everything the workbench is set to, editable and not. */
     settings: () => call<{ settings: Setting[] }>('/settings').then((r) => r.settings),

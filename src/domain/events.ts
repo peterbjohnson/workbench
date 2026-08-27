@@ -7,7 +7,13 @@ export type Stage = 'plan' | 'implement' | 'review' | 'verify';
  */
 export type Scale = 'small' | 'standard' | 'large';
 
-export type RunOutcome = 'completed' | 'blocked' | 'failed';
+/**
+ * `interrupted` is not one a runner ever reports: it is written by `reconcile`
+ * alone, for a run nobody is left to answer for, exactly like the `runId` of
+ * `interrupted` it is written beside. Being stopped is not failing, and the
+ * difference is what lets the stage carry on rather than begin again.
+ */
+export type RunOutcome = 'completed' | 'blocked' | 'failed' | 'interrupted';
 
 /**
  * One standing check, run by the workbench itself rather than by an agent. That is
@@ -16,17 +22,57 @@ export type RunOutcome = 'completed' | 'blocked' | 'failed';
  */
 export type CheckRun = { command: string; ok: boolean; output: string };
 
-/** What bringing the base into a ticket's branch did. */
+/** What bringing the base, and whatever else was asked for, into a branch did. */
 export type Refreshed =
-  /** The branch already had the base. Nothing happened, and nothing is recorded. */
+  /** The branch already had all of it. Nothing happened, and nothing is recorded. */
   | { kind: 'up-to-date' }
-  | { kind: 'merged'; base: string; commit: string }
+  /** `merged` is every ref that landed, the base among them when it was one of them. */
+  | { kind: 'merged'; base: string; commit: string; merged: string[] }
   /**
-   * Left un-merged. `merging` says which: the branch is exactly as it was, or the
-   * merge is still going, on disk, for a stage to finish. A caller that did not ask
-   * to keep one can still be told this, by a merge an earlier run left behind.
+   * One of them would not merge, and that one was left out. Anything merged before
+   * it stands, so the branch is as far along as it got — `with` is the ref that
+   * stopped it, which is what a person has to be told to do anything about it.
+   *
+   * Said in data as well as in prose: `merged` is what landed before the failure and
+   * `commit` is the HEAD they left, so a caller can record a branch that has moved
+   * rather than one it wrongly believes is where it was.
+   *
+   * `merging` says what became of the one that would not go: either the branch is
+   * exactly as that ref found it, or that merge is still going, on disk, for a stage
+   * to finish. A caller that did not ask to keep one can still be told this, by a
+   * merge an earlier run left behind.
    */
-  | { kind: 'conflicted'; base: string; paths: string[]; merging: boolean };
+  | {
+      kind: 'conflicted';
+      base: string;
+      paths: string[];
+      with: string;
+      merged: string[];
+      commit: string;
+      merging: boolean;
+    };
+
+/**
+ * Something the chat agent thinks should be done to the ticket, offered for the
+ * manager to accept with a click. Never one of its own powers: every proposal is
+ * an action the manager already had, so accepting one appends exactly the event
+ * the button would have.
+ *
+ * `action` is a plain string because this is read out of what a model wrote, and
+ * what a model wrote can say anything. Which strings are actions is `CHAT_ACTIONS`,
+ * and it is checked when the proposal is accepted rather than when it is read —
+ * so a proposal nobody can act on still comes back with a reason why.
+ */
+export type Proposal = {
+  action: string;
+  /** Why it is proposing this, in its own words. Shown beside the button. */
+  why: string;
+  /** For `edit`: whichever of these it wants to rewrite. */
+  title?: string;
+  body?: string;
+  /** For `changes`, what to put right; for `reject`, why the approach is wrong. */
+  text?: string;
+};
 
 /**
  * Everything else in the system is derived from this list.
@@ -80,8 +126,10 @@ export type EventBody =
   | { type: 'moved'; before: string | null }
   /**
    * This ticket must not start a stage until every one of `tickets` has offered
-   * its work or ended. The whole set each time, not a difference: the manager
-   * picks what it waits for and this is what they picked. Empty is no condition.
+   * its work or ended — and whatever of it is offered is merged into this ticket's
+   * branch before that stage runs, because an offer is not a merge and the base
+   * does not have it. The whole set each time, not a difference: the manager picks
+   * what it waits for and this is what they picked. Empty is no condition.
    */
   | { type: 'waits_for'; tickets: string[] }
   /**
@@ -89,6 +137,15 @@ export type EventBody =
    * that asked something: there is nothing to answer and nothing worth resuming.
    */
   | { type: 'stage_restarted' }
+  /**
+   * Put the stage back into the stage it stopped in, keeping its conversation.
+   *
+   * The counterpart of `stage_restarted`, and the difference between them is the
+   * only thing worth saying about either: that one throws the conversation away
+   * and buys the stage a second time, this one picks it back up where it got to.
+   * Both stay available, because carrying on is sometimes the wrong answer.
+   */
+  | { type: 'stage_continued' }
   /**
    * The manager says this will do: offer it as a pull request from wherever it
    * has got to. Not a bypass of review — the pull request is still a review, and
@@ -98,6 +155,14 @@ export type EventBody =
    */
   | { type: 'shipped' }
   | { type: 'stage_started'; stage: Stage; runId: string }
+  /**
+   * The conversation this run is, written down the moment the model service names
+   * it rather than when the run ends. That is the whole point of it: a run only
+   * reports a session when it stops with something left to say, so a workbench
+   * killed mid-stage never reported one at all — and everything the run had spent
+   * was spent again from the top. This is what survives the kill.
+   */
+  | { type: 'session_started'; runId: string; sessionId: string }
   /**
    * The stage says it has started step `index` of the approved plan. Announced by
    * the agent as it works, so a long run says where it has got to rather than only
@@ -154,7 +219,8 @@ export type EventBody =
       later?: string[];
       /**
        * The conversation this run was, set only when it stopped with something left
-       * to say. Answering the question picks it back up instead of starting again.
+       * to say — a question it asked, or a workbench that stopped underneath it.
+       * Picking the ticket back up continues that instead of starting again.
        */
       sessionId?: string;
     }
@@ -170,8 +236,19 @@ export type EventBody =
    * base is the ordinary case and says nothing. A merge handed to a stage is
    * written here too, but not until the stage's commit concludes it: before that
    * there is nothing on the branch for the base to be moved to.
+   *
+   * `took` is the work this ticket waited for that this refresh merged, the base
+   * aside. Recorded because that work is in no commit of the base, so measuring from
+   * one would show the dependency's whole change as this ticket's.
+   *
+   * `carrying` is the whole of that work as of this refresh — what the branch took
+   * now, and what it took before and the base still has not got. Written because
+   * `took` alone lasts one refresh: a dependency that is sent back for changes is
+   * no longer offered, so the next refresh takes nothing from it and the base would
+   * move onto a commit without its work in it, though the merge is still in the
+   * branch. Optional, so events written before this replay as they always did.
    */
-  | { type: 'refreshed'; base: string; commit: string }
+  | { type: 'refreshed'; base: string; commit: string; took?: string[]; carrying?: string[] }
   /**
    * The base had moved on and the branch could not take it cleanly, so the merge
    * was left in the worktree and given to the stage that was about to run. Not a
@@ -226,7 +303,30 @@ export type EventBody =
    * merge asked for survives a restart, and every one of them is in the log.
    */
   | { type: 'merge_requested' }
-  | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string };
+  | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string }
+  /**
+   * One turn of the conversation about this ticket, by the manager or by the chat
+   * agent. Kept as events like everything else, so the pane is redrawn off the same
+   * stream the board is and a reload reads the conversation back rather than losing it.
+   *
+   * `costUsd` is recorded and deliberately not added to `ticket.costUsd`: talking
+   * about a ticket must not be able to push it past `maxTicketUsd` and stop the work.
+   */
+  | {
+      type: 'chat_said';
+      role: 'manager' | 'agent';
+      text: string;
+      proposals?: Proposal[];
+      costUsd?: number;
+      /** The agent's conversation, so the next turn resumes rather than re-reads. */
+      sessionId?: string;
+    }
+  /**
+   * The manager took a proposal up. Written beside the event the proposal actually
+   * is, which is appended first — this one only records that the chat is where it
+   * came from, so the pane can say which of its offers have been taken.
+   */
+  | { type: 'chat_accepted'; proposal: Proposal };
 
 export type Event = EventBody & {
   id: number;

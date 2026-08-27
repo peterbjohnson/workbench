@@ -13,6 +13,7 @@
     "bin",
     "dist",
     "agents",
+    "skills",
     "ui/dist"
   ],
   "scripts": {

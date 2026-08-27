@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { Config } from '../config.ts';
 import type { Stage } from '../domain/events.ts';
-import { parseAgent, parseSkill, STAGES } from '../agents/load.ts';
+import { CHAT_AGENT, parseAgent, parseChatAgent, parseSkill, STAGES } from '../agents/load.ts';
 
 /**
  * The two kinds of writing the workbench runs on: what each stage is told to do,
@@ -160,13 +160,15 @@ function ensurePluginManifest(config: Config): void {
 /** What a document says about itself, which is also the check that it is valid. */
 function describe(kind: DocKind, name: string, text: string): string {
   if (kind === 'skill') return parseSkill(text, name);
-  const agent = parseAgent(text, name as Stage);
+  // The chat agent is not a stage, so it is checked by its own reader — but it is an
+  // agent file, and editing it in the board is the same act as editing the other four.
+  const agent = name === CHAT_AGENT ? parseChatAgent(text) : parseAgent(text, name as Stage);
   return `${agent.model} · ${agent.effort} effort · ${agent.maxTurns} turns · $${agent.maxBudgetUsd}`;
 }
 
 /** The names there are. Nothing outside this list is readable or writable. */
 function names(config: Config, kind: DocKind): string[] {
-  if (kind === 'agent') return [...STAGES];
+  if (kind === 'agent') return [...STAGES, CHAT_AGENT];
   return fs
     .readdirSync(skillsDir(config), { withFileTypes: true })
     .filter(

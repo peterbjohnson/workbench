@@ -32,8 +32,8 @@ export type Ticket = {
   continues: string | null;
   /**
    * Tickets this one must not start ahead of. Nothing runs while any of them is
-   * unmet — see `heldBy`, which says what meeting one takes and is the only thing
-   * that reads this.
+   * unmet — see `heldBy`, which says what meeting one takes, and `awaitedWork`,
+   * which says what of theirs this branch is then built on.
    *
    * Not the same as `continues`, and they compose: that one says where the work
    * *starts from* and is fixed when the branch is cut; these say *when*, and can
@@ -95,6 +95,17 @@ export type Ticket = {
    * than pay again for thinking already done. Null unless something is parked.
    */
   session: string | null;
+  /**
+   * Whether what stopped this ticket was the workbench being stopped, rather than
+   * anything going wrong with the work. It parks the same way a failure does and
+   * is not the same thing at all: there is a run here worth carrying on.
+   *
+   * Its own field rather than read off `session`, because a run killed before the
+   * model service had named its conversation has no session and still has to be
+   * offered — restarting it from the top is what it needs, and a ticket nobody
+   * can see is one nobody restarts.
+   */
+  interrupted: boolean;
   /** The manager's reply, carried into the resumed run and cleared once it starts. */
   answer: string | null;
   /**
@@ -138,6 +149,12 @@ export type Ticket = {
    * taken from.
    */
   base: string | null;
+  /**
+   * The branches this one has merged that the base has not got — the work it
+   * waited for, which was offered rather than merged. What keeps `base` from moving
+   * onto a commit that has not got it: see `carriedWork`, which decides this.
+   */
+  carrying: string[];
   /** Every commit this ticket has made, oldest first. */
   commits: string[];
   /** How many times this ticket has been planned. One per trip round the loop. */
@@ -196,17 +213,34 @@ function blank(id: string): Ticket {
     revisions: 0,
     question: null,
     session: null,
+    interrupted: false,
     answer: null,
     prUrl: null,
     offered: false,
     mergeRequested: false,
     conflicts: [],
     base: null,
+    carrying: [],
     commits: [],
     cycles: 0,
     costUsd: 0,
   };
 }
+
+/**
+ * What a move that is not a resume drops. `session` and `interrupted` both
+ * describe one parked run, and only the two moves that go back to it — answering
+ * the question it asked, or carrying the stage on — may keep them.
+ *
+ * Every other way off a parked ticket goes somewhere that conversation has
+ * nothing to do with, and both fields have to go with it. A kept `session` is
+ * resumed by the next stage to run, so a manager asking for changes would have
+ * them delivered into the review's conversation instead, as a note that the
+ * workbench had stopped. A kept `interrupted` puts a ticket in the pick-up modal
+ * that `stage_continued` then declines to move, so the box comes back every load
+ * offering a button that does nothing.
+ */
+const movedOn = { session: null, interrupted: false };
 
 /** Pure. No I/O, no clock. */
 export function applyEvent(t: Ticket, e: Event): Ticket {
@@ -254,7 +288,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     case 'shipped':
       return t.running || t.commits.length === 0 || t.status === 'done' || t.offered
         ? t
-        : { ...t, status: 'ready_for_pr', question: null };
+        : { ...t, status: 'ready_for_pr', question: null, ...movedOn };
 
     // Put a stuck ticket back into the stage it stopped in, with nothing carried
     // over: a run that died has no conversation worth resuming and no answer to
@@ -262,7 +296,14 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // that is already going.
     case 'stage_restarted': {
       if (t.status !== 'blocked') return t;
-      const resumed = { ...t, question: null, answer: null, session: null, conflicts: [] };
+      const resumed = {
+        ...t,
+        question: null,
+        answer: null,
+        session: null,
+        interrupted: false,
+        conflicts: [],
+      };
 
       // Unless an offer is standing, in which case there is no stage to put it back
       // into: the last one finished before the pull request was opened, and what
@@ -278,6 +319,25 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       return t.stage === null ? t : { ...resumed, status: STATUS_FOR_STAGE[t.stage] };
     }
 
+    // The same move, keeping the conversation: the stage picks up where it got to
+    // rather than paying for the whole thing again. Guarded like the restart above
+    // and reading `offered` for the same reason, but on `interrupted` as well:
+    // `blocked` is two states, and only this one has a run to carry on. The other
+    // is holding a question, and carrying that on would clear it and resume the
+    // agent into its own unanswered question — the loss `movedOn` exists to
+    // prevent, reached through the other door.
+    //
+    // `interrupted` rather than a `session`, because there may be none — a run
+    // killed before the model service named its conversation leaves nothing to
+    // resume. That is not a reason to refuse: the stage simply starts from the
+    // top, which is what a restart would have done anyway.
+    case 'stage_continued': {
+      if (t.status !== 'blocked' || !t.interrupted) return t;
+      const carrying = { ...t, question: null, answer: null, interrupted: false };
+      if (t.offered) return { ...carrying, status: 'awaiting_verdict' };
+      return t.stage === null ? t : { ...carrying, status: STATUS_FOR_STAGE[t.stage] };
+    }
+
     case 'stage_started':
       return {
         ...t,
@@ -286,6 +346,8 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         running: true,
         question: null,
         answer: null,
+        // Whatever stopped the last run, this one is going.
+        interrupted: false,
         // A plan is what starts a trip round the loop, so it is what counts one.
         cycles: e.stage === 'plan' ? t.cycles + 1 : t.cycles,
         // A new plan re-judges the size of the work from nothing. Carrying the last
@@ -305,19 +367,32 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         conflicts: [],
       };
 
+    // Written while the run is still going, so it is here even when nothing ever
+    // reports the run finishing. `stage_finished` still has the last word.
+    case 'session_started':
+      return { ...t, session: e.sessionId };
+
     case 'step_reached':
       return { ...t, step: e.index };
 
     case 'agent_said':
     case 'tool_requested':
     case 'checks_run':
+    // Chat changes nothing about the ticket. What it proposes changes the ticket by
+    // being accepted, and that appends the ordinary event for whatever was proposed.
+    case 'chat_said':
+    case 'chat_accepted':
       return t; // record only; the board reads these
 
     case 'question_asked':
       return { ...t, question: { question: e.question, reasoning: e.reasoning } };
 
     case 'question_answered': {
-      const answered = { ...t, question: null, running: false, conflicts: [] };
+      // `interrupted` goes and `session` stays: this is one of the two moves that
+      // does come back to the parked run, and it is no longer one waiting to be
+      // picked up either way — the offered branch below does not go back to it,
+      // but it does not leave the ticket where a stage will run, either.
+      const answered = { ...t, question: null, running: false, interrupted: false, conflicts: [] };
 
       // An offer standing means the stages are over: what stopped was the wait for
       // a verdict, and there is no stage to put the ticket back into. t61 paid for
@@ -339,8 +414,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       };
     }
 
+    // A branch just cut carries nothing: it is the base and nothing else until the
+    // work this ticket waited for is merged onto it.
     case 'branched':
-      return { ...t, branch: e.branch, base: e.base };
+      return { ...t, branch: e.branch, base: e.base, carrying: [] };
 
     // The merge commit is the ticket's, and the new base is what its change is now
     // measured against — `diff` reads `base...HEAD`, so leaving the old one there
@@ -350,15 +427,34 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Except for a ticket carrying on from another: its base is that ticket's
     // branch, and moving it to the base proper is the same mistake the other way
     // round — the earlier ticket's work would read as this one's.
-    case 'refreshed':
+    //
+    // And except while the branch is standing on work it waited for, which is
+    // offered and so is in no commit of the base: moving there would hand every
+    // stage the dependency's change as this ticket's. The merge that took that work
+    // is what the ticket is measured from instead — and it can be, but only while
+    // the branch has nothing of its own on it. Where the branch is cut that merge is
+    // the base plus the dependencies and nothing else, which is the commit this
+    // ticket needs and the only one anywhere that is; after any stage has committed
+    // there is no such commit, and the base stands where that merge put it.
+    //
+    // What the branch is standing on is asked of the branch, not of the refresh that
+    // last touched it: `carrying` is every merge in it the base has not got, and it
+    // stops naming one when that work lands rather than when its ticket stops
+    // offering it. Read from `took` when a refresh recorded before this existed says
+    // nothing else — those events then mean exactly what they always did.
+    case 'refreshed': {
+      const carrying = e.carrying ?? e.took ?? [];
+      const held = t.continues !== null || (carrying.length > 0 && t.commits.length > 0);
       return {
         ...t,
-        base: t.continues === null ? e.base : t.base,
+        base: held ? t.base : e.base,
+        carrying,
         commits: [...t.commits, e.commit],
         // The base went in, and it went in cleanly. Whatever the branch last
         // clashed with is settled by that.
         conflicts: [],
       };
+    }
 
     // Record only, unlike `refreshed`: there is no commit and the base has not
     // moved. The merge is on disk, and the stage now running is what finishes it.
@@ -391,7 +487,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     }
 
     case 'plan_approved':
-      return { ...t, status: 'implementing', running: false, rejection: null };
+      return { ...t, status: 'implementing', running: false, rejection: null, ...movedOn };
 
     // The manager's two ways of saying no, and the only difference between them is
     // what they cost: this one buys a new plan, the next one keeps the work.
@@ -405,6 +501,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         offered: false,
         mergeRequested: false,
         rejection: e.reason,
+        ...movedOn,
       };
 
     // Not capped, and no revision counted: see `changes_requested` in events.ts.
@@ -416,6 +513,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         offered: false,
         mergeRequested: false,
         changes: e.changes,
+        ...movedOn,
       };
 
     case 'pr_opened':
@@ -439,10 +537,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Both are the end of the road. Nothing resumes them, so nothing is kept for a
     // resumed run; the reason is in the event log, which is where the board reads it.
     case 'cancelled':
-      return { ...t, status: 'cancelled', running: false, question: null };
+      return { ...t, status: 'cancelled', running: false, question: null, interrupted: false };
 
     case 'gave_up':
-      return { ...t, status: 'gave_up', running: false, question: null };
+      return { ...t, status: 'gave_up', running: false, question: null, interrupted: false };
 
     case 'merge_requested':
       return { ...t, mergeRequested: true };
@@ -457,7 +555,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // finished work back to resolve them.
     case 'verdict':
       return e.verdict === 'accepted'
-        ? { ...t, status: 'done', offered: false, mergeRequested: false, conflicts: [] }
+        ? { ...t, status: 'done', offered: false, mergeRequested: false, conflicts: [], ...movedOn }
         : {
             ...t,
             status: 'planning',
@@ -465,6 +563,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             mergeRequested: false,
             conflicts: [],
             rejection: e.reason ?? null,
+            ...movedOn,
           };
   }
 }
@@ -479,6 +578,13 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
   // A crash is not a rejection. It parks and waits for the manager, same as a question.
   if (e.outcome === 'blocked' || e.outcome === 'failed') {
     return { ...stopped, status: 'blocked' };
+  }
+
+  // Nor is being stopped a crash. It parks in the same place — the manager decides
+  // what happens to it and nothing happens on its own — but it says which of the
+  // two it was, because one of them has a run underneath it worth carrying on.
+  if (e.outcome === 'interrupted') {
+    return { ...stopped, status: 'blocked', interrupted: true };
   }
 
   if (e.rejected !== undefined) {
