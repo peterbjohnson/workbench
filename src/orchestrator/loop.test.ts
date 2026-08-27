@@ -1281,6 +1281,51 @@ test('a merge brings every standing pull request up to the base it moved to', as
   }
 });
 
+test('a cancelled ticket is not brought back up to the base by somebody else merging', async () => {
+  const h = harness({
+    verdict: (id) => (id === 't1' ? { kind: 'accepted' } : { kind: 'pending' }),
+    // t1 lands cleanly; the branch nobody is going to resolve is t2's.
+    refresh: (id) =>
+      id === 't1'
+        ? { kind: 'up-to-date' }
+        : {
+            kind: 'conflicted',
+            base: 'newbase',
+            paths: ['webapp/bellows.js'],
+            with: 'newbase',
+            merged: [],
+            commit: 'merge01',
+            merging: false,
+          },
+  });
+  try {
+    standing(h.store, 't2');
+    h.store.append('t2', { type: 'cancelled', reason: 'redundant and a mess' });
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    // Cancelling does not clear `offered`, so without the check t2 was refreshed
+    // like any standing pull request, conflicted against a base it will never be
+    // resolved against, and came back onto the board as a question.
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'cancelled', 'stopped is stopped');
+    assert.deepEqual(
+      h.refreshed.map((r) => r.id),
+      ['t1', 't1', 't1'],
+      'the cancelled branch was never touched',
+    );
+    assert.deepEqual(
+      h.store.eventsFor('t2').filter((e) => e.type === 'blocked'),
+      [],
+      'and nothing was asked of the manager about it',
+    );
+  } finally {
+    await h.close();
+  }
+});
+
 test('a pull request the manager has already answered is left alone', async () => {
   const h = harness({
     verdict: (id) =>

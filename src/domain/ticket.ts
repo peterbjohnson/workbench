@@ -520,6 +520,11 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       return { ...t, status: 'awaiting_verdict', prUrl: e.url, offered: true };
 
     case 'blocked':
+      // An ended ticket stays ended. Nothing should be parking one in the first
+      // place, but a late report is the shape of the mistake — the same one
+      // `afterStage` guards against — and a stopped ticket coming back onto the
+      // board as a question for the manager is the worst way to find out.
+      if (ended(t)) return t;
       return {
         ...t,
         status: 'blocked',
