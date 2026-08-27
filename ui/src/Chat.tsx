@@ -97,9 +97,19 @@ export function Chat({
             ))}
           </div>
         ))}
-
-        {thinking && <div className="turn agent quiet">thinking…</div>}
       </div>
+
+      {/* Above the composer rather than at the end of the turns: what says the reply is
+          coming has to be where you are looking when you send, whatever the scroller is
+          showing. */}
+      {thinking && (
+        <div className="waiting" role="status">
+          Thinking
+          <span className="dots" aria-hidden="true">
+            …
+          </span>
+        </div>
+      )}
 
       <form
         className="row"

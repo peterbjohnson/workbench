@@ -921,6 +921,36 @@ summary {
   overflow-y: auto;
 }
 
+/* A strip attached to the top of the composer, in the header's own treatment, so it
+   reads as part of the box you just typed in rather than as another turn. The dots
+   pulse: motion is what tells working apart from stuck. */
+.chatpane .waiting {
+  flex: none;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+
+.chatpane .waiting .dots {
+  animation: waiting-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes waiting-pulse {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chatpane .waiting .dots {
+    animation: none;
+  }
+}
+
 /* Collapsed: a column narrow enough to give the ticket its width back, and all of
    it is the way to open the chat again. */
 .chatrail {
