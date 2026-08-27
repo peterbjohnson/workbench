@@ -12,6 +12,7 @@ import {
   statusOf,
   suggestion,
   toneOf,
+  tweakable,
   type Run,
 } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
@@ -690,6 +691,19 @@ function Actions({
           <Act
             title="Replan it:"
             placeholder="why the approach is wrong…"
+            label="Send back"
+            onSay={(reason) => onAct(wb.reject(t.id, reason))}
+          />
+        )}
+
+        {/* The same move again, from the one place there was no way back from. Work
+            that merged and then wanted a small change had to be written out as a
+            new ticket describing the old one — this sends this one round again,
+            carrying what to tweak. */}
+        {tweakable(t) && (
+          <Act
+            title="Return with tweaks:"
+            placeholder="what to tweak about the work that was done…"
             label="Send back"
             onSay={(reason) => onAct(wb.reject(t.id, reason))}
           />

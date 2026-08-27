@@ -17,6 +17,7 @@ import {
   statusOf,
   suggestion,
   toneOf,
+  tweakable,
   waitingForSlot,
   type Run,
 } from './board.ts';
@@ -460,6 +461,20 @@ test('there is something to say no to once a ticket has started, and not before'
   // A run in flight still reports back, and its verdict would land on a ticket
   // that had already moved.
   assert.equal(sendableBack({ ...at('reviewing'), running: true }), false);
+});
+
+test('merged work can be sent back to be tweaked, and nothing else can', () => {
+  // The one status with no way back: a ticket that merged and then wanted a small
+  // change could only be described again from scratch on a new ticket.
+  assert.deepEqual(
+    EVERY_STATUS.filter((s) => tweakable(at(s))),
+    ['done'],
+  );
+
+  // The other two ended statuses are not this: there is nothing merged to tweak,
+  // and what they offer is `salvageable` — a new ticket carrying on the branch.
+  assert.equal(tweakable(at('cancelled')), false);
+  assert.equal(tweakable(at('gave_up')), false);
 });
 
 test('anything that has not ended can be stopped, including an idea in the backlog', () => {

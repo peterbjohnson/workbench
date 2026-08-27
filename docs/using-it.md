@@ -75,6 +75,7 @@ Everything you can do to a ticket is in that one block:
 | **Start after** | which tickets this one waits for |
 | **Ask for changes** | keep the work, put these right |
 | **Replan it** | the approach is wrong; buy a new plan |
+| **Return with tweaks** | it merged, and you want it changed; back to planning with what to tweak |
 | **Ship it** | offer what it has as a pull request, whatever the agents said |
 | **Reject/cancel it** | stop it |
 

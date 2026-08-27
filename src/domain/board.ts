@@ -231,6 +231,21 @@ export function sendableBack(t: Ticket): boolean {
 }
 
 /**
+ * Whether a finished ticket can be sent back to be tweaked. `done` is the one thing
+ * `sendableBack` refuses that there is still something to say to: the work merged,
+ * and now it wants adjusting. Sending it back is the same move as *Replan it* — a
+ * new plan, carrying what to change — so it is the same event, from the one status
+ * that had no way back at all.
+ *
+ * Its own predicate rather than a looser `sendableBack`, which also gates *Ask for
+ * changes*: the API refuses that one for an ended ticket, so widening it would put
+ * a button on the panel that answers with an error.
+ */
+export function tweakable(t: Ticket): boolean {
+  return t.status === 'done';
+}
+
+/**
  * A ticket nothing will pick up again, with commits on its branch that nothing can
  * reach. The card says so and the panel offers to carry on from it — one rule, so
  * the flag that promises salvage and the button that does it cannot disagree.
