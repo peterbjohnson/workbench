@@ -79,7 +79,7 @@ repository it works on is the one that home sits in. `WB_HOME` overrides the sea
 
 ```
 .workbench/workbench.config.json   the branch to work from, and the checks
-.workbench/skills/                 your own expertise, one directory each
+.workbench/skills/                 naming-a-ticket, and expertise of your own
 .workbench/agents/                 optional: your version of a stage, if you want one
 .workbench/data/                   the event log, in SQLite         (gitignored)
 .workbench/.worktrees/             one per running ticket            (gitignored)
@@ -154,8 +154,9 @@ maximum one.
 ## Skills
 
 `.workbench/skills/<name>/SKILL.md` is written expertise: how a report is structured here,
-how Python is written here. **The workbench ships none** — how your repository writes
-Python is yours to say.
+how Python is written here. **The workbench ships one**, `naming-a-ticket`, and `wb init`
+copies it into your home — yours from then on, to edit or to delete. Every other one is
+yours to write: how your repository writes Python is yours to say.
 
 Every stage gets every skill, named in its brief with its description, and reads one with
 the `Skill` tool. The **Skills** page on the board reads and writes them, and adds and
@@ -216,6 +217,7 @@ at all.
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
 | `POST /tickets/:id/merge` | squash the offered work onto the base and accept it |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
+| `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |

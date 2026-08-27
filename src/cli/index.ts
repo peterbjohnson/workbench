@@ -329,7 +329,7 @@ async function init(where: string | undefined): Promise<number> {
   write('.gitignore', ['data/', '.worktrees/', '.env', '.env.*', ''].join('\n'));
 
   // Skills reach an agent as a local plugin, and a plugin is its manifest. Written
-  // now, empty of skills, so the first one anyone adds simply works.
+  // before any skill is, so both what ships and the first one anyone adds work.
   write(
     '.claude-plugin/plugin.json',
     `${JSON.stringify(
@@ -342,7 +342,10 @@ async function init(where: string | undefined): Promise<number> {
       2,
     )}\n`,
   );
-  write('skills/.gitkeep', '');
+  // The skills that ship with the workbench, copied in rather than read from the
+  // package, so they are this project's from the start: editing one on the board
+  // changes how work is done here and nowhere else.
+  fs.cpSync(path.join(PACKAGE_ROOT, 'skills'), path.join(home, 'skills'), { recursive: true });
 
   const shown = path.relative(target, home) || home;
   console.log(
@@ -350,7 +353,7 @@ async function init(where: string | undefined): Promise<number> {
       `Workbench started in ${shown}/`,
       '',
       `  ${CONFIG_FILE.padEnd(22)}the branch to work from, and the checks every ticket must pass`,
-      `  ${'skills/'.padEnd(22)}how work of a kind is done here — one directory each`,
+      `  ${'skills/'.padEnd(22)}how work of a kind is done here — naming-a-ticket, and yours`,
       '',
       'Next:',
       '  wb auth               prove the workbench can reach the model service',

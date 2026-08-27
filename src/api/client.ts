@@ -133,6 +133,13 @@ export function createClient(baseUrl: string) {
     deleteDoc: (kind: DocKind, name: string) =>
       call<{ deleted: string }>(`/${kind}s/${name}`, { method: 'DELETE' }).then((r) => r.deleted),
 
+    /**
+     * What this ticket might better be called, while it is being written. `name`
+     * is null when the name given is fine, or when there was nobody to ask.
+     */
+    checkName: (title: string, body: string) =>
+      post<{ name: string | null; why?: string }>('/name-check', { title, body }),
+
     /** Everything the workbench is set to, editable and not. */
     settings: () => call<{ settings: Setting[] }>('/settings').then((r) => r.settings),
     setSettings: (patch: Record<string, unknown>) =>

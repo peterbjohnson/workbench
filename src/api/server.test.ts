@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createApi } from './server.ts';
+import { createApi, type ApiDeps } from './server.ts';
 import { createClient, type Client } from './client.ts';
 import { deleteDoc } from './documents.ts';
 import { openStore, type Store } from '../store/store.ts';
@@ -21,9 +21,10 @@ import type { Setting } from './settings.ts';
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
  * own agents copied in, and a skill of the project's own.
  *
- * The skill is written here rather than copied from the workbench, which ships none —
- * how a repository writes Python is that repository's to say. Copying them was what
- * tied these tests to this directory being the workbench's own.
+ * The skill is written here rather than copied from the workbench, whose one shipped
+ * skill is about naming a ticket — how a repository writes Python is that repository's
+ * to say. Copying them was what tied these tests to this directory being the
+ * workbench's own.
  */
 function scratchConfig() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-api-'));
@@ -47,10 +48,11 @@ function scratchConfig() {
 /** A real server on an ephemeral port, with a real client talking to it. */
 async function withApi(
   fn: (wb: Client, store: Store, config: Config) => Promise<void>,
+  deps: ApiDeps = {},
 ): Promise<void> {
   const store = openStore(':memory:');
   const config = scratchConfig();
-  const api = createApi(store, config);
+  const api = createApi(store, config, deps);
   const port = await api.listen(0);
   try {
     await fn(createClient(`http://127.0.0.1:${port}`), store, config);
@@ -586,6 +588,35 @@ test('a skill is refused if nothing would ever decide to read it', async () => {
       () => wb.saveDoc('skill', one.name, '---\ndescription: ""\n---\n\nSomething.'),
       /no description/,
     );
+  });
+});
+
+test('a name being typed comes back with a better one, and what the ticket says', async () => {
+  const asked: { title: string; body: string }[] = [];
+  await withApi(
+    async (wb) => {
+      const suggestion = await wb.checkName('Pushes', 'They give up early.');
+      assert.deepEqual(suggestion, { name: 'Retry failed pushes', why: 'it named no verb' });
+      assert.deepEqual(asked, [{ title: 'Pushes', body: 'They give up early.' }]);
+
+      // Nothing typed is nothing to ask about, and asking would cost money for it.
+      assert.deepEqual(await wb.checkName('   ', ''), { name: null });
+      assert.equal(asked.length, 1);
+    },
+    {
+      checkName: async (title, body) => {
+        asked.push({ title, body });
+        return { name: 'Retry failed pushes', why: 'it named no verb' };
+      },
+    },
+  );
+});
+
+test('with nobody to ask, the name check answers that it has nothing, and asks nobody', async () => {
+  // A workbench running fake agents wires no checker, and this is what it answers.
+  // Costing money to try the workbench out is exactly what fake agents exist to avoid.
+  await withApi(async (wb) => {
+    assert.deepEqual(await wb.checkName('Pushes', ''), { name: null });
   });
 });
 

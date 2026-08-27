@@ -13,7 +13,16 @@ const WORKBENCH = fileURLToPath(new URL('..', import.meta.url));
  * SPA fallback, which hands back index.html with a 200. Keep it level with the
  * routes in src/api/server.ts.
  */
-const API = ['/tickets', '/policy', '/events', '/health', '/agents', '/skills', '/settings'];
+const API = [
+  '/tickets',
+  '/policy',
+  '/events',
+  '/health',
+  '/agents',
+  '/skills',
+  '/settings',
+  '/name-check',
+];
 
 export default defineConfig({
   root: UI,
