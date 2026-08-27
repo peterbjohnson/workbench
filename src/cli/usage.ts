@@ -18,12 +18,12 @@ workbench — a board of tickets that agents work through
   wb new --no-approval <title> [body]
                                let its plan go straight on to being built
   wb new --after <a,b> <title> [body]
-                               hold it until those tickets offer their work or end
+                               hold it until those tickets offer their work, then build on it
   wb edit <id> <title> [body]  rewrite it; the instructions are left alone if omitted
   wb queue <id>                commit to it: the workbench may now start it
   wb backlog <id>              take it back out of the queue, before it starts
   wb move <id> [before]        put it in front of another ticket, or last
-  wb wait <id> <a,b|none>      hold it until those tickets offer their work or end
+  wb wait <id> <a,b|none>      hold it until those tickets offer their work, then build on it
   wb list                      show every ticket and where it is
   wb show <id>                 one ticket, with everything that happened to it
   wb approve <id>              approve a plan, letting implementation start
@@ -31,6 +31,7 @@ workbench — a board of tickets that agents work through
   wb changes <id> <text>       keep the work and put these right; back to implement
   wb answer <id> <text>        answer a blocked ticket and let it carry on
   wb restart <id>              run a failed stage again, from the top
+  wb continue <id>             carry on a stage the workbench stopped, keeping its run
   wb ship <id>                 offer what it has as a pull request, and decide there
   wb merge <id>                squash the offered work onto the base and accept it
   wb cancel <id> [why]         stop a ticket, including one that is running

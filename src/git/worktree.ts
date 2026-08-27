@@ -16,7 +16,7 @@ const run = promisify(execFile);
 export function gitWorkspace(cfg: GitConfig): Workspace {
   return {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
-    refresh: (ticketId, keepConflict) => refresh(cfg, ticketId, keepConflict),
+    refresh: (ticketId, alsoMerge, keepConflict) => refresh(cfg, ticketId, alsoMerge, keepConflict),
     unresolved: (ticketId, paths) => unresolved(cfg, ticketId, paths),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
@@ -343,7 +343,8 @@ function pathOf(lines: readonly string[]): string {
 }
 
 /**
- * Brings the base as the remote now has it into the ticket's branch.
+ * Brings the base as the remote now has it into the ticket's branch, and with it
+ * any other branch the caller names.
  *
  * A branch is cut from the base once and then works for hours while other tickets
  * merge, so by the time it is offered it is built on a base that no longer exists.
@@ -354,10 +355,21 @@ function pathOf(lines: readonly string[]): string {
  * A merge rather than a rebase. Rebasing means force-pushing a branch that may
  * already have a pull request on it, which rewrites every commit a standing review
  * was written against.
+ *
+ * They are merged one at a time and one may fail, so this does not leave the branch
+ * either fully merged or as it was: everything before the failure stands. What it
+ * returns says which, so the caller can record where the branch has actually got to.
  */
 export async function refresh(
   cfg: GitConfig,
   ticketId: string,
+  /**
+   * Branches to bring in as well as the base: the work this ticket waited for,
+   * which has been offered and so is not in the base yet. The commit it needs —
+   * the base with all of them on it — does not exist anywhere, so it is made here,
+   * on the ticket's own branch.
+   */
+  alsoMerge: readonly string[] = [],
   /**
    * Leave a conflicted merge where it is rather than undoing it, so the stage
    * about to run can finish it. Off by default, because at ship time there is
@@ -378,47 +390,83 @@ export async function refresh(
     await git(wt.path, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD').catch(() => '')
   ).trim();
   if (merging !== '') {
-    return { kind: 'conflicted', base: merging, paths: await unmergedPaths(wt), merging: true };
+    return {
+      kind: 'conflicted',
+      base: merging,
+      paths: await unmergedPaths(wt),
+      merging: true,
+      // Nothing was brought in this time round: the merge on disk is the one that
+      // stopped, and the branch is standing where the run that was handed it left it.
+      with: merging,
+      merged: [],
+      commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim(),
+    };
   }
 
   const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
 
-  const has = await git(wt.path, 'merge-base', '--is-ancestor', base, 'HEAD').then(
-    () => true,
-    () => false,
-  );
-  if (has) return { kind: 'up-to-date' };
+  const wanted: string[] = [];
+  for (const ref of [base, ...alsoMerge]) {
+    // A dependency with no branch has no work to take: it was released by ending
+    // rather than by offering, or it never got as far as cutting one.
+    const resolves = await git(wt.path, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`).then(
+      () => true,
+      () => false,
+    );
+    const has =
+      resolves &&
+      (await git(wt.path, 'merge-base', '--is-ancestor', ref, 'HEAD').then(
+        () => true,
+        () => false,
+      ));
+    if (resolves && !has) wanted.push(ref);
+  }
+  if (wanted.length === 0) return { kind: 'up-to-date' };
 
-  try {
-    await git(wt.path, 'merge', '--no-edit', base);
-  } catch {
-    // Read the conflicting paths before aborting: the abort is what removes them.
-    const paths = await unmergedPaths(wt);
-    // Nothing unmerged means the merge failed rather than conflicted — an index
-    // that was busy, a checkout that could not be written. There is nothing for a
-    // stage to resolve, so it is undone whatever the caller asked for.
-    let kept = keepConflict && paths.length > 0;
-    if (!kept) await git(wt.path, 'merge', '--abort').catch(() => {});
-    // Hiding the protected paths rewrites the index, which is the one thing git may
-    // refuse to do while the index is unmerged. Neither the workbench's own source on
-    // disk nor a throw is an acceptable answer: a throw here parks the ticket around a
-    // `MERGE_HEAD` that no stage can abort any more. So the merge goes instead.
+  const merged: string[] = [];
+  for (const ref of wanted) {
     try {
-      await hideProtectedPaths(cfg, wt);
-    } catch (error) {
-      if (!kept) throw error;
-      await git(wt.path, 'merge', '--abort').catch(() => {});
-      await hideProtectedPaths(cfg, wt);
-      kept = false;
+      await git(wt.path, 'merge', '--no-edit', ref);
+    } catch {
+      // Read the conflicting paths before anything is undone: an abort is what
+      // removes them.
+      const paths = await unmergedPaths(wt);
+      // Nothing unmerged means the merge failed rather than conflicted — an index
+      // that was busy, a checkout that could not be written. There is nothing for a
+      // stage to resolve, so it is undone whatever the caller asked for.
+      let kept = keepConflict && paths.length > 0;
+      if (!kept) await git(wt.path, 'merge', '--abort').catch(() => {});
+      // Hiding the protected paths rewrites the index, which is the one thing git may
+      // refuse to do while the index is unmerged. Neither the workbench's own source on
+      // disk nor a throw is an acceptable answer: a throw here parks the ticket around a
+      // `MERGE_HEAD` that no stage can abort any more. So the merge goes instead.
+      try {
+        await hideProtectedPaths(cfg, wt);
+      } catch (error) {
+        if (!kept) throw error;
+        await git(wt.path, 'merge', '--abort').catch(() => {});
+        await hideProtectedPaths(cfg, wt);
+        kept = false;
+      }
+      // The HEAD the earlier merges left, which a merge kept on disk has not moved
+      // either. Read here rather than assumed: what the caller records against the
+      // branch has to be a commit the branch is actually standing on.
+      const commit = (await git(wt.path, 'rev-parse', 'HEAD')).trim();
+      return { kind: 'conflicted', base, paths, with: ref, merged, commit, merging: kept };
     }
-    return { kind: 'conflicted', base, paths, merging: kept };
+    merged.push(ref);
   }
 
   // A merge writes out whatever it had to merge, which can put a protected path
   // back on disk that the sparse checkout was keeping off it. Re-applied here so
   // the workbench's own source cannot appear in a worktree by way of a merge.
   await hideProtectedPaths(cfg, wt);
-  return { kind: 'merged', base, commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim() };
+  return {
+    kind: 'merged',
+    base,
+    commit: (await git(wt.path, 'rev-parse', 'HEAD')).trim(),
+    merged,
+  };
 }
 
 /** The paths a merge left with both sides in them, waiting on someone to decide. */

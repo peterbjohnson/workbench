@@ -18,12 +18,13 @@ import {
   statusOf,
   suggestion,
   toneOf,
+  tweakable,
   waitingForSlot,
   withoutProposals,
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
-import { heldBy } from './rules.ts';
+import { awaitedWork, carriedWork, heldBy } from './rules.ts';
 import { deriveTicket, ended, type Status, type Ticket } from './ticket.ts';
 
 const EVERY_STATUS = [
@@ -165,13 +166,18 @@ test('the headline is what the panel is opened to find out', () => {
 
 test('a rejection stands only while the ticket is doing something about it', () => {
   const standing = EVERY_STATUS.filter((s) => rejectionStands(at(s)));
-  assert.deepEqual(standing, ['planning']);
+  assert.deepEqual(standing, ['planning', 'plan_gate']);
   assert.equal(rejectionStands(at('blocked', 'plan')), true, 'stuck part-way through replanning');
   assert.equal(rejectionStands(at('blocked', 'implement')), false);
 
-  // Everywhere else it is history. Neither is ever cleared — the brief and the
-  // hand-over message read them — so this is the only thing keeping a rejection
-  // three stages old from being the loudest line on the ticket.
+  // The gate counts because `plan_approved` is what clears a rejection: until
+  // then the plan sitting at the gate is the answer to it, and you cannot judge
+  // the answer with the objection folded away under Earlier.
+
+  // Everywhere else it is history. Neither is cleared until the stage answering
+  // it lands — the brief and the hand-over message read them — so this is the
+  // only thing keeping a rejection three stages old from being the loudest line
+  // on the ticket.
   assert.equal(rejectionStands({ ...at('awaiting_verdict'), rejection: 'wrong problem' }), false);
 
   const changing = EVERY_STATUS.filter((s) => changesStand(at(s)));
@@ -274,6 +280,12 @@ test('a run that rejected the work did not just complete', () => {
   assert.equal(statusOf(run({ outcome: 'blocked' })), 'asked you');
   assert.equal(statusOf(run({ checks: { passed: 1, failed: 2 } })), 'checks failed');
 
+  // The workbench stopping under a run is neither of the two it would otherwise
+  // fall into: not `failed`, because nothing went wrong, and not `done`, because
+  // it did not finish. Both were wrong on the panel in different directions.
+  assert.equal(statusOf(run({ outcome: 'interrupted' })), 'stopped');
+  assert.equal(toneOf(run({ outcome: 'interrupted' })), 'note');
+
   // A review that sent the work back to be fixed did not merely finish. Without
   // this it read as `done`, and the implement stage after it looked unexplained.
   assert.equal(statusOf(run({ changes: '- the units are wrong' })), 'asked for changes');
@@ -296,7 +308,7 @@ test('a stage the workbench died in ends that stage, rather than adding a run', 
       {
         type: 'stage_finished',
         runId: 'interrupted',
-        outcome: 'failed',
+        outcome: 'interrupted',
         summary: 'the workbench stopped while this stage was running',
       },
     ),
@@ -304,7 +316,7 @@ test('a stage the workbench died in ends that stage, rather than adding a run', 
 
   assert.equal(summarised.length, 1);
   assert.equal(summarised[0]?.stage, 'implement');
-  assert.equal(summarised[0]?.outcome, 'failed');
+  assert.equal(summarised[0]?.outcome, 'interrupted');
 });
 
 test('a suggestion is a named ticket, and its description is what the stage said', () => {
@@ -417,6 +429,88 @@ test('a pull request lets go of what waits on it, and so does an ending', () => 
   // A ticket waiting on one that is not there waits for nothing.
   assert.deepEqual(heldBy(waiting, [waiting]), []);
   assert.deepEqual(heldBy(at('queued'), [at('queued')]), []);
+});
+
+/**
+ * A dependency as its own events left it. Built from a history rather than from
+ * `at`, which writes a status over a blank ticket and so leaves `offered` false
+ * whatever it says: against that, a filter on the offer agrees with every answer
+ * there is, including the wrong one.
+ */
+function dep(id: string, ...rest: EventBody[]): Ticket {
+  const bodies: EventBody[] = [{ type: 'ticket_created', title: id, body: '' }, ...rest];
+  return deriveTicket(
+    bodies.map((body, i) => ({ ...body, id: i + 1, ticketId: id, at: `2026-08-05T0${i}` })),
+  );
+}
+
+test('what a released ticket must be standing on is the work that is offered', () => {
+  const waiting = { ...at('queued'), waitsFor: ['t2', 't3'] };
+  const offered = (id: string): EventBody => ({ type: 'pr_opened', url: `http://pr/${id}` });
+  const offering = (id: string): Ticket => dep(id, offered(id));
+  const awaited = (...tickets: Ticket[]) => awaitedWork(waiting, tickets).map((t) => t.id);
+
+  // Both, and in the order the manager named them: two dependencies offered at
+  // once is the ordinary case, and neither may be dropped.
+  assert.deepEqual(awaited(offering('t2'), offering('t3')), ['t2', 't3']);
+  assert.deepEqual(awaited(offering('t3'), offering('t2')), ['t2', 't3']);
+
+  // Released with nothing to take: nobody will finish these, and there is no branch
+  // of theirs the waiting ticket should be built on. Their offer is still standing
+  // — an ending does not take it back — so the offer alone would have taken work
+  // the manager stopped and put it in the waiting ticket's pull request.
+  const cancelled = dep('t2', offered('t2'), { type: 'cancelled', reason: 'not now' });
+  const gaveUp = dep('t2', offered('t2'), { type: 'gave_up', reason: 'too dear' });
+  assert.equal(cancelled.offered, true, 'which is why the ending is asked about too');
+  assert.equal(gaveUp.offered, true);
+  assert.deepEqual(awaited(cancelled, offering('t3')), ['t3']);
+  assert.deepEqual(awaited(gaveUp, offering('t3')), ['t3']);
+
+  // Merged: the work is in the base now, and the ordinary refresh brings it in.
+  const merged = dep('t2', offered('t2'), { type: 'verdict', verdict: 'accepted' });
+  assert.equal(merged.status, 'done');
+  assert.deepEqual(awaited(merged, offering('t3')), ['t3']);
+
+  // Still being built, so nothing is standing on it yet — `heldBy` is what stops
+  // the ticket, and this says nothing about it either way. Both the one sent back
+  // to be reworked, which is committing again on the branch it offered, and the one
+  // that has never offered anything.
+  const reworking = dep('t2', offered('t2'), { type: 'changes_requested', changes: 'the units' });
+  assert.equal(reworking.status, 'implementing');
+  assert.deepEqual(awaited(reworking, offering('t3')), ['t3']);
+  assert.deepEqual(awaited(dep('t2'), offering('t3')), ['t3']);
+
+  // A ticket that is not on the board contributes nothing, as it holds nothing.
+  assert.deepEqual(awaited(offering('t3')), ['t3']);
+  assert.deepEqual(awaitedWork(at('queued'), [at('queued')]), []);
+});
+
+test('a branch carries what it merged until that work reaches the base', () => {
+  const offered = (id: string): EventBody => ({ type: 'pr_opened', url: `http://pr/${id}` });
+  const took = { ...at('implementing'), carrying: ['wb/t2'] };
+
+  // Taken once and taken again is one merge: a refresh that brings the base in
+  // while the same dependency is still offered must not name it twice.
+  assert.deepEqual(carriedWork(at('queued'), [], ['wb/t2']), ['wb/t2']);
+  assert.deepEqual(carriedWork(took, [], ['wb/t2']), ['wb/t2']);
+  assert.deepEqual(carriedWork(took, [], ['wb/t3']), ['wb/t2', 'wb/t3']);
+
+  // Merged: the base has it now, so the branch is no longer standing on anything
+  // the base has not got, and its own work can be measured from the base again.
+  const merged = dep('t2', offered('t2'), { type: 'verdict', verdict: 'accepted' });
+  assert.equal(merged.status, 'done');
+  assert.deepEqual(carriedWork(took, [merged], []), []);
+
+  // Everything else leaves the merge exactly where it is. Whatever the board says
+  // about the dependency, the commit is in this branch and in no commit of the base
+  // — this is a fact about the branch, and only a merge changes it.
+  const reworking = dep('t2', offered('t2'), { type: 'changes_requested', changes: 'the units' });
+  const rejected = dep('t2', offered('t2'), { type: 'verdict', verdict: 'rejected' });
+  const cancelled = dep('t2', offered('t2'), { type: 'cancelled', reason: 'not now' });
+  for (const other of [reworking, rejected, cancelled]) {
+    assert.deepEqual(carriedWork(took, [other], []), ['wb/t2'], other.status);
+  }
+  assert.deepEqual(carriedWork(took, [], []), ['wb/t2'], 'and one not on the board at all');
 });
 
 test('a ticket the limit is holding back says so; nothing else does', () => {
@@ -570,6 +664,20 @@ test('proposals are numbered across the whole conversation, not within a turn', 
       [1, 'two'],
     ],
   );
+});
+
+test('merged work can be sent back to be tweaked, and nothing else can', () => {
+  // The one status with no way back: a ticket that merged and then wanted a small
+  // change could only be described again from scratch on a new ticket.
+  assert.deepEqual(
+    EVERY_STATUS.filter((s) => tweakable(at(s))),
+    ['done'],
+  );
+
+  // The other two ended statuses are not this: there is nothing merged to tweak,
+  // and what they offer is `salvageable` — a new ticket carrying on the branch.
+  assert.equal(tweakable(at('cancelled')), false);
+  assert.equal(tweakable(at('gave_up')), false);
 });
 
 test('anything that has not ended can be stopped, including an idea in the backlog', () => {

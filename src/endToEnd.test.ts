@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openStore, type Store } from './store/store.ts';
-import { createOrchestrator, type Orchestrator } from './orchestrator/loop.ts';
+import { createOrchestrator, reconcile, type Orchestrator } from './orchestrator/loop.ts';
 import { createFakeRunner } from './run/fakeRunner.ts';
 import { createCheckRunner } from './run/checks.ts';
 import { loadAgents } from './agents/load.ts';
@@ -27,6 +27,8 @@ type Rig = {
   orch: Orchestrator;
   cfg: GitConfig;
   prs: string[];
+  /** What each stage run was asked to pick back up, in order. */
+  resumed: (string | undefined)[];
   close: () => Promise<void>;
 };
 
@@ -58,6 +60,15 @@ async function rig(checks: string[] = []): Promise<Rig> {
 
   const store = openStore(':memory:');
   const prs: string[] = [];
+  const resumed: (string | undefined)[] = [];
+
+  // The shipped agent definitions, so what the guard allows here is what it will
+  // allow in a real run. Wrapped only to watch what each run was asked to pick
+  // back up — the runner itself is untouched.
+  const fake = createFakeRunner({
+    agents: () => loadAgents([fileURLToPath(new URL('../agents', import.meta.url))]),
+    protectedPaths: cfg.protectedPaths,
+  });
 
   const orch = createOrchestrator({
     store,
@@ -73,12 +84,10 @@ async function rig(checks: string[] = []): Promise<Rig> {
       verdict: async () => ({ kind: 'pending' }),
       merge: async () => {},
     },
-    // The shipped agent definitions, so what the guard allows here is what it
-    // will allow in a real run.
-    runStage: createFakeRunner({
-      agents: () => loadAgents([fileURLToPath(new URL('../agents', import.meta.url))]),
-      protectedPaths: cfg.protectedPaths,
-    }),
+    runStage: (args) => {
+      resumed.push(args.resume);
+      return fake(args);
+    },
     // The real check runner on a real worktree: whether the tests pass is the one
     // thing in this loop that must not be stood in for.
     checks: createCheckRunner(checks),
@@ -91,6 +100,7 @@ async function rig(checks: string[] = []): Promise<Rig> {
     orch,
     cfg,
     prs,
+    resumed,
     close: async () => {
       await orch.stop();
       store.close();
@@ -222,6 +232,85 @@ test('two tickets run side by side without treading on each other', async () => 
       assert.match(changed, new RegExp(`fake-work/${id}\\.md`));
       assert.doesNotMatch(changed, new RegExp(`fake-work/${id === 't1' ? 't2' : 't1'}\\.md`));
     }
+  } finally {
+    await r.close();
+  }
+});
+
+test('a stage the workbench died in the middle of carries on rather than starting again', async () => {
+  // Session resume had never actually run: neither real ticket ever asked a
+  // question, so nothing had ever been resumed and the whole path was assumed
+  // rather than exercised. This is it, end to end, on a real repository.
+  const r = await rig();
+  try {
+    queued(r.store, 't1', 'Record the ticket', 'Leave a note in the repository.');
+    await r.orch.idle();
+    r.store.append('t1', { type: 'plan_approved' });
+
+    // The workbench being killed mid-stage, as it leaves the database: a run that
+    // started, said what conversation it was, and that nothing will ever answer.
+    r.store.append('t1', { type: 'stage_started', stage: 'implement', runId: 'r-killed' });
+    r.store.append('t1', {
+      type: 'session_started',
+      runId: 'r-killed',
+      sessionId: 'sess-killed',
+    });
+
+    assert.deepEqual(reconcile(r.store), ['t1'], 'the next start picks it up');
+    const parked = r.store.ticket('t1');
+    assert.equal(parked.status, 'blocked', 'and parks it for the manager');
+    assert.equal(parked.interrupted, true, 'as stopped rather than as broken');
+    assert.equal(parked.session, 'sess-killed', 'holding the run it can carry on from');
+    assert.deepEqual(r.resumed, [undefined], 'and nothing has started on its own');
+
+    r.store.append('t1', { type: 'stage_continued' });
+    await r.orch.idle();
+
+    assert.deepEqual(
+      r.resumed.filter((one) => one !== undefined),
+      ['sess-killed'],
+      'the implement stage picked that conversation back up, and nothing else did',
+    );
+
+    // And it really finished: the work is on disk and the ticket went the rest of
+    // the way, so carrying on is a whole stage rather than a flag.
+    const t = r.store.ticket('t1');
+    assert.equal(t.status, 'awaiting_verdict');
+    assert.equal(t.interrupted, false, 'it is no longer waiting to be picked up');
+    const wt = worktreeFor(r.cfg, 't1');
+    assert.match(
+      await fs.readFile(path.join(wt.path, 'fake-work', 't1.md'), 'utf8'),
+      /# Record the ticket/,
+    );
+  } finally {
+    await r.close();
+  }
+});
+
+test('restarting an interrupted stage runs it from the top instead', async () => {
+  // The other half of the promise: carrying on is offered, never imposed.
+  const r = await rig();
+  try {
+    queued(r.store, 't1', 'Record the ticket');
+    await r.orch.idle();
+    r.store.append('t1', { type: 'plan_approved' });
+    r.store.append('t1', { type: 'stage_started', stage: 'implement', runId: 'r-killed' });
+    r.store.append('t1', {
+      type: 'session_started',
+      runId: 'r-killed',
+      sessionId: 'sess-killed',
+    });
+    reconcile(r.store);
+
+    r.store.append('t1', { type: 'stage_restarted' });
+    await r.orch.idle();
+
+    assert.deepEqual(
+      r.resumed.filter((one) => one !== undefined),
+      [],
+      'nothing was carried over',
+    );
+    assert.equal(r.store.ticket('t1').status, 'awaiting_verdict', 'and it still finished');
   } finally {
     await r.close();
   }

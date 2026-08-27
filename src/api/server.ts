@@ -12,6 +12,7 @@ import { proposalEvent } from '../domain/proposals.ts';
 import type { ChatRunner } from '../run/chat.ts';
 import { createDoc, deleteDoc, listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
+import type { NameChecker } from '../run/nameCheck.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
 export const UI_DIST = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -27,18 +28,28 @@ const CONTENT_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+/**
+ * What the API needs that is not state: the things here that talk to a model
+ * service. Each is optional, and a workbench without one simply does not have that
+ * feature — the routes say so rather than pretending, and everything else works
+ * exactly as before.
+ */
+export type ApiDeps = {
+  /**
+   * What a ticket being written might better be called. Absent when nothing should
+   * be asked — a workbench running fake agents spends nothing, and this must not be
+   * the exception — and then the route answers that it has no suggestion.
+   */
+  checkName?: NameChecker;
+  /** The conversation about a ticket. Absent means the workbench has no chat. */
+  chat?: ChatRunner;
+};
+
 export type Api = {
   /** Returns the port it really got, which is not the one asked for when that is 0. */
   listen: (port: number) => Promise<number>;
   close: () => Promise<void>;
 };
-
-/**
- * What the API needs that is not state: the one thing here that talks to a model
- * service. Optional, and a workbench without it simply has no chat — the routes say
- * so rather than pretending, and everything else works exactly as before.
- */
-export type ApiDeps = { chat?: ChatRunner };
 
 /**
  * The single way in. The CLI and the board are both clients of this, so nothing
@@ -123,6 +134,19 @@ async function handle(
       const patch = await readJson(req);
       return refusable(res, () => ({ settings: applySettings(store, config, patch) }));
     }
+  }
+
+  // What this ticket might better be called, asked while it is being typed. It
+  // creates nothing and refuses nothing: `{name: null}` is the ordinary answer,
+  // and the one given when there is nobody to ask.
+  if (method === 'POST' && route === '/name-check') {
+    const { title, body } = await readJson(req);
+    const name = typeof title === 'string' ? title.trim() : '';
+    const suggestion =
+      name === '' || deps.checkName === undefined
+        ? null
+        : await deps.checkName(name, String(body ?? ''));
+    return send(res, 200, suggestion ?? { name: null });
   }
 
   if (method === 'GET' && (route === '/agents' || route === '/skills')) {
@@ -286,6 +310,22 @@ async function handle(
         case 'restart':
           store.append(id, { type: 'stage_restarted' });
           return send(res, 200, { ticket: store.ticket(id) });
+        // The other half of restarting: same stage, keeping its conversation.
+        // Only for a ticket that was stopped mid-run, though — a ticket blocked on
+        // a question is parked in the same place with no run to carry on, and
+        // appending this to it would throw the question away for nothing.
+        case 'continue': {
+          const t = store.ticket(id);
+          if (!t.interrupted) {
+            return send(res, 400, {
+              error: t.question
+                ? `${id} is waiting on an answer, not on being picked up — answer it instead`
+                : `${id} was not stopped mid-stage — there is no run to carry on, so restart it`,
+            });
+          }
+          store.append(id, { type: 'stage_continued' });
+          return send(res, 200, { ticket: store.ticket(id) });
+        }
         case 'approve':
           store.append(id, { type: 'plan_approved' });
           return send(res, 200, { ticket: store.ticket(id) });

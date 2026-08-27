@@ -62,8 +62,9 @@ the buttons that answer it.
 
 **Only what the ticket is acting on is at the top.** A rejection or a set of changes stays
 on the ticket for good, because the next plan and the hand-over message both read it — so
-it leads the panel only while the stage answering it is the one running, and otherwise
-folds into **Earlier**, below the buttons. Without that, a ticket in a pull request opened
+it leads the panel only while the stage answering it is the one running, or while the plan
+answering it waits at the gate for you, and otherwise folds into **Earlier**, below the
+buttons. Without that, a ticket in a pull request opened
 on why it was sent back three stages ago.
 
 Everything you can do to a ticket is in that one block:
@@ -74,6 +75,7 @@ Everything you can do to a ticket is in that one block:
 | **Start after** | which tickets this one waits for |
 | **Ask for changes** | keep the work, put these right |
 | **Replan it** | the approach is wrong; buy a new plan |
+| **Return with tweaks** | it merged, and you want it changed; back to planning with what to tweak |
 | **Ship it** | offer what it has as a pull request, whatever the agents said |
 | **Reject/cancel it** | stop it |
 
@@ -98,6 +100,14 @@ that could not reach the remote — parks the ticket with nothing to answer, so 
 offers **Restart this stage** rather than a question box. It runs again from the top, and
 the failed attempt stays in the record beside the one that worked.
 
+**A stage the workbench was stopped in the middle of carries on instead.** Being stopped
+is not failing — it is how a `wb update` is picked up — and the run it was in the middle
+of is still there, so paying for the whole stage again would be paying twice for thinking
+already done. Those tickets say **stopped mid-stage** rather than **needs you**, and the
+board asks about them in one box the next time you open it: everything checked, one press
+for all of it. Nothing carries on by itself. `wb continue <id>` does one from the command
+line, and **Start this stage again** is there when carrying on is the wrong answer.
+
 ## Holding a ticket behind others
 
 `wb wait t43 t37,t40`, `wb new --after`, or the **Start after** box on the panel and the
@@ -113,6 +123,14 @@ that it stop committing; after that its branch is final. Waiting for the merge w
 every dependency behind a person. A ticket that was cancelled or given up on releases what
 waits on it too: a queue held up by a ticket nobody is working on is the one failure with
 no way out.
+
+**And the work comes with it.** An offer is not a merge, so the base does not have that
+work in it — the held ticket is branched from the base as everything is, and then every
+branch it waited for is merged into its own before its first stage starts. One that was
+cancelled or given up on brings nothing, because there is nothing of it to bring; one whose
+pull request has landed brings nothing either, because the base already has it. Two
+branches that will not sit in the same tree **block** the ticket then and there, naming the
+branch and the files, rather than after it has been built on half of what it waited for.
 
 ## Steps
 

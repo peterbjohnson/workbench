@@ -16,15 +16,17 @@ import { loadSkills, parseSkill } from '../agents/load.ts';
 import { CONFIG_FILE, loadConfig, type Config } from '../config.ts';
 import type { Proposal } from '../domain/events.ts';
 import type { ChatRunner } from '../run/chat.ts';
+import { PRESET_VALUES } from './presets.ts';
 import type { Setting } from './settings.ts';
 
 /**
  * A throwaway workbench home, of the shape `wb init` leaves behind: the workbench's
  * own agents copied in, and a skill of the project's own.
  *
- * The skill is written here rather than copied from the workbench, which ships none —
- * how a repository writes Python is that repository's to say. Copying them was what
- * tied these tests to this directory being the workbench's own.
+ * The skill is written here rather than copied from the workbench, whose one shipped
+ * skill is about naming a ticket — how a repository writes Python is that repository's
+ * to say. Copying them was what tied these tests to this directory being the
+ * workbench's own.
  */
 function scratchConfig() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-api-'));
@@ -48,7 +50,7 @@ function scratchConfig() {
 /** A real server on an ephemeral port, with a real client talking to it. */
 async function withApi(
   fn: (wb: Client, store: Store, config: Config) => Promise<void>,
-  deps?: ApiDeps,
+  deps: ApiDeps = {},
 ): Promise<void> {
   const store = openStore(':memory:');
   const config = scratchConfig();
@@ -136,6 +138,39 @@ test('answering a blocked ticket resumes it', async () => {
   });
 });
 
+test('an interrupted ticket can be carried on, or restarted from the top', async () => {
+  await withApi(async (wb, store) => {
+    /** What `reconcile` leaves behind for a stage the workbench was stopped in. */
+    const stoppedMidStage = () => {
+      store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+      store.append('t1', { type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+      store.append('t1', {
+        type: 'stage_finished',
+        runId: 'interrupted',
+        outcome: 'interrupted',
+        summary: 'the workbench stopped while this stage was running',
+        sessionId: 'sess-abc',
+      });
+    };
+
+    await wb.create('a thing', '');
+    stoppedMidStage();
+    const parked = (await wb.ticket('t1')).ticket;
+    assert.equal(parked.status, 'blocked');
+    assert.equal(parked.interrupted, true, 'stopped, not broken');
+
+    await wb.carryOn('t1');
+    const carrying = (await wb.ticket('t1')).ticket;
+    assert.equal(carrying.status, 'planning');
+    assert.equal(carrying.session, 'sess-abc', 'with the run it stopped in the middle of');
+
+    // And the other way round: restarting is still there, and still throws it away.
+    stoppedMidStage();
+    await wb.restart('t1');
+    assert.equal((await wb.ticket('t1')).ticket.session, null);
+  });
+});
+
 test('asking for the merge records it, and only where there is an offer to merge', async () => {
   await withApi(async (wb, store) => {
     await wb.create('a thing', '');
@@ -162,7 +197,7 @@ test('the work-in-progress limit is readable and settable', async () => {
 });
 
 test('bad requests are refused with a reason, not a stack trace', async () => {
-  await withApi(async (wb) => {
+  await withApi(async (wb, store) => {
     await assert.rejects(() => wb.create('', ''), /needs a title/);
 
     await wb.create('a thing', '');
@@ -170,6 +205,29 @@ test('bad requests are refused with a reason, not a stack trace', async () => {
     await assert.rejects(() => wb.answer('t1', ''), /answer is needed/);
     await assert.rejects(() => wb.ticket('nope'), /no ticket nope/);
     await assert.rejects(() => wb.approve('nope'), /no ticket nope/);
+
+    // Carrying on is only for a ticket the workbench stopped mid-run. Anywhere
+    // else there is no run to come back to, and the refusal says which of the two
+    // moves was the one wanted rather than appearing to work.
+    await assert.rejects(() => wb.carryOn('t1'), /no run to carry on, so restart/);
+
+    store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+    store.append('t1', {
+      type: 'question_asked',
+      runId: 'r1',
+      question: 'which config?',
+      reasoning: 'two disagree',
+    });
+    store.append('t1', {
+      type: 'stage_finished',
+      runId: 'r1',
+      outcome: 'blocked',
+      summary: 'waiting',
+      sessionId: 'sess-abc',
+    });
+    const asked = await wb.ticket('t1');
+    await assert.rejects(() => wb.carryOn('t1'), /waiting on an answer/);
+    assert.deepEqual(await wb.ticket('t1'), asked, 'and nothing was written down');
   });
 });
 
@@ -333,6 +391,23 @@ test('offered work can be sent back, or kept and put right', async () => {
     // implement to resolve conflicts that the merge settled.
     store.append('t1', { type: 'verdict', verdict: 'accepted' });
     await assert.rejects(() => wb.changes('t1', 'one more thing'), /this ticket is over/);
+  });
+});
+
+test('merged work can be sent back to be tweaked', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('a thing', '');
+    store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    assert.equal((await wb.ticket('t1')).ticket.status, 'done');
+
+    // The expensive no was never gated on the ticket being live; the panel is what
+    // had no way of reaching it once the work had merged.
+    await wb.reject('t1', 'shorten the summary line');
+    const tweaking = (await wb.ticket('t1')).ticket;
+    assert.equal(tweaking.status, 'planning');
+    assert.equal(tweaking.rejection, 'shorten the summary line');
+    assert.equal(tweaking.offered, false);
   });
 });
 
@@ -679,6 +754,35 @@ test('a skill is refused if nothing would ever decide to read it', async () => {
   });
 });
 
+test('a name being typed comes back with a better one, and what the ticket says', async () => {
+  const asked: { title: string; body: string }[] = [];
+  await withApi(
+    async (wb) => {
+      const suggestion = await wb.checkName('Pushes', 'They give up early.');
+      assert.deepEqual(suggestion, { name: 'Retry failed pushes', why: 'it named no verb' });
+      assert.deepEqual(asked, [{ title: 'Pushes', body: 'They give up early.' }]);
+
+      // Nothing typed is nothing to ask about, and asking would cost money for it.
+      assert.deepEqual(await wb.checkName('   ', ''), { name: null });
+      assert.equal(asked.length, 1);
+    },
+    {
+      checkName: async (title, body) => {
+        asked.push({ title, body });
+        return { name: 'Retry failed pushes', why: 'it named no verb' };
+      },
+    },
+  );
+});
+
+test('with nobody to ask, the name check answers that it has nothing, and asks nobody', async () => {
+  // A workbench running fake agents wires no checker, and this is what it answers.
+  // Costing money to try the workbench out is exactly what fake agents exist to avoid.
+  await withApi(async (wb) => {
+    assert.deepEqual(await wb.checkName('Pushes', ''), { name: null });
+  });
+});
+
 test('a skill added from the board is one every stage can load', async () => {
   await withApi(async (wb, _store, config) => {
     const made = await wb.createDoc('skill', 'writing-reports');
@@ -829,13 +933,17 @@ test('the instance colour is kept in the config file, and clearing it takes the 
       JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
 
     const colour = (all: Setting[]) => all.find((s) => s.key === 'colour');
-    assert.equal(colour(await wb.settings())?.value, '', 'no colour until one is chosen');
+    const before = colour(await wb.settings());
+    assert.equal(before?.value, '', 'no colour until one is chosen');
+    // The board draws swatches by walking these, so they have to come with the setting.
+    assert.deepEqual(before?.choices, PRESET_VALUES);
 
-    const after = await wb.setSettings({ colour: '#3A7D6F' });
-    assert.equal(colour(after)?.value, '#3a7d6f', 'and it is written the one way');
+    const preset = PRESET_VALUES[0] as string;
+    const after = await wb.setSettings({ colour: preset.toUpperCase() });
+    assert.equal(colour(after)?.value, preset, 'and it is written the one way');
     // The board reads it every time it loads, so saying "next start" would be a lie.
     assert.equal(colour(after)?.restart, false);
-    assert.equal(file()['colour'], '#3a7d6f');
+    assert.equal(file()['colour'], preset);
 
     // No colour is the default, so the file stops mentioning it rather than holding
     // an empty string nobody can read a decision out of.
@@ -865,14 +973,17 @@ test('the ticket prefixes are a list in the config file, and the default is take
   });
 });
 
-test('something that is not a colour is refused, and nothing is written', async () => {
+test('a colour that is not one of the presets is refused, and nothing is written', async () => {
   await withApi(async (wb) => {
     const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
     const file = () =>
       JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
 
-    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), /Instance colour must be a/);
-    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), /Instance colour must be a/);
+    const complaint = /Instance colour must be one of/;
+    await assert.rejects(() => wb.setSettings({ colour: 'blue' }), complaint);
+    await assert.rejects(() => wb.setSettings({ colour: '#xyz' }), complaint);
+    // Well formed and still not on offer: the point of the set is that it is the set.
+    await assert.rejects(() => wb.setSettings({ colour: '#3a7d6f' }), complaint);
     assert.equal('colour' in file(), false);
   });
 });

@@ -199,11 +199,17 @@ function atStage(t: Ticket, state: string, stage: Stage, held: readonly Ticket[]
 
 /**
  * Whether the rejection on the ticket is what it is doing now, rather than what
- * happened to it once. It is never cleared — the brief and the hand-over message
- * both read it — so only the ticket actually acting on it should lead with it.
+ * happened to it once. It is cleared only when the plan answering it is approved
+ * — the brief and the hand-over message read it until then — so it stands for
+ * that whole span, the gate included: the plan waiting there is the answer to
+ * that objection, and approving it is judging whether it answers.
  */
 export function rejectionStands(t: Ticket): boolean {
-  return t.status === 'planning' || (t.status === 'blocked' && t.stage === 'plan');
+  return (
+    t.status === 'planning' ||
+    t.status === 'plan_gate' ||
+    (t.status === 'blocked' && t.stage === 'plan')
+  );
 }
 
 /** The same for the changes asked for: the stage putting them right, and no other. */
@@ -222,6 +228,21 @@ export function changesStand(t: Ticket): boolean {
  */
 export function sendableBack(t: Ticket): boolean {
   return !ended(t) && !t.running && t.status !== 'backlog' && t.status !== 'queued';
+}
+
+/**
+ * Whether a finished ticket can be sent back to be tweaked. `done` is the one thing
+ * `sendableBack` refuses that there is still something to say to: the work merged,
+ * and now it wants adjusting. Sending it back is the same move as *Replan it* — a
+ * new plan, carrying what to change — so it is the same event, from the one status
+ * that had no way back at all.
+ *
+ * Its own predicate rather than a looser `sendableBack`, which also gates *Ask for
+ * changes*: the API refuses that one for an ended ticket, so widening it would put
+ * a button on the panel that answers with an error.
+ */
+export function tweakable(t: Ticket): boolean {
+  return t.status === 'done';
 }
 
 /**
@@ -444,6 +465,9 @@ export function statusOf(run: Run): string {
   if (run.outcome === 'running') return 'running';
   if (run.outcome === 'blocked') return 'asked you';
   if (run.outcome === 'failed') return 'failed';
+  // The workbench stopped under it. Nothing went wrong, and the run is still there
+  // to be carried on — reading it as either `failed` or `done` says the opposite.
+  if (run.outcome === 'interrupted') return 'stopped';
   if (run.rejected !== null) return 'did not approve';
   if (run.changes !== null) return 'asked for changes';
   if (run.checks !== null && run.checks.failed > 0) return 'checks failed';
@@ -453,10 +477,12 @@ export function statusOf(run: Run): string {
 /**
  * How that word should read: as progress, as a problem, or as still going. Asking
  * for changes is none of the three — the work was sound and is being finished —
- * so it gets no colour rather than borrowing one that means something else.
+ * so it gets no colour rather than borrowing one that means something else. Being
+ * stopped is the same kind of thing, for the same reason.
  */
 export function toneOf(run: Run): Tone {
   if (run.outcome === 'running') return 'going';
+  if (run.outcome === 'interrupted') return 'note';
   if (run.outcome === 'failed' || run.rejected !== null) return 'bad';
   if (run.checks !== null && run.checks.failed > 0) return 'bad';
   if (run.changes !== null) return 'note';

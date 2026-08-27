@@ -5,12 +5,15 @@ import type { Ticket } from '../domain/ticket.ts';
  *
  * Stopping already waits: nothing new starts, and every stage in flight is left to
  * finish. What it did not do was say so, and a wait with no account of itself is one
- * a person ends with a second Ctrl-C — which is the one that costs money. A stage
- * abandoned mid-run is run again from the top, and what it has already spent is gone.
+ * a person ends with a second Ctrl-C. That press is no longer the expensive one it
+ * was: an abandoned stage keeps its conversation, and the board offers to carry it
+ * on from where it got to. What it still costs is a stage left unfinished, and a
+ * decision from whoever comes back to it.
  *
  * So the whole of this is telling someone what they are waiting for and what ending
- * it early would throw away. Its own module because the command line runs itself on
- * import, and a message worth testing should not need the process started to read it.
+ * it early would leave them holding. Its own module because the command line runs
+ * itself on import, and a message worth testing should not need the process started
+ * to read it.
  */
 
 /** What is still in flight, and what waiting for it means. */
@@ -30,8 +33,8 @@ export function draining(running: readonly Ticket[]): string {
         `  ${t.id.padEnd(id)}  ${(t.stage ?? UNKNOWN).padEnd(stage)}  ${money(t.costUsd)} so far`,
     ),
     '',
-    'Ctrl-C again to stop now — an abandoned stage runs again from the top, and',
-    'what it has spent is spent.',
+    'Ctrl-C again to stop now — each keeps its conversation and can carry on from',
+    'where it got to, but not until you pick it back up.',
   ].join('\n');
 }
 
@@ -42,7 +45,7 @@ export function abandoning(running: readonly Ticket[]): string {
   const ids = running.map((t) => t.id).join(', ');
   return [
     `stopped, abandoning ${count(running)}: ${ids}.`,
-    'Each will be waiting for you, and starts again from the top of its stage.',
+    'Each will be waiting for you, and can carry on from where it got to.',
   ].join('\n');
 }
 

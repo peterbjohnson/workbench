@@ -62,8 +62,9 @@ export type StageRunnerDeps = {
 type Attempt = { result: RunResult; crashed: boolean };
 
 /**
- * The one place that talks to the model service. Everything above it deals in
- * tickets, stages and outcomes; nothing above it knows this SDK exists.
+ * Where a stage talks to the model service. Everything above it deals in tickets,
+ * stages and outcomes; nothing above it knows this SDK exists. The only other file
+ * that calls the service is `nameCheck.ts`, which is one cheap question and no run.
  */
 export function createStageRunner(deps: StageRunnerDeps): StageRunner {
   return async function runStage({
@@ -120,7 +121,14 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     // lives in ~/.claude/projects on one machine and can simply be gone.
     if (resume !== undefined) {
       const before = spent;
-      const resumed = await runOnce(carryOnFrom(ticket.answer ?? ''), resume);
+      // Two reasons a conversation is waiting, and they are told apart by whether
+      // there is an answer to deliver. Nothing else distinguishes them, and the
+      // agent needs to be told which happened: one is a reply to its question,
+      // the other is nothing it did.
+      const resumed = await runOnce(
+        ticket.answer === null ? pickUpAgain() : carryOnFrom(ticket.answer),
+        resume,
+      );
       // Only fall back if the attempt got nowhere. One that spent money before
       // failing has done some of the work, and re-running it would pay twice —
       // which is the very thing this whole feature exists to stop. Anything that
@@ -228,7 +236,13 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
 
       try {
         for await (const message of session) {
-          sessionId ??= message.session_id;
+          // Recorded the moment the conversation has a name, rather than when the
+          // run ends: a run that is killed never gets to report anything, and this
+          // is the only thing left afterwards that says what it was.
+          if (sessionId === undefined && message.session_id !== undefined) {
+            sessionId = message.session_id;
+            emit({ type: 'session_started', runId, sessionId });
+          }
           if (message.type === 'system' && message.subtype === 'init') {
             // What the run is actually working with. Worth one line in the record: it is
             // the only place that says which credential was used and whether the skills
@@ -331,6 +345,22 @@ function carryOnFrom(answer: string): string {
     answer,
     '',
     'Carry on from where you stopped. You already have the ticket, everything you',
+    'had read and the work you had done — do not start again.',
+  ].join('\n');
+}
+
+/**
+ * What a run picked back up after the workbench stopped is sent. Short for the same
+ * reason as `carryOnFrom` — the conversation still holds everything — and it says
+ * what happened, because nothing went wrong with the work and an agent told only
+ * "carry on" would go looking for what it did wrong.
+ */
+function pickUpAgain(): string {
+  return [
+    'The workbench was stopped while you were working, and has been started again.',
+    'Nothing was wrong with what you were doing.',
+    '',
+    'Carry on from where you got to. You already have the ticket, everything you',
     'had read and the work you had done — do not start again.',
   ].join('\n');
 }

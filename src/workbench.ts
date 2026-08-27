@@ -8,6 +8,7 @@ import { whatHappenedTo } from './agents/brief.ts';
 import { createOrchestrator, type Orchestrator } from './orchestrator/loop.ts';
 import { createStageRunner } from './run/runStage.ts';
 import { createChatRunner } from './run/chat.ts';
+import { createNameChecker } from './run/nameCheck.ts';
 import { cachedCredentials } from './run/credentials.ts';
 import { createFakeRunner } from './run/fakeRunner.ts';
 import { createFakeChatRunner } from './run/fakeChatRunner.ts';
@@ -84,6 +85,8 @@ export async function startWorkbench(
     { pollMs: config.pollMs },
   );
 
+  // Fake agents spend nothing, and a name check is a model call like any other:
+  // trying the workbench out must not be the one thing that quietly costs money.
   const api = createApi(store, config, {
     chat: fake
       ? createFakeChatRunner()
@@ -98,6 +101,7 @@ export async function startWorkbench(
           protectedPaths: config.protectedPaths,
           about: readAbout(config),
         }),
+    ...(fake ? {} : { checkName: createNameChecker(config) }),
   });
   const port = await api.listen(config.port);
 

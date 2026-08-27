@@ -30,7 +30,10 @@ export function Card(props: {
     stopped && <span key="stopped">{t.status === 'gave_up' ? 'given up' : 'cancelled'}</span>,
     needsYou(t) && (
       <span key="needs" className="flag">
-        needs you
+        {/* Both are waiting on you, and they are not the same news. A ticket the
+            workbench was stopped in the middle of is not one that broke: there is
+            a run underneath it, and what it needs is to be told to carry on. */}
+        {t.interrupted ? 'stopped mid-stage' : 'needs you'}
       </span>
     ),
     t.running && (
