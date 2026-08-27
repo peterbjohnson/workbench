@@ -48,30 +48,61 @@ export function createWarmPool(
   const target = deps.standbys ?? STANDBYS;
   const idleMs = deps.idleMs ?? IDLE_MS;
 
+  /** Every subprocess started and not yet let go of, waiting or mid-answer. */
+  const live = new Set<Standby>();
   let waiting: Standby[] = [];
   let idle: NodeJS.Timeout | undefined;
+  let closed = false;
+
+  function start(): Standby {
+    const standby = spawn(run);
+    live.add(standby);
+    return standby;
+  }
+
+  function letGo(standby: Standby): void {
+    live.delete(standby);
+    standby.close();
+  }
 
   function topUp(): void {
-    while (waiting.length < target) waiting.push(spawn(run));
+    if (closed) return;
+    while (waiting.length < target) waiting.push(start());
   }
 
   /** Nothing asked and nobody warming for long enough means nobody is there. */
   function countdown(): void {
     clearTimeout(idle);
+    if (closed) return;
     idle = setTimeout(drain, idleMs);
   }
 
   function drain(): void {
-    for (const standby of waiting) standby.close();
+    for (const standby of waiting) letGo(standby);
     waiting = [];
+  }
+
+  /** One ask down one standby, which is spent by the end of it either way. */
+  async function askOf(standby: Standby, prompt: string): Promise<string> {
+    try {
+      return await standby.ask(prompt);
+    } finally {
+      letGo(standby);
+    }
   }
 
   return {
     ask: async (prompt) => {
-      // No standby is slow, not broken: a cold spawn is what every ask used to be.
-      const standby = waiting.shift() ?? spawn(run);
       try {
-        return await standby.ask(prompt);
+        // No standby is slow, not broken: a cold spawn is what every ask used to be.
+        return await askOf(waiting.shift() ?? start(), prompt);
+      } catch (failed) {
+        // A standby can be gone by the time it is asked — a boot that got nowhere,
+        // a credential refused, a machine that slept — and the question must not go
+        // with it. One more, down a process that is certainly new. A pool that is
+        // shutting down starts nothing: that answer was on its way out anyway.
+        if (closed) throw failed;
+        return await askOf(start(), prompt);
       } finally {
         // Whether it answered or died, that one is spent. Someone asking once is
         // about to ask again, so the next is got ready while they type.
@@ -84,8 +115,15 @@ export function createWarmPool(
       countdown();
     },
     close: async () => {
+      // Closed first, so that an ask still in flight settles into a pool that
+      // starts nothing back up. Ctrl-C during a name check is the ordinary way
+      // this happens, and a top-up after it held `wb serve` open for five minutes.
+      closed = true;
       clearTimeout(idle);
-      drain();
+      // All of them, not only what is waiting: the standby handed to that ask is a
+      // subprocess too, and it is the one nothing else can reach.
+      for (const standby of [...live]) letGo(standby);
+      waiting = [];
     },
   };
 }
