@@ -428,6 +428,79 @@ export function details(e: Event, shown = ''): [field: string, value: string][] 
     .filter(([, value]) => value !== '');
 }
 
+type ToolCall = Extract<Event, { type: 'tool_requested' }>;
+
+/**
+ * One row of the raw log: an event on its own, or a burst of tool calls that opens
+ * on to the calls it is standing for.
+ */
+export type LogItem =
+  | { kind: 'one'; event: Event }
+  | {
+      kind: 'tools';
+      runId: string;
+      at: string;
+      calls: ToolCall[];
+      /** The burst in a phrase — `Read ×3, Grep`, in the order the tools first ran. */
+      said: string;
+      /** How many of them the guard turned down, which the summary line says out loud. */
+      refused: number;
+    };
+
+/**
+ * The log with each turn's tool calls folded into one row. A stage that fires five
+ * `Read`s takes five near-identical lines otherwise, and the log reads as a wall.
+ *
+ * Adjacency is the grouping key: consecutive `tool_requested` events of the same run,
+ * nothing else between them. No event records which turn a call belonged to — the
+ * `PreToolUse` hook is handed the tool and its input and nothing else — and adjacency
+ * is never wrong about what it claims, where a turn counter stamped off a different
+ * channel would sometimes be. A turn's words arrive as the `agent_said` just before
+ * its calls, so a group sits under the text that ordered it.
+ *
+ * A lone call stays a plain line: a disclosure triangle over one row buys nothing.
+ */
+export function grouped(events: readonly Event[]): LogItem[] {
+  const items: LogItem[] = [];
+  let burst: ToolCall[] = [];
+
+  const flush = () => {
+    const [head] = burst;
+    if (head === undefined) return;
+    if (burst.length === 1) items.push({ kind: 'one', event: head });
+    else
+      items.push({
+        kind: 'tools',
+        runId: head.runId,
+        at: head.at,
+        calls: burst,
+        said: tally(burst),
+        refused: burst.filter((c) => !c.allowed).length,
+      });
+    burst = [];
+  };
+
+  for (const e of events) {
+    if (e.type === 'tool_requested') {
+      if (burst[0] !== undefined && burst[0].runId !== e.runId) flush();
+      burst.push(e);
+      continue;
+    }
+    flush();
+    items.push({ kind: 'one', event: e });
+  }
+  flush();
+
+  return items;
+}
+
+/** What a burst of calls was, counted by tool in the order each first appears. */
+function tally(calls: readonly ToolCall[]): string {
+  const counts = new Map<string, number>();
+  for (const c of calls) counts.set(c.tool, (counts.get(c.tool) ?? 0) + 1);
+  return [...counts].map(([tool, n]) => (n > 1 ? `${tool} ×${n}` : tool)).join(', ');
+}
+
 /** One stage run, as much of it as has happened. What a card shows per stage. */
 export type Run = {
   stage: Stage;

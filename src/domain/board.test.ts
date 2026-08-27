@@ -7,6 +7,7 @@ import {
   COLUMNS,
   columnFor,
   details,
+  grouped,
   headline,
   inColumn,
   madeInto,
@@ -252,6 +253,52 @@ test('an event opens to what its line does not say, and to nothing it does', () 
   // nothing, or because the line is already saying the only thing it does.
   assert.deepEqual(details(one({ type: 'plan_approved' })), []);
   assert.deepEqual(details(one({ type: 'stage_started', stage: 'plan', runId: 'r1' }), 'plan'), []);
+});
+
+test("a turn's tool calls are one line of the log, which opens on to them", () => {
+  const call = (tool: string, runId = 'r1', allowed = true): EventBody => ({
+    type: 'tool_requested',
+    runId,
+    tool,
+    input: {},
+    allowed,
+  });
+
+  const items = grouped(
+    log(
+      { type: 'stage_started', stage: 'plan', runId: 'r1' },
+      { type: 'agent_said', runId: 'r1', text: 'looking' },
+      call('Read'),
+      call('Read'),
+      call('Grep', 'r1', false),
+      // Words between two calls are a turn boundary, so the group stops here.
+      { type: 'agent_said', runId: 'r1', text: 'now writing' },
+      call('Write'),
+      // Another run's calls are another group, adjacent or not.
+      call('Read', 'r2'),
+      call('Read', 'r2'),
+    ),
+  );
+
+  assert.deepEqual(
+    items.map((i) => (i.kind === 'one' ? i.event.type : `${i.calls.length}: ${i.said}`)),
+    [
+      'stage_started',
+      'agent_said',
+      '3: Read ×2, Grep',
+      'agent_said',
+      // One call on its own stays a plain line — a triangle over one row buys nothing.
+      'tool_requested',
+      '2: Read ×2',
+    ],
+  );
+
+  const burst = items[2];
+  assert.equal(burst?.kind === 'tools' && burst.refused, 1, 'a refusal is counted on the line');
+  assert.equal(burst?.kind === 'tools' && burst.runId, 'r1');
+  assert.equal(burst?.kind === 'tools' && burst.at, '2026-08-05T02', 'the group is when it began');
+
+  assert.deepEqual(grouped([]), [], 'nothing folds to nothing');
 });
 
 test('a run that rejected the work did not just complete', () => {
