@@ -157,16 +157,101 @@ export function mergeArgs(prUrl: string): string[] {
   return ['pr', 'merge', prUrl, '--squash'];
 }
 
+/** Refusals that are a decision: asking again gets the same answer. */
+const SETTLED_REFUSALS = [
+  'base branch policy',
+  'required status',
+  'review is required',
+  'changes requested',
+  'permission',
+];
+
+/** Refusals that mean GitHub has not caught up with the base that just moved. */
+const NOT_CAUGHT_UP = [
+  'not mergeable',
+  'cannot be cleanly created',
+  'base branch was modified',
+  'try the merge again',
+];
+
+/**
+ * Whether a `gh pr merge` refusal is worth asking again about.
+ *
+ * Merging moves the base under every other pull request, and GitHub works out
+ * whether those can still be merged on its own schedule. Asked in between it says
+ * no — in the same words it uses for one that genuinely cannot be merged, which is
+ * why this is two lists and not a flag, and why the settled refusals are checked
+ * first: GitHub words several of them as "not mergeable" too.
+ *
+ * A real conflict never reaches here — `doMergePr` brings the base into the branch
+ * first and blocks on a clash — so retrying the ambiguous ones is bounded, and the
+ * ticket still blocks after the last attempt. Its own function, like `mergeArgs`,
+ * so the decision can be tested without a network.
+ */
+export function retryableMergeFailure(message: string): boolean {
+  const said = message.toLowerCase();
+  if (SETTLED_REFUSALS.some((phrase) => said.includes(phrase))) return false;
+  return NOT_CAUGHT_UP.some((phrase) => said.includes(phrase));
+}
+
+/**
+ * Whether the pull request has already merged, out of what `gh pr view` says about
+ * it. Sibling of `reusablePr`, and the same input.
+ *
+ * `gh pr merge` on a merged pull request is an error, and the workbench can arrive
+ * at one honestly: the merge may have landed and the answer been lost — to a retry,
+ * or to `wb serve` being restarted with the request still standing.
+ */
+export function alreadyMerged(stdout: string): boolean {
+  return (JSON.parse(stdout) as { state?: string }).state === 'MERGED';
+}
+
+/** How many times `gh pr merge` is asked, and how long is left between the asks. */
+const MERGE_ATTEMPTS = 4;
+const mergeBackoffMs = (attempt: number) => 3_000 * 2 ** (attempt - 1);
+
 /**
  * Pushes the branch and merges the pull request.
  *
  * The push first because the branch may have gained a commit the pull request has
  * never seen: bringing the base in happens here, immediately before this, and
  * merging without it would merge the code as GitHub last saw it.
+ *
+ * Asked more than once, because `gh pr merge` asks whether the branch can be merged
+ * once and never again: a base that moved a moment ago is answered no, the ticket
+ * blocks, and it looks exactly like a real conflict. The state is read before the
+ * first ask and after every refusal, so a merge that has already landed is finished
+ * rather than asked for a second time.
  */
 export async function mergePr(wt: Worktree, prUrl: string): Promise<void> {
+  if (await merged(prUrl, wt.path)) return;
+
   await run('git', ['push', 'origin', wt.branch], { cwd: wt.path });
-  await run('gh', mergeArgs(prUrl), { cwd: wt.path });
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run('gh', mergeArgs(prUrl), { cwd: wt.path });
+      return;
+    } catch (error) {
+      if (await merged(prUrl, wt.path)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt === MERGE_ATTEMPTS || !retryableMergeFailure(message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, mergeBackoffMs(attempt)));
+    }
+  }
+}
+
+/**
+ * Whether the pull request has merged, as the host has it. Never throws: being
+ * unable to read is a blip, and what settles whether it merged is the merge.
+ */
+async function merged(prUrl: string, cwd: string): Promise<boolean> {
+  try {
+    const { stdout } = await run('gh', ['pr', 'view', prUrl, '--json', 'state'], { cwd });
+    return alreadyMerged(stdout);
+  } catch {
+    return false;
+  }
 }
 
 export async function verdict(prUrl: string, cwd: string): Promise<Verdict> {

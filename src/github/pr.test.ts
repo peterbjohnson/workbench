@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mergeArgs, readVerdict, reusablePr } from './pr.ts';
+import { alreadyMerged, mergeArgs, readVerdict, retryableMergeFailure, reusablePr } from './pr.ts';
 
 test('a merged pull request is an acceptance', () => {
   assert.deepEqual(readVerdict({ state: 'MERGED' }), { kind: 'accepted' });
@@ -97,6 +97,40 @@ test('a branch keeps its pull request when it is offered again — unless that o
   assert.equal(reusablePr(view('MERGED')), null);
 
   assert.equal(reusablePr('{}'), null, 'and no pull request is no pull request');
+});
+
+test('GitHub not having caught up is worth asking again about', () => {
+  // The base moved a moment ago and GitHub has not finished working out what that
+  // did to this pull request. Asked now it says no; asked again it says yes.
+  for (const message of [
+    'GraphQL: Pull Request is not mergeable (mergePullRequest)',
+    'X Pull request #7 is not mergeable: the merge commit cannot be cleanly created.',
+    'GraphQL: Base branch was modified. Review and try the merge again.',
+  ]) {
+    assert.equal(retryableMergeFailure(message), true, message);
+  }
+});
+
+test('a refusal that is a decision blocks the ticket rather than being retried', () => {
+  // GitHub words most of these as "not mergeable" too, so what tells them apart is
+  // the reason it gives after it — asking again would only get the same answer.
+  for (const message of [
+    'X Pull request #7 is not mergeable: the base branch policy prohibits the merge.',
+    'X Pull request #7 is not mergeable: required status checks have not passed.',
+    'X Pull request #7 is not mergeable: at least 1 approving review is required.',
+    'GraphQL: You do not have permission to merge this pull request',
+    'error: failed to push some refs',
+  ]) {
+    assert.equal(retryableMergeFailure(message), false, message);
+  }
+});
+
+test('a pull request that has already merged is not merged again', () => {
+  // A retry whose merge landed, or a workbench restarted with the request still
+  // standing: `gh pr merge` on a merged pull request is an error, not a no-op.
+  assert.equal(alreadyMerged(JSON.stringify({ state: 'MERGED' })), true);
+  assert.equal(alreadyMerged(JSON.stringify({ state: 'OPEN' })), false);
+  assert.equal(alreadyMerged('{}'), false, 'and nothing read is nothing merged');
 });
 
 test('an approving review alone does not accept — only merging does', () => {
