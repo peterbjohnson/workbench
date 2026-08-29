@@ -51,7 +51,15 @@ function harness(
     /** The manager's answer. A function when it differs by ticket. */
     verdict?: Verdict | ((ticketId: string) => Verdict);
     openPr?: () => Promise<string>;
-    merge?: () => Promise<void>;
+    merge?: (ticketId: string) => Promise<void>;
+    /**
+     * What tidying up does. Somewhere to watch an acceptance from: it is the first
+     * thing that follows one, whether the merge was asked for here or found on the
+     * host, and the pass over the other branches comes straight after it.
+     */
+    discard?: (ticketId: string) => Promise<void>;
+    /** The store to drive. Its own in-memory one unless a test needs two over one. */
+    store?: Store;
     credentials?: () => Credentials;
     /** What the standing checks say. None configured is the default. */
     checks?: CheckRun[] | (() => CheckRun[]);
@@ -69,7 +77,7 @@ function harness(
     unresolved?: (paths: readonly string[]) => string[];
   } = {},
 ): Harness {
-  const store = openStore(':memory:');
+  const store = opts.store ?? openStore(':memory:');
   // A base is reported only by the call that actually cuts the branch, as the real
   // one does — otherwise every stage re-announces a branch that already exists.
   const branched = new Set<string>();
@@ -107,6 +115,7 @@ function harness(
       },
       discard: async (id) => {
         tidied.push(id);
+        await opts.discard?.(id);
       },
     },
     host: {
@@ -120,7 +129,7 @@ function harness(
         return typeof configured === 'function' ? configured(t.id) : configured;
       },
       merge: async (t) => {
-        await opts.merge?.();
+        await opts.merge?.(t.id);
         prsMerged.push(t.prUrl ?? '');
       },
     },
@@ -150,7 +159,9 @@ function harness(
     announced,
     close: async () => {
       await orch.stop();
-      store.close();
+      // A store the test brought is the test's to close: the point of sharing one
+      // is that a second orchestrator opens over it after this one has gone.
+      if (!opts.store) store.close();
     },
   };
 }
@@ -1416,6 +1427,139 @@ test('a merge the code host refuses parks the ticket rather than finishing it', 
     assert.deepEqual(h.tidied, [], 'nothing was accepted, so nothing is thrown away');
   } finally {
     await h.close();
+  }
+});
+
+/** One turn of the event loop, so anything that overlaps has the chance to. */
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+test('one pull request merges at a time, the pass over the others included', async () => {
+  // Merging brings the new base into every other offered branch, one at a time. Two
+  // merges at once put two of those passes in the same worktrees.
+  const order: string[] = [];
+  const h = harness({
+    merge: async (id) => {
+      order.push(`merge ${id}`);
+      await turn();
+    },
+    discard: async (id) => {
+      order.push(`pass after ${id}`);
+      await turn();
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    h.store.append('t2', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(order, ['merge t1', 'pass after t1', 'merge t2', 'pass after t2']);
+    assert.deepEqual(h.prsMerged, ['https://example/pr/t1', 'https://example/pr/t2']);
+    assert.equal(h.store.ticket('t1').status, 'done');
+    assert.equal(h.store.ticket('t2').status, 'done');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a poll that finds three pull requests merged takes them one at a time', async () => {
+  // No click is needed for the same pile-up: three merged on github.com between
+  // polls used to start three passes over the same branches at once.
+  const order: string[] = [];
+  const h = harness({
+    verdict: { kind: 'accepted' },
+    discard: async (id) => {
+      order.push(`enter ${id}`);
+      await turn();
+      order.push(`exit ${id}`);
+    },
+  });
+  try {
+    for (const id of ['t1', 't2', 't3']) standing(h.store, id);
+    await h.orch.idle();
+
+    assert.deepEqual(order, ['enter t1', 'exit t1', 'enter t2', 'exit t2', 'enter t3', 'exit t3']);
+    for (const id of ['t1', 't2', 't3']) assert.equal(h.store.ticket(id).status, 'done');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a merge asked for while one is running waits, is told so, and then merges', async () => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = harness({
+    merge: async (id) => {
+      if (id === 't1') await held;
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    h.store.append('t2', { type: 'merge_requested' });
+
+    const before = h.store.eventsFor('t2').length;
+    await h.orch.tick();
+    await h.orch.tick();
+    await h.orch.tick();
+
+    assert.deepEqual(h.announced, ["t2 is queued behind t1's merge"], 'said once, not once a tick');
+    assert.equal(h.store.eventsFor('t2').length, before, 'nothing is recorded while it waits');
+    assert.equal(h.store.ticket('t2').mergeRequested, true, 'the request still stands');
+    assert.deepEqual(h.prsMerged, [], 'and nothing of it has happened yet');
+
+    release();
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsMerged, ['https://example/pr/t1', 'https://example/pr/t2']);
+    assert.equal(h.store.ticket('t2').status, 'done', 'the queue drains on its own');
+  } finally {
+    release();
+    await h.close();
+  }
+});
+
+test('a merge left queued is still asked for after the workbench restarts', async () => {
+  // The queue needs no state of its own: a merge asked for is a durable event, and
+  // queuing is only this tick declining to act on it.
+  const store = openStore(':memory:');
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const first = harness({
+    store,
+    merge: async (id) => {
+      if (id === 't1') await held;
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    store.append('t1', { type: 'merge_requested' });
+    store.append('t2', { type: 'merge_requested' });
+    await first.orch.tick();
+
+    assert.deepEqual(first.prsMerged, [], 'the first merge has not finished');
+    assert.equal(store.ticket('t2').mergeRequested, true);
+  } finally {
+    release();
+    await first.close();
+  }
+
+  const second = harness({ store });
+  try {
+    await second.orch.idle();
+
+    assert.deepEqual(second.prsMerged, ['https://example/pr/t2'], 'picked up where it left off');
+    assert.equal(store.ticket('t2').status, 'done');
+  } finally {
+    await second.close();
+    store.close();
   }
 });
 

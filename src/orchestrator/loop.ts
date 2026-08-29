@@ -204,6 +204,20 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   const inFlight = new Map<string, Promise<void>>();
   /** How a cancellation reaches a run that has already started. */
   const aborts = new Map<string, AbortController>();
+  /**
+   * The merge gate: the ticket merging, and any that arrived while it was. One
+   * merge at a time, the pass over every other open pull request included.
+   *
+   * A merge lands on the base and then brings that base into every other offered
+   * branch, one at a time. Two at once put two passes in the same worktrees, and no
+   * click is needed for that — a poll that finds three pull requests merged on
+   * github.com starts three. A set rather than a flag because insertion order names
+   * the holder, which is what a ticket waiting is told it is waiting for.
+   */
+  const mergeGate = new Set<string>();
+  let mergeChain: Promise<unknown> = Promise.resolve();
+  /** Tickets already told they are waiting, so it is said once and not once a tick. */
+  const toldTheyWait = new Set<string>();
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
   let listening = false;
@@ -226,6 +240,25 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     if (event.type === 'cancelled') aborts.get(event.ticketId)?.abort();
     if (listening) void tick();
   });
+
+  /**
+   * Queues `fn` behind whatever else is merging, and runs it with nothing else.
+   *
+   * The gate is taken here rather than when the chain reaches `fn`, so a tick that
+   * runs in between sees the queue and leaves the ticket alone. What fails is the
+   * caller's to answer — the chain swallows it, because the next merge in the queue
+   * is not the one that failed and must still be let through.
+   */
+  function runMerge<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    mergeGate.add(id);
+    toldTheyWait.delete(id);
+    const next = mergeChain.then(fn);
+    const done = () => {
+      mergeGate.delete(id);
+    };
+    mergeChain = next.then(done, done);
+    return next;
+  }
 
   /**
    * Whether agents may run at all. Being logged out is not a broken workbench and
@@ -324,6 +357,18 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       // Only running a stage needs the model service. Opening a pull request, reading
       // a verdict and giving up are the workbench's own work and carry on regardless.
       if (action.kind === 'run_stage' && !mayRunAgents) continue;
+      // Queued, not refused: nothing is appended and `mergeRequested` still stands,
+      // so the tick after the gate frees is the one that merges it — in this process
+      // or in the one that replaces it, since the request is a durable event and the
+      // queue is only ever this tick declining to act on it.
+      if (action.kind === 'merge_pr' && mergeGate.size > 0) {
+        if (!toldTheyWait.has(ticket.id)) {
+          toldTheyWait.add(ticket.id);
+          deps.announce(`${ticket.id} is queued behind ${[...mergeGate][0]}'s merge`);
+        }
+        active = true;
+        continue;
+      }
       if (action.kind === 'run_stage') busy.add(ticket.id);
 
       if (action.kind !== 'poll_verdict') active = true;
@@ -767,7 +812,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       reason: verdict.kind === 'rejected' ? verdict.reason : undefined,
     });
 
-    if (verdict.kind === 'accepted') await accepted(ticket);
+    // Behind the same gate as a merge asked for here: one poll can find three pull
+    // requests merged on github.com, and three passes over the same worktrees at
+    // once is what blocked t9 four times in 320ms.
+    if (verdict.kind === 'accepted') await runMerge(ticket.id, () => accepted(ticket));
   }
 
   /**
@@ -782,14 +830,19 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * The verdict is recorded here rather than left for the next poll to read off
    * the host: the ticket leaves `awaiting_verdict` at once, so a second tick
    * cannot arrive and merge what has already been merged.
+   *
+   * All of it behind the merge gate, the pass over the other branches included: see
+   * `runMerge` for what two of those at once does.
    */
   async function doMergePr(ticket: Ticket): Promise<void> {
-    const { path: worktree } = await prepare(ticket);
-    if (!(await refresh(ticket, worktree))) return;
+    await runMerge(ticket.id, async () => {
+      const { path: worktree } = await prepare(ticket);
+      if (!(await refresh(ticket, worktree))) return;
 
-    await deps.host.merge(ticket);
-    store.append(ticket.id, { type: 'verdict', verdict: 'accepted' });
-    await accepted(ticket);
+      await deps.host.merge(ticket);
+      store.append(ticket.id, { type: 'verdict', verdict: 'accepted' });
+      await accepted(ticket);
+    });
   }
 
   /** What follows work being accepted, however the acceptance was arrived at. */
