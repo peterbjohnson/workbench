@@ -83,20 +83,7 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case 'new': {
-      // Flags first, in any order, and what is left is the title and the body.
-      // Reading `--from` by position alone worked until there were two flags.
-      const rest = [...args];
-      const takeFlag = (name: string): boolean => {
-        const at = rest.indexOf(name);
-        if (at === -1) return false;
-        rest.splice(at, 1);
-        return true;
-      };
-      const takeValue = (name: string): string | undefined => {
-        const at = rest.indexOf(name);
-        return at === -1 ? undefined : rest.splice(at, 2)[1];
-      };
-
+      const { rest, takeFlag, takeValue } = options(args);
       const noGate = takeFlag('--no-approval');
       const from = takeValue('--from');
       const after = takeValue('--after');
@@ -142,13 +129,30 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'edit': {
-      const [id, title, body] = args;
+      const { rest, takeFlag } = options(args);
+      const noGate = takeFlag('--no-approval');
+      const gate = takeFlag('--approval');
+      const [id, title, body] = rest;
+
+      const unknown = rest.find((arg) => arg.startsWith('--'));
+      if (unknown !== undefined) return fail(`unknown option ${unknown}`);
       if (!id) return fail('which ticket?');
-      if (!title) return fail('a ticket needs a title');
+      if (noGate && gate) return fail('--approval or --no-approval, not both');
+      // The gate can be said on its own; the words only with a title, because a
+      // ticket needs one.
+      if (!title && !noGate && !gate) return fail('a ticket needs a title');
+
       // Omitting the instructions leaves them alone rather than wiping them: losing
-      // what you wrote by forgetting an argument is not a thing this should do.
-      const ticket = await wb.edit(id, body === undefined ? { title } : { title, body });
+      // what you wrote by forgetting an argument is not a thing this should do. The
+      // same for everything else unsaid.
+      const ticket = await wb.edit(id, {
+        ...(title ? { title } : {}),
+        ...(body === undefined ? {} : { body }),
+        ...(noGate ? { requiresApproval: false } : gate ? { requiresApproval: true } : {}),
+      });
       console.log(`${ticket.id}  ${ticket.title}`);
+      if (noGate) console.log('it will build its own plan without stopping to be approved');
+      if (gate) console.log('its plan will stop to be approved');
       return 0;
     }
 
@@ -734,6 +738,25 @@ async function unpushedBase(config: Config): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Flags first, in any order, and what is left is positional. Reading `--from` by
+ * position alone worked until there were two flags.
+ */
+function options(args: readonly string[]) {
+  const rest = [...args];
+  const takeFlag = (name: string): boolean => {
+    const at = rest.indexOf(name);
+    if (at === -1) return false;
+    rest.splice(at, 1);
+    return true;
+  };
+  const takeValue = (name: string): string | undefined => {
+    const at = rest.indexOf(name);
+    return at === -1 ? undefined : rest.splice(at, 2)[1];
+  };
+  return { rest, takeFlag, takeValue };
 }
 
 function fail(message: string): number {

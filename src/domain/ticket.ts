@@ -41,10 +41,11 @@ export type Ticket = {
    */
   waitsFor: string[];
   /**
-   * Whether a finished plan stops for the manager. Decided when the ticket is
-   * written and true unless it says otherwise: the gate is the one place a person
-   * sees the work before any money is spent building it, and skipping it is a
-   * thing to choose rather than a thing to forget.
+   * Whether a finished plan stops for the manager. True unless the ticket says
+   * otherwise — when it is written, or any time before the plan is finished, which
+   * is the one moment this is read: the gate is the one place a person sees the
+   * work before any money is spent building it, and skipping it is a thing to
+   * choose rather than a thing to forget.
    *
    * It moves the gate, and nothing else. The plan is still written, still recorded
    * and still what review and verify judge against.
@@ -255,7 +256,12 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       };
 
     case 'ticket_edited':
-      return { ...t, title: e.title ?? t.title, body: e.body ?? t.body };
+      return {
+        ...t,
+        title: e.title ?? t.title,
+        body: e.body ?? t.body,
+        requiresApproval: e.requiresApproval ?? t.requiresApproval,
+      };
 
     // The two moves the manager makes by hand, and the only two. Each is ignored
     // unless the ticket is in the state the other one leaves it in, so neither can

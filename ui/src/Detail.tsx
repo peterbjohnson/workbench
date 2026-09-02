@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   changesStand,
   details,
+  gateAhead,
   grouped,
   headline,
   madeInto,
@@ -197,11 +198,16 @@ export function Detail(props: {
               body={t.body}
               prefixes={prefixes}
               submitLabel="Save"
+              // The gate too, while there is still one ahead to decide about. Sent
+              // only then: for a ticket it was not asked about the form answers
+              // `true`, and that is not something to write down.
+              askAboutApproval={gateAhead(t)}
+              requiresApproval={t.requiresApproval}
               onCancel={() => setEditing(false)}
-              // Title and body only. The gate was settled when the ticket was written,
-              // and the form does not offer it here.
-              onSubmit={({ title, body }) =>
-                onAct(wb.edit(t.id, { title, body })).then(() => setEditing(false))
+              onSubmit={({ title, body, requiresApproval }) =>
+                onAct(
+                  wb.edit(t.id, { title, body, ...(gateAhead(t) ? { requiresApproval } : {}) }),
+                ).then(() => setEditing(false))
               }
             />
           ) : (

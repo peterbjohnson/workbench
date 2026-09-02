@@ -44,9 +44,12 @@ the heading turns the column round, and like the theme the choice is kept in the
 A plan is written, and the ticket stops for you to approve it. That is the one place a
 person sees the work before any money goes on building it.
 
-**The gate can be turned off per ticket, when you write it** — the switch on the new ticket
-form, or `wb new --no-approval`. It defaults to on, so skipping it is something to choose
-rather than something to forget. Off, the ticket goes straight from planning to
+**The gate can be turned off per ticket** — the switch on the ticket form, when you write
+one or when you edit one whose plan is not yet finished, or `wb new --no-approval` and
+`wb edit --no-approval`. It defaults to on, so skipping it is something to choose rather
+than something to forget. The switch goes once the plan is finished: by then the ticket
+either stopped at its gate or did not. It comes back if the ticket is sent to be planned
+again. Off, the ticket goes straight from planning to
 implementing; the plan is still written, still recorded, and still the `COMPLETION CRITERIA:` list
 that review and verify hold the work to. The ticket says so on its panel, because one that
 never stopped for you otherwise looks like one whose gate you missed.
