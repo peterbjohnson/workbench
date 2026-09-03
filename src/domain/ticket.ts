@@ -443,12 +443,15 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     //
     // And except while the branch is standing on work it waited for, which is
     // offered and so is in no commit of the base: moving there would hand every
-    // stage the dependency's change as this ticket's. The merge that took that work
-    // is what the ticket is measured from instead — and it can be, but only while
-    // the branch has nothing of its own on it. Where the branch is cut that merge is
-    // the base plus the dependencies and nothing else, which is the commit this
-    // ticket needs and the only one anywhere that is; after any stage has committed
-    // there is no such commit, and the base stands where that merge put it.
+    // stage the dependency's change as this ticket's.
+    //
+    // A base held that way is not on its own a description of what the branch stood
+    // on — the base has moved since, and everything it gained would read as this
+    // ticket's work. That is `diff`'s to fix, not this reducer's: it merges the base
+    // recorded here with the base as it now is and with every branch `carrying`
+    // names, so what a stage is shown is measured from all of them at once. What is
+    // held here is only the one thing no later commit can recover, which is where
+    // this branch was before it took anything in.
     //
     // What the branch is standing on is asked of the branch, not of the refresh that
     // last touched it: `carrying` is every merge in it the base has not got, and it
