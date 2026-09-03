@@ -246,6 +246,26 @@ export function tweakable(t: Ticket): boolean {
 }
 
 /**
+ * Whether the plan gate is still ahead of this ticket, so whether it has one is
+ * still worth deciding. The gate is read once, when a plan finishes, and this is
+ * every state with a plan yet to finish: not started, or in the plan stage itself
+ * — running, or stopped part-way through. A plan already written either stopped
+ * at its gate or did not, and a switch offered then would be about a moment that
+ * has passed.
+ *
+ * Much the same span as `rejectionStands`, less the gate itself, and for the same
+ * reason: a ticket sent back to be planned again has a gate ahead of it again.
+ */
+export function gateAhead(t: Ticket): boolean {
+  return (
+    t.status === 'backlog' ||
+    t.status === 'queued' ||
+    t.status === 'planning' ||
+    (t.status === 'blocked' && t.stage === 'plan')
+  );
+}
+
+/**
  * A ticket nothing will pick up again, with commits on its branch that nothing can
  * reach. The card says so and the panel offers to carry on from it — one rule, so
  * the flag that promises salvage and the button that does it cannot disagree.

@@ -70,8 +70,12 @@ export function createClient(baseUrl: string) {
       how: { from?: string; requiresApproval?: boolean; waitsFor?: string[] } = {},
     ) => post<{ ticket: Ticket }>('/tickets', { title, body, ...how }).then((r) => r.ticket),
 
-    /** Whichever field is given replaces what was there; the other is left alone. */
-    edit: (id: string, changes: { title?: string; body?: string }) =>
+    /**
+     * Whichever field is given replaces what was there; the rest are left alone.
+     * `requiresApproval` is read when the next plan finishes, so it says something
+     * only while one is still ahead.
+     */
+    edit: (id: string, changes: { title?: string; body?: string; requiresApproval?: boolean }) =>
       post<{ ticket: Ticket }>(`/tickets/${id}/edit`, changes).then((r) => r.ticket),
 
     queue: (id: string) => post<unknown>(`/tickets/${id}/queue`),

@@ -28,6 +28,8 @@ workbench — a board of tickets that agents work through
   wb new --after <a,b> <title> [body]
                                hold it until those tickets offer their work, then build on it
   wb edit <id> <title> [body]  rewrite it; the instructions are left alone if omitted
+  wb edit --no-approval <id>   let its plan go straight on to being built, while one is still ahead
+  wb edit --approval <id>      have its plan stop for you again
   wb queue <id>                commit to it: the workbench may now start it
   wb backlog <id>              take it back out of the queue, before it starts
   wb move <id> [before]        put it in front of another ticket, or last

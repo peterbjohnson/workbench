@@ -17,11 +17,13 @@ export function TicketForm(props: {
   title?: string;
   body?: string;
   /**
-   * Offer the plan gate as a choice. Only when writing a ticket: the gate is a
-   * fact about how this one is to be worked, settled when it is written, and a
+   * Offer the plan gate as a choice. Whenever the gate is still ahead — writing a
+   * ticket, or rewriting one whose plan is not yet finished — and not after: a
    * ticket already past its plan cannot be given a gate it did not stop at.
    */
   askAboutApproval?: boolean;
+  /** Whether it has one now, when rewriting. A new ticket has one unless told otherwise. */
+  requiresApproval?: boolean;
   /**
    * Every ticket on the board, so a new one can say what it starts after. Offered
    * only when writing: this is the moment you know what the work follows, and
@@ -57,7 +59,7 @@ export function TicketForm(props: {
   const [prefix, setPrefix] = useState(written.prefix);
   const [title, setTitle] = useState(written.rest);
   const [body, setBody] = useState(props.body ?? '');
-  const [requiresApproval, setRequiresApproval] = useState(true);
+  const [requiresApproval, setRequiresApproval] = useState(props.requiresApproval ?? true);
   const [waitsFor, setWaitsFor] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   /** A better name for this ticket, and the name it is better than. */

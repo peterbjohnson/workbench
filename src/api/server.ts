@@ -270,11 +270,15 @@ async function handle(
         case 'edit': {
           const title = 'title' in payload ? String(payload['title']).trim() : undefined;
           const body = 'body' in payload ? String(payload['body']) : undefined;
+          // A plain yes or no, or nothing: anything else is left alone rather
+          // than read as one of them.
+          const gate = payload['requiresApproval'];
+          const requiresApproval = typeof gate === 'boolean' ? gate : undefined;
           if (title === '') return send(res, 400, { error: 'a ticket needs a title' });
-          if (title === undefined && body === undefined) {
+          if (title === undefined && body === undefined && requiresApproval === undefined) {
             return send(res, 400, { error: 'nothing to change' });
           }
-          store.append(id, { type: 'ticket_edited', title, body });
+          store.append(id, { type: 'ticket_edited', title, body, requiresApproval });
           return send(res, 200, { ticket: store.ticket(id) });
         }
         case 'queue':

@@ -1148,7 +1148,23 @@ test('the gate is what a ticket was written with, and the default is to have one
   gated.add({ type: 'plan_rejected', reason: 'wrong problem' });
   assert.equal(runStage(gated, 'plan').status, 'plan_gate');
 
-  // Nor does rewriting the ticket, which says nothing about how it is worked.
+  // Nor does rewriting the ticket, when the rewrite says nothing about the gate.
   gated.add({ type: 'ticket_edited', title: 'do a better thing' });
   assert.equal(gated.ticket().requiresApproval, true);
+});
+
+test('the gate can be taken off, and put back, any time before the plan is finished', () => {
+  const j = newTicket();
+  j.add({ type: 'ticket_edited', requiresApproval: false });
+  assert.equal(j.ticket().requiresApproval, false);
+  assert.equal(j.ticket().title, 'do a thing', 'saying only that leaves the words alone');
+
+  j.add({ type: 'queued' });
+  assert.equal(runStage(j, 'plan', { summary: 'the plan' }).status, 'implementing');
+
+  // Sent back to be planned again, there is a gate ahead of it again, and the
+  // ticket can be told to stop at this one.
+  j.add({ type: 'plan_rejected', reason: 'wrong problem' });
+  j.add({ type: 'ticket_edited', requiresApproval: true });
+  assert.equal(runStage(j, 'plan', { summary: 'another plan' }).status, 'plan_gate');
 });

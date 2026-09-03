@@ -7,6 +7,7 @@ import {
   COLUMNS,
   columnFor,
   details,
+  gateAhead,
   grouped,
   headline,
   inColumn,
@@ -725,6 +726,18 @@ test('merged work can be sent back to be tweaked, and nothing else can', () => {
   // and what they offer is `salvageable` — a new ticket carrying on the branch.
   assert.equal(tweakable(at('cancelled')), false);
   assert.equal(tweakable(at('gave_up')), false);
+});
+
+test('the gate is still to be decided while a plan is still ahead', () => {
+  assert.deepEqual(
+    EVERY_STATUS.filter((s) => gateAhead(at(s))),
+    ['backlog', 'queued', 'planning'],
+  );
+
+  // Blocked is two states, and only stopped in the plan stage still has a plan to
+  // finish. Stopped anywhere later, the plan is written and the gate is behind it.
+  assert.equal(gateAhead(at('blocked', 'plan')), true);
+  assert.equal(gateAhead(at('blocked', 'implement')), false);
 });
 
 test('anything that has not ended can be stopped, including an idea in the backlog', () => {

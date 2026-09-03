@@ -345,6 +345,14 @@ test('a ticket can be rewritten over HTTP', async () => {
     assert.equal(retitled.body, 'the details', 'what was not sent is left alone');
 
     assert.equal((await wb.edit('t1', { body: '' })).body, '', 'and clearing it is allowed');
+
+    // The gate is one of the things a rewrite can say, on its own or with the rest.
+    assert.equal((await wb.edit('t1', { requiresApproval: false })).requiresApproval, false);
+    const gated = await wb.edit('t1', { title: 'gated again', requiresApproval: true });
+    assert.equal(gated.requiresApproval, true);
+    assert.equal(gated.title, 'gated again');
+    assert.equal((await wb.edit('t1', { body: 'x' })).requiresApproval, true, 'unsaid, it stays');
+
     await assert.rejects(() => wb.edit('t1', { title: '  ' }), /needs a title/);
     await assert.rejects(() => wb.edit('t1', {}), /nothing to change/);
   });

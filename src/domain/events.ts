@@ -105,11 +105,16 @@ export type EventBody =
     }
   /**
    * The manager rewrote the ticket. Whichever field is here replaces what was
-   * there; the other is left alone. Both are what the ticket *is*, so a stage
-   * that has not started yet is briefed from the new words — and one already
+   * there; the rest are left alone. Title and body are what the ticket *is*, so a
+   * stage that has not started yet is briefed from the new words — and one already
    * running keeps the brief it was given, because it has already read it.
+   *
+   * `requiresApproval` is how it is to be worked: whether the next plan to finish
+   * stops for the manager. It is read at that moment and no other, so it can be
+   * said right up to it — a plan stage already running stops, or does not, as the
+   * ticket says when it finishes.
    */
-  | { type: 'ticket_edited'; title?: string; body?: string }
+  | { type: 'ticket_edited'; title?: string; body?: string; requiresApproval?: boolean }
   /** The manager committed to the work. Until this, the workbench leaves it alone. */
   | { type: 'queued' }
   /** Taken back out of the queue, before anything started on it. */
