@@ -808,3 +808,89 @@ test('a merge cannot put the workbench into a protected worktree', async () => {
     await cleanUp(cfg);
   }
 });
+
+// Git does not serialise writes to `.git/config` for you, and the orchestrator
+// starts tickets in parallel. t4 lost that race: `could not lock config file
+// .git/config: File exists`, a branch left behind with half an upstream stanza,
+// no worktree, and a ticket parked on a message about nothing it had done.
+
+/** The scratch repository with somewhere to push to, so a branch gets an upstream. */
+async function withOrigin(cfg: GitConfig): Promise<void> {
+  const remote = path.join(path.dirname(cfg.repoRoot), 'remote.git');
+  await run('git', ['init', '--bare', '-b', 'main', remote]);
+  await run('git', ['remote', 'add', 'origin', remote], { cwd: cfg.repoRoot });
+  await run('git', ['push', '-q', '-u', 'origin', 'main'], { cwd: cfg.repoRoot });
+}
+
+/** What `.git/config` says about one branch, and nothing about any other. */
+async function branchStanza(cfg: GitConfig, branch: string): Promise<string> {
+  const config = await fs.readFile(path.join(cfg.repoRoot, '.git', 'config'), 'utf8');
+  return config.split(`[branch "${branch}"]`)[1]?.split('[')[0] ?? '';
+}
+
+test('six tickets starting at once all get a whole worktree', async () => {
+  const cfg = await scratchRepo();
+  try {
+    await withOrigin(cfg);
+    const ids = ['t1', 't2', 't3', 't4', 't5', 't6'];
+
+    const made = await Promise.all(ids.map((id) => create(cfg, id)));
+
+    assert.deepEqual(
+      made.map((wt) => wt.ticketId),
+      ids,
+      'every one of them came back',
+    );
+    for (const wt of made) {
+      assert.equal(wt.branch, `wb/${wt.ticketId}`);
+      assert.equal(await present(path.join(wt.path, 'project', 'model.py')), true, wt.ticketId);
+      // The half-written stanza is what the race actually produced: `remote` on its
+      // own, with the `merge` line the same command was about to write missing.
+      const stanza = await branchStanza(cfg, wt.branch);
+      assert.match(stanza, /remote = origin/, `${wt.branch} knows its remote`);
+      assert.match(stanza, /merge = refs\/heads\/main/, `${wt.branch} knows what it tracks`);
+    }
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a lock held outside this process is waited out, not failed on', async () => {
+  // The in-process turn cannot see an agent session or a second workbench running
+  // its own git in the same repository. A held lock clears in milliseconds, so the
+  // answer is to wait rather than to park the ticket.
+  const cfg = await scratchRepo();
+  try {
+    await withOrigin(cfg);
+    const lock = path.join(cfg.repoRoot, '.git', 'config.lock');
+    await fs.writeFile(lock, '');
+    const release = setTimeout(() => void fs.rm(lock, { force: true }), 150);
+
+    const wt = await create(cfg, 't1');
+    clearTimeout(release);
+
+    // The attempt that lost the lock had already made the branch, so what the retry
+    // finds is a branch to check out — the recovery `create` has always had.
+    assert.equal(await present(path.join(wt.path, 'project', 'model.py')), true);
+    const { stdout } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: wt.path });
+    assert.equal(stdout.trim(), 'wb/t1');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a branch left behind by a failed add is checked out rather than fought over', async () => {
+  const cfg = await scratchRepo();
+  try {
+    // Exactly the wreckage t4 was left in: the branch made, no worktree registered.
+    await run('git', ['branch', 'wb/t1', 'main'], { cwd: cfg.repoRoot });
+
+    const wt = await create(cfg, 't1');
+
+    assert.equal(wt.base, null, 'nothing was cut — the branch was already there');
+    const { stdout } = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: wt.path });
+    assert.equal(stdout.trim(), 'wb/t1', 'and it is the one that was standing');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
