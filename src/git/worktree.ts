@@ -68,6 +68,66 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * What is in flight against each repository, keyed by its root. Cleared when the
+ * chain drains, so a repository nobody is working in holds nothing.
+ */
+const repoLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `fn` with nothing else from this process touching the same repository.
+ *
+ * Git does not serialise writes to `.git/config` or `.git/worktrees` for you: two
+ * `worktree add` calls at once and one of them finds `config.lock` already held,
+ * which is how a ticket ended up with a branch created, its upstream stanza half
+ * written and no worktree. The orchestrator starts tickets in parallel, so this is
+ * ordinary rather than rare. Keyed by root, so tickets in different repositories
+ * still run at the same time.
+ */
+async function withRepoLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
+  const mine = (repoLocks.get(repoRoot) ?? Promise.resolve()).then(fn);
+  // The chain waits on a promise that cannot reject, so one caller's failure does
+  // not take the next waiter down with it.
+  const settled = mine.catch(() => {});
+  repoLocks.set(repoRoot, settled);
+  try {
+    return await mine;
+  } finally {
+    await settled;
+    if (repoLocks.get(repoRoot) === settled) repoLocks.delete(repoRoot);
+  }
+}
+
+/** What git says when it lost a lock rather than failed at the thing itself. */
+const CONTENDED = /could not lock config file|File exists|Unable to create.*\.lock/i;
+
+const LOCK_ATTEMPTS = 5;
+const LOCK_BACKOFF = 100;
+
+/**
+ * Runs `fn` again, briefly, when it lost a lock to something outside this process —
+ * an agent session running its own worktree add, a second workbench, the manager at
+ * a terminal. The in-process lock cannot see those, and a held lock clears in
+ * milliseconds, so waiting is the whole fix. Anything else is rethrown untouched on
+ * the first attempt, so a real failure still reaches the ticket as itself.
+ *
+ * A whole step rather than a single command, because losing the lock is not a clean
+ * no-op: `worktree add -b` that dies writing the upstream stanza has already made
+ * the branch, so running the same command again says `a branch named 'wb/t4'
+ * already exists`. What has to be retried is the decision as well as the act.
+ */
+async function retryContended<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? '');
+      if (attempt >= LOCK_ATTEMPTS || !CONTENDED.test(stderr)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, LOCK_BACKOFF * attempt));
+    }
+  }
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
@@ -104,21 +164,33 @@ export async function create(
 
   await fs.mkdir(cfg.worktreeRoot, { recursive: true });
 
-  const branchExists = await git(cfg.repoRoot, 'branch', '--list', wt.branch).then(
-    (out) => out.trim() !== '',
-  );
+  // Under the lock from the branch check onwards, so reading whether the branch is
+  // there and acting on it are one step. `startPoint`'s fetch is inside it too,
+  // which means parallel first-time tickets each wait a fetch — seconds, and the
+  // price of the check and the add being atomic.
+  return withRepoLock(cfg.repoRoot, async () => {
+    // The branch check is inside the retry, not before it: an attempt that lost the
+    // lock leaves the branch it just made, and the second time round that is a branch
+    // to check out rather than one to cut.
+    const base = await retryContended(async () => {
+      const branchExists = await git(cfg.repoRoot, 'branch', '--list', wt.branch).then(
+        (out) => out.trim() !== '',
+      );
+      if (branchExists) {
+        await git(cfg.repoRoot, 'worktree', 'add', wt.path, wt.branch);
+        return null;
+      }
+      const startFrom = from ?? (await startPoint(cfg));
+      const cut = (await git(cfg.repoRoot, 'rev-parse', startFrom)).trim();
+      await git(cfg.repoRoot, 'worktree', 'add', '-b', wt.branch, wt.path, startFrom);
+      return cut;
+    });
 
-  let base: string | null = null;
-  if (branchExists) {
-    await git(cfg.repoRoot, 'worktree', 'add', wt.path, wt.branch);
-  } else {
-    const startFrom = from ?? (await startPoint(cfg));
-    base = (await git(cfg.repoRoot, 'rev-parse', startFrom)).trim();
-    await git(cfg.repoRoot, 'worktree', 'add', '-b', wt.branch, wt.path, startFrom);
-  }
-
-  await hideProtectedPaths(cfg, wt);
-  return { ...wt, base };
+    // Inside the lock too: `sparse-checkout init` sets `extensions.worktreeConfig`
+    // in the shared `.git/config`, which is the same file being contended for.
+    await retryContended(() => hideProtectedPaths(cfg, wt));
+    return { ...wt, base };
+  });
 }
 
 /**
@@ -169,7 +241,10 @@ export async function remove(cfg: GitConfig, ticketId: string): Promise<void> {
   const wt = worktreeFor(cfg, ticketId);
   await fs.rm(wt.scratch, { recursive: true, force: true });
   if (!(await exists(wt.path))) return;
-  await git(cfg.repoRoot, 'worktree', 'remove', wt.path, '--force');
+  // Writes `.git/worktrees` like an add does, so it takes the same turn.
+  await withRepoLock(cfg.repoRoot, () =>
+    retryContended(() => git(cfg.repoRoot, 'worktree', 'remove', wt.path, '--force')),
+  );
 }
 
 /**
