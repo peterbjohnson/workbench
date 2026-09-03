@@ -18,6 +18,7 @@ export function gitWorkspace(cfg: GitConfig): Workspace {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
     refresh: (ticketId, alsoMerge, keepConflict) => refresh(cfg, ticketId, alsoMerge, keepConflict),
     unresolved: (ticketId, paths) => unresolved(cfg, ticketId, paths),
+    removedFromBase: (ticketId, from) => removedFromBase(cfg, ticketId, from),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
   };
@@ -574,6 +575,55 @@ export async function unresolved(
     if (unmerged.has(p) || (await hasMarkers(path.join(wt.path, p)))) left.push(p);
   }
   return left;
+}
+
+/**
+ * Of the paths this branch deletes relative to the base, the ones the base itself
+ * added while the branch was being built. A ticket that never mentioned a file has
+ * no business deleting one the base has just gained — four branches in a row
+ * reverted the same dependency before anybody read the diff that way.
+ *
+ * `from` is what the ticket's change is measured against, which for a ticket
+ * holding its base is the commit it was cut from rather than the merge-base: it is
+ * exactly those tickets this is for. The merge-base stands in when it is not given
+ * or does not resolve here, and a revision that resolves neither way returns
+ * nothing — a commit this worktree has never heard of must not invent a block.
+ */
+export async function removedFromBase(
+  cfg: GitConfig,
+  ticketId: string,
+  from?: string,
+): Promise<string[]> {
+  const wt = worktreeFor(cfg, ticketId);
+  const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
+  const anchor =
+    (from === undefined
+      ? ''
+      : await commitOr(wt, 'rev-parse', '--verify', '--quiet', `${from}^{commit}`)) ||
+    (await commitOr(wt, 'merge-base', base, 'HEAD'));
+  if (anchor === '') return [];
+
+  // `--no-renames` on both sides. A rename of a file the base added is a deletion
+  // of the path the base added, and letting git fold the two into an `R` would hide
+  // the one case this exists for.
+  const names = (out: string) => out.split('\n').filter((line) => line !== '');
+  const added = new Set(
+    names(
+      await git(wt.path, 'diff', '--no-renames', '--diff-filter=A', '--name-only', anchor, base),
+    ),
+  );
+  const gone = names(
+    await git(wt.path, 'diff', '--no-renames', '--diff-filter=D', '--name-only', base, 'HEAD'),
+  );
+  return gone.filter((p) => added.has(p)).sort();
+}
+
+/** The commit a revision-producing git command names, or '' when it names none. */
+async function commitOr(wt: Worktree, ...args: string[]): Promise<string> {
+  return git(wt.path, ...args).then(
+    (out) => out.trim(),
+    () => '',
+  );
 }
 
 /**

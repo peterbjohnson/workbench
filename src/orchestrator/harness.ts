@@ -65,6 +65,11 @@ export function harness(
      * — is the default, because that is what a stage handed one is asked to do.
      */
     unresolved?: (paths: readonly string[]) => string[];
+    /**
+     * What the branch deletes of what the base added. Nothing is the default: an
+     * ordinary ticket touches its own files and no others.
+     */
+    removedFromBase?: (ticketId: string, from?: string) => string[];
   } = {},
 ): Harness {
   const store = opts.store ?? openStore(':memory:');
@@ -97,6 +102,7 @@ export function harness(
         return opts.refresh?.(id, keepConflict) ?? { kind: 'up-to-date' };
       },
       unresolved: async (_id, paths) => opts.unresolved?.(paths) ?? [],
+      removedFromBase: async (id, from) => opts.removedFromBase?.(id, from) ?? [],
       commit: async (ticket, message) => {
         committed.push(`${ticket.id}: ${message}`);
         // A hash of its own each time, as real commits have: a test that counts what

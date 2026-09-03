@@ -420,6 +420,62 @@ test('work that conflicts with the base it must land on is not offered', async (
   }
 });
 
+test('work that deletes what the base added is not offered', async () => {
+  // Four branches in a row reverted the same dependency, and every reviewer read
+  // the deletion as the ticket's own work.
+  const anchors: (string | undefined)[] = [];
+  const h = harness({
+    removedFromBase: (_id, from) => {
+      anchors.push(from);
+      return ['project/deps.lock', 'project/vendor/sdk.py'];
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.status, 'blocked');
+    const asked = ticket.question?.question ?? '';
+    assert.match(asked, /project\/deps\.lock/);
+    assert.match(asked, /project\/vendor\/sdk\.py/, 'every one of them, not the first');
+    assert.match(asked, /put them back/, 'and what the ticket can do about it');
+    assert.deepEqual(h.prsOpened, [], 'and nothing was offered');
+    assert.deepEqual(ticket.conflicts, [], 'not a clash git has an opinion about');
+    assert.deepEqual(anchors, ['abc1234'], 'measured from what the ticket is measured from');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a standing branch that reverts the base it is brought up to is parked too', async () => {
+  // A resolution reverts as well as a merge does, so the pass over the other pull
+  // requests after a merge asks the same question the first offer did.
+  const h = harness({
+    verdict: (id) => (id === 't1' ? { kind: 'accepted' } : { kind: 'pending' }),
+    refresh: () => ({ kind: 'merged', base: 'newbase', commit: 'merge01', merged: ['newbase'] }),
+    removedFromBase: (id) => (id === 't2' ? ['project/deps.lock'] : []),
+  });
+  try {
+    standing(h.store, 't2');
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsOpened, ['https://example/pr/t1'], 'the one that reverted nothing');
+    assert.equal(h.store.ticket('t1').status, 'done', 'offered and merged exactly as before');
+
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'blocked');
+    assert.match(t2.question?.question ?? '', /project\/deps\.lock/, 'and says which file');
+  } finally {
+    await h.close();
+  }
+});
+
 test('work the new base breaks is not offered either', async () => {
   let asked = 0;
   const h = harness({

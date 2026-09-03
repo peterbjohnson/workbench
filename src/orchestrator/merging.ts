@@ -130,40 +130,61 @@ export function createMerging({
    */
   async function refresh(ticket: Ticket, worktree: string): Promise<boolean> {
     const result = await deps.workspace.refresh(ticket.id, branch.awaitedBranches(ticket));
-    if (result.kind === 'up-to-date') return true;
 
-    // What came in with the base is recorded along with it, because a branch
-    // standing on work the base has not got cannot be measured from the base: see
-    // `refreshed` in events.ts. Written whichever way the merge went — a conflict
-    // leaves everything that merged before it standing, and the branch's record has
-    // to say where the branch is rather than where it was.
-    const took = result.merged.filter((ref) => ref !== result.base);
-    if (result.merged.length > 0) {
-      store.append(ticket.id, {
-        type: 'refreshed',
-        base: result.base,
-        commit: result.commit,
-        took,
-        // Everything the base still has not got, not only what came in now: a
-        // dependency sent back for changes stops being offered without its work
-        // reaching the base, and the reducer is what decides whether the base may
-        // move onto this one.
-        carrying: carriedWork(ticket, store.tickets(), took),
-      });
+    if (result.kind !== 'up-to-date') {
+      // What came in with the base is recorded along with it, because a branch
+      // standing on work the base has not got cannot be measured from the base: see
+      // `refreshed` in events.ts. Written whichever way the merge went — a conflict
+      // leaves everything that merged before it standing, and the branch's record has
+      // to say where the branch is rather than where it was.
+      const took = result.merged.filter((ref) => ref !== result.base);
+      if (result.merged.length > 0) {
+        store.append(ticket.id, {
+          type: 'refreshed',
+          base: result.base,
+          commit: result.commit,
+          took,
+          // Everything the base still has not got, not only what came in now: a
+          // dependency sent back for changes stops being offered without its work
+          // reaching the base, and the reducer is what decides whether the base may
+          // move onto this one.
+          carrying: carriedWork(ticket, store.tickets(), took),
+        });
+      }
+
+      if (result.kind === 'conflicted') {
+        store.append(ticket.id, {
+          type: 'blocked',
+          reason:
+            `this branch conflicts with ${describeRef(result.with, result.base)}:\n` +
+            result.paths.map((p) => `  ${p}`).join('\n'),
+          // The same paths as data, so the panel can list them and offer the way out
+          // rather than leaving them buried in a paragraph.
+          conflicts: result.paths,
+        });
+        return false;
+      }
     }
 
-    if (result.kind === 'conflicted') {
+    // What the branch deletes of what the base added while it was being built.
+    // Asked after the merge and never before it: before it, every file the base has
+    // just gained is missing from the branch and every ticket would park. An
+    // up-to-date branch is asked too — a resolution reverts just as well as a merge
+    // does, and it leaves the base exactly where it was.
+    const removed = await deps.workspace.removedFromBase(ticket.id, ticket.base ?? undefined);
+    if (removed.length > 0) {
       store.append(ticket.id, {
         type: 'blocked',
         reason:
-          `this branch conflicts with ${describeRef(result.with, result.base)}:\n` +
-          result.paths.map((p) => `  ${p}`).join('\n'),
-        // The same paths as data, so the panel can list them and offer the way out
-        // rather than leaving them buried in a paragraph.
-        conflicts: result.paths,
+          'this branch deletes files the base added while it was being built:\n' +
+          removed.map((p) => `  ${p}`).join('\n') +
+          '\n\nThey are the base’s work, not this ticket’s, and the answer is ' +
+          'almost always to put them back as the base has them.',
       });
       return false;
     }
+
+    if (result.kind === 'up-to-date') return true;
 
     const failed = (await deps.checks(worktree)).filter((r) => !r.ok);
     if (failed.length === 0) return true;
