@@ -1,4 +1,4 @@
-import type { Event } from '../domain/events.ts';
+import type { Event, MergeMethod } from '../domain/events.ts';
 import type { Chat } from '../domain/board.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import type { Policy } from '../domain/rules.ts';
@@ -108,8 +108,13 @@ export function createClient(baseUrl: string) {
     carryOn: (id: string) => post<unknown>(`/tickets/${id}/continue`),
     /** Offer what it has as a pull request, whatever the agents made of it. */
     ship: (id: string) => post<unknown>(`/tickets/${id}/ship`),
-    /** Squash the offered work onto the base. The orchestrator does it, and accepts it. */
-    merge: (id: string) => post<{ ticket: Ticket }>(`/tickets/${id}/merge`).then((r) => r.ticket),
+    /**
+     * Merge the offered work onto the base, squashed or as a merge commit. The
+     * orchestrator does it, and accepts it. Squash by default, which is what every
+     * caller that does not care wants.
+     */
+    merge: (id: string, method: MergeMethod = 'squash') =>
+      post<{ ticket: Ticket }>(`/tickets/${id}/merge`, { method }).then((r) => r.ticket),
     cancel: (id: string, reason: string) => post<unknown>(`/tickets/${id}/cancel`, { reason }),
 
     /**

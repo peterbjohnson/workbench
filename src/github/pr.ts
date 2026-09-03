@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import type { MergeMethod } from '../domain/events.ts';
 import type { CodeHost, Verdict } from '../orchestrator/loop.ts';
 import { worktreeFor, type GitConfig, type Worktree } from '../git/worktree.ts';
 
@@ -24,7 +25,7 @@ export function githubHost(cfg: GitConfig): CodeHost {
     },
     merge: async (ticket) => {
       if (!ticket.prUrl) throw new Error('no pull request to merge');
-      return mergePr(worktreeFor(cfg, ticket.id), ticket.prUrl);
+      return mergePr(worktreeFor(cfg, ticket.id), ticket.prUrl, ticket.mergeMethod ?? 'squash');
     },
   };
 }
@@ -148,13 +149,16 @@ async function prFor(wt: Worktree): Promise<string | null> {
 }
 
 /**
- * How the pull request is merged: everything the ticket did, squashed into one
- * commit on the base. One ticket, one commit — the branch's own history is the
- * stages arguing with each other, which is in the workbench and is not what the
- * base wants. Its own function so the `--squash` can be tested without a network.
+ * How the pull request is merged, as the manager asked for it when they accepted.
+ *
+ * Squashing is the default and usually what is wanted: one ticket, one commit —
+ * the branch's own history is the stages arguing with each other, which is in the
+ * workbench and is not what the base wants. A merge commit is there for the work
+ * whose commits the base does want to keep. Its own function so the flag can be
+ * tested without a network.
  */
-export function mergeArgs(prUrl: string): string[] {
-  return ['pr', 'merge', prUrl, '--squash'];
+export function mergeArgs(prUrl: string, method: MergeMethod): string[] {
+  return ['pr', 'merge', prUrl, method === 'merge' ? '--merge' : '--squash'];
 }
 
 /** Refusals that are a decision: asking again gets the same answer. */
@@ -223,14 +227,14 @@ const mergeBackoffMs = (attempt: number) => 3_000 * 2 ** (attempt - 1);
  * first ask and after every refusal, so a merge that has already landed is finished
  * rather than asked for a second time.
  */
-export async function mergePr(wt: Worktree, prUrl: string): Promise<void> {
+export async function mergePr(wt: Worktree, prUrl: string, method: MergeMethod): Promise<void> {
   if (await merged(prUrl, wt.path)) return;
 
   await run('git', ['push', 'origin', wt.branch], { cwd: wt.path });
 
   for (let attempt = 1; ; attempt++) {
     try {
-      await run('gh', mergeArgs(prUrl), { cwd: wt.path });
+      await run('gh', mergeArgs(prUrl, method), { cwd: wt.path });
       return;
     } catch (error) {
       if (await merged(prUrl, wt.path)) return;

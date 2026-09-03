@@ -8,6 +8,13 @@ export type Stage = 'plan' | 'implement' | 'review' | 'verify';
 export type Scale = 'small' | 'standard' | 'large';
 
 /**
+ * How a merge the manager asked for is carried out: one commit on the base, or
+ * GitHub's ordinary merge commit. The manager's choice at the moment of accepting,
+ * so it travels with the request rather than being a setting.
+ */
+export type MergeMethod = 'squash' | 'merge';
+
+/**
  * `interrupted` is not one a runner ever reports: it is written by `reconcile`
  * alone, for a run nobody is left to answer for, exactly like the `runId` of
  * `interrupted` it is written beside. Being stopped is not failing, and the
@@ -307,7 +314,14 @@ export type EventBody =
    * base in, squashes the branch onto it and records the verdict itself. So a
    * merge asked for survives a restart, and every one of them is in the log.
    */
-  | { type: 'merge_requested' }
+  | {
+      type: 'merge_requested';
+      /**
+       * How to merge it. Optional because logs written before there was a choice
+       * replay through here, and every one of them meant a squash.
+       */
+      method?: MergeMethod;
+    }
   | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string }
   /**
    * One turn of the conversation about this ticket, by the manager or by the chat

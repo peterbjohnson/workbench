@@ -517,12 +517,30 @@ test('the manager can ask for the merge here, and it is done once', () => {
 
   const asked = j.add({ type: 'merge_requested' });
   assert.equal(asked.mergeRequested, true);
+  assert.equal(asked.mergeMethod, 'squash', 'a request that names no method squashes');
   assert.deepEqual(j.next(), { kind: 'merge_pr' }, 'an answer given is not one to poll for');
 
   const merged = j.add({ type: 'verdict', verdict: 'accepted' });
   assert.equal(merged.status, 'done');
   assert.equal(merged.mergeRequested, false, 'nothing is left asking to be merged again');
+  assert.equal(merged.mergeMethod, null, 'and no method left over from the one that happened');
   assert.deepEqual(j.next(), { kind: 'wait' });
+});
+
+test('the manager can ask for a merge commit instead of a squash', () => {
+  const j = offeredTicket();
+
+  const asked = j.add({ type: 'merge_requested', method: 'merge' });
+  assert.equal(asked.mergeRequested, true);
+  assert.equal(asked.mergeMethod, 'merge', 'the choice is carried to whoever does the merging');
+
+  // The method is a fact about one request, so nothing that ends the request keeps it.
+  const stuck = j.add({
+    type: 'blocked',
+    reason: 'it conflicts',
+    conflicts: ['src/api/server.ts'],
+  });
+  assert.equal(stuck.mergeMethod, null);
 });
 
 test('a merge that cannot happen names the files and stops asking', () => {
