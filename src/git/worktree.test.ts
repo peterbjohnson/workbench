@@ -856,6 +856,24 @@ test('a file the branch this one continues from deleted is not the base’s to r
   }
 });
 
+test('a base the branch has not taken in yet is not read as files it deleted', async () => {
+  // The base moved after the refresh that brought the old one in — another ticket
+  // merged, or the refresh's fetch failed where this one succeeds. Everything the
+  // newer base has gained is missing from the branch, and without asking whether
+  // the branch has this base at all every one of those files reads as a deletion
+  // of something the base just added.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    const cut = await headOf(wt.path);
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', cut), []);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
 test('a base commit this worktree has never had is answered without throwing', async () => {
   const cfg = await scratchRepo();
   try {

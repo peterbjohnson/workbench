@@ -596,6 +596,21 @@ export async function removedFromBase(
 ): Promise<string[]> {
   const wt = worktreeFor(cfg, ticketId);
   const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
+
+  // Only a base the branch already has can be asked this. The base is resolved
+  // here a second time, with its own fetch, and it can differ from the one the
+  // refresh just merged: another ticket's merge moves `origin/<base>` while this
+  // one is being offered, and a fetch that failed there can succeed here. Then
+  // every file the newer base has and this branch has not merged yet reads as a
+  // deletion — and as an addition on the base's side too — and the ticket is
+  // blocked naming files it never touched. There is nothing to say until the
+  // branch has the base; the next pass, after a refresh that brings it in, says it.
+  const has = await git(wt.path, 'merge-base', '--is-ancestor', base, 'HEAD').then(
+    () => true,
+    () => false,
+  );
+  if (!has) return [];
+
   const anchor =
     (from === undefined
       ? ''
