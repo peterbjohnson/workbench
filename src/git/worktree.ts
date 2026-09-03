@@ -603,13 +603,28 @@ export async function removedFromBase(
     (await commitOr(wt, 'merge-base', base, 'HEAD'));
   if (anchor === '') return [];
 
+  // What the base added is measured on the base's own side of the fork —
+  // `anchor...base`, never `anchor base`. A ticket carrying on from one that
+  // deleted a file is anchored on a commit without it, and a two-dot diff would
+  // read that file as one the base had just added: the branch inherits the
+  // deletion, so it lands in `gone` too, and the ticket is told to put back what
+  // the earlier one took out. Where the anchor is an ancestor of the base, which
+  // is the ordinary ticket, the two diffs are the same one.
+  //
   // `--no-renames` on both sides. A rename of a file the base added is a deletion
   // of the path the base added, and letting git fold the two into an `R` would hide
   // the one case this exists for.
   const names = (out: string) => out.split('\n').filter((line) => line !== '');
   const added = new Set(
     names(
-      await git(wt.path, 'diff', '--no-renames', '--diff-filter=A', '--name-only', anchor, base),
+      await git(
+        wt.path,
+        'diff',
+        '--no-renames',
+        '--diff-filter=A',
+        '--name-only',
+        `${anchor}...${base}`,
+      ),
     ),
   );
   const gone = names(

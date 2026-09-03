@@ -833,7 +833,30 @@ test('deleting a file that was there when the branch was cut is the ticket’s o
   }
 });
 
-test('a base commit this worktree has never had falls back rather than throwing', async () => {
+test('a file the branch this one continues from deleted is not the base’s to reinstate', async () => {
+  // An earlier ticket deleted a file as its work and was offered but not merged;
+  // this one carries on from it, so the deletion is in its history before it
+  // starts and the base still has the file. Measured from the anchor's own tip
+  // the base would look to have just added it, and this ticket would be told to
+  // put back exactly what the earlier one was for taking out.
+  const cfg = await scratchRepo();
+  try {
+    const earlier = await create(cfg, 'd1');
+    await fs.rm(path.join(earlier.path, 'project', 'model.py'));
+    await commitAll(earlier, 'the work d1 was for');
+    const anchor = await headOf(earlier.path);
+
+    await create(cfg, 't1', 'wb/d1');
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+    await refresh(cfg, 't1');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', anchor), []);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a base commit this worktree has never had is answered without throwing', async () => {
   const cfg = await scratchRepo();
   try {
     const wt = await create(cfg, 't1');
@@ -842,9 +865,12 @@ test('a base commit this worktree has never had falls back rather than throwing'
     await fs.rm(path.join(wt.path, 'project', 'deps.lock'));
     await commitAll(wt, 'untracked as the review asked');
 
-    // The merge-base of a refreshed branch is the base itself, so the window is
-    // empty and nothing is reported. A revision nobody can resolve must say
-    // nothing rather than invent a block or fail the ticket outright.
+    // `[]` here does not distinguish the fallback from no anchor at all, and
+    // cannot: this only ever runs on a branch that has just taken the base in, so
+    // the merge-base of base and HEAD is the base, the window between them holds
+    // no addition, and the fallback can only ever come back empty. What is being
+    // asserted is the whole of what matters — a revision nobody can resolve says
+    // nothing rather than inventing a block or failing the ticket outright.
     assert.deepEqual(await removedFromBase(cfg, 't1', 'deadbee'), []);
   } finally {
     await cleanUp(cfg);
