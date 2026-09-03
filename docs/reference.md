@@ -43,7 +43,7 @@ workbench — a board of tickets that agents work through
   wb restart <id>              run a failed stage again, from the top
   wb continue <id>             carry on a stage the workbench stopped, keeping its run
   wb ship <id>                 offer what it has as a pull request, and decide there
-  wb merge <id>                squash the offered work onto the base and accept it
+  wb merge <id>                merge the offered work onto the base and accept it
   wb cancel <id> [why]         stop a ticket, including one that is running
   wb wip <n>                   how many tickets may run at once
 
@@ -217,7 +217,7 @@ at all.
 | `POST /tickets/:id/restart` | run a failed stage again, from the top |
 | `POST /tickets/:id/continue` | carry a stopped stage on, keeping the run it was in the middle of |
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
-| `POST /tickets/:id/merge` | merge the offered work onto the base and accept it — `{method}`, `squash` (the default) or `merge` |
+| `POST /tickets/:id/merge` | merge the offered work onto the base and accept it |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
 | `POST /tickets/:id/chat-warm` | the ticket's chat pane is open, so the process that will answer its turns starts now |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |

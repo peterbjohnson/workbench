@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { MergeMethod } from '../domain/events.ts';
 import type { CodeHost, Verdict } from '../orchestrator/loop.ts';
 import { worktreeFor, type GitConfig, type Worktree } from '../git/worktree.ts';
 
@@ -25,7 +24,11 @@ export function githubHost(cfg: GitConfig): CodeHost {
     },
     merge: async (ticket) => {
       if (!ticket.prUrl) throw new Error('no pull request to merge');
-      return mergePr(worktreeFor(cfg, ticket.id), ticket.prUrl, ticket.mergeMethod ?? 'squash');
+      return mergePr(
+        worktreeFor(cfg, ticket.id),
+        ticket.prUrl,
+        mergeSubject(ticket.title, ticket.id),
+      );
     },
   };
 }
@@ -149,16 +152,57 @@ async function prFor(wt: Worktree): Promise<string | null> {
 }
 
 /**
- * How the pull request is merged, as the manager asked for it when they accepted.
- *
- * Squashing is the default and usually what is wanted: one ticket, one commit —
- * the branch's own history is the stages arguing with each other, which is in the
- * workbench and is not what the base wants. A merge commit is there for the work
- * whose commits the base does want to keep. Its own function so the flag can be
- * tested without a network.
+ * How the pull request is merged. Always a merge commit: what is on the branch is
+ * exactly what reaches the base, which is what every ticket cut from another one
+ * assumes — see `docs/design.md`. Its own function so the flags can be tested
+ * without a network.
  */
-export function mergeArgs(prUrl: string, method: MergeMethod): string[] {
-  return ['pr', 'merge', prUrl, method === 'merge' ? '--merge' : '--squash'];
+export function mergeArgs(prUrl: string, subject: string): string[] {
+  return ['pr', 'merge', prUrl, '--merge', '--subject', subject];
+}
+
+/**
+ * The merge commit's subject, so `git log --first-parent` reads one line per
+ * ticket — the history a squash used to give, without the squash. The id alone
+ * when there is no title, which is better than a bare pair of brackets.
+ */
+export function mergeSubject(title: string, id: string): string {
+  const said = title.trim();
+  return said ? `${said} (${id})` : id;
+}
+
+/**
+ * Whether the repository allows merge commits, out of what
+ * `gh api repos/{owner}/{repo} --jq .allow_merge_commit` prints. Its own function,
+ * like `mergeArgs`, so the answer can be read without a network.
+ */
+export function allowsMergeCommits(stdout: string): boolean {
+  return stdout.trim() !== 'false';
+}
+
+/**
+ * Why the workbench will not run here, when the repository does not allow merge
+ * commits — and `undefined` when it does, or when `gh` cannot answer.
+ *
+ * Not being able to ask is not a no: there is no remote, or no `gh`, or no network,
+ * and a workbench on a repository with no GitHub at all still works. Only a
+ * definite `false` stops it, because every merge would then be refused.
+ */
+export async function mergeCommitsRefusal(cwd: string): Promise<string | undefined> {
+  let stdout: string;
+  try {
+    ({ stdout } = await run('gh', ['api', 'repos/{owner}/{repo}', '--jq', '.allow_merge_commit'], {
+      cwd,
+    }));
+  } catch {
+    return undefined;
+  }
+  if (allowsMergeCommits(stdout)) return undefined;
+  return (
+    'This repository does not allow merge commits, and the workbench lands every\n' +
+    'ticket with one. Turn on Settings → General → Pull requests → Allow merge\n' +
+    'commits on GitHub, then run this again.'
+  );
 }
 
 /** Refusals that are a decision: asking again gets the same answer. */
@@ -227,14 +271,14 @@ const mergeBackoffMs = (attempt: number) => 3_000 * 2 ** (attempt - 1);
  * first ask and after every refusal, so a merge that has already landed is finished
  * rather than asked for a second time.
  */
-export async function mergePr(wt: Worktree, prUrl: string, method: MergeMethod): Promise<void> {
+export async function mergePr(wt: Worktree, prUrl: string, subject: string): Promise<void> {
   if (await merged(prUrl, wt.path)) return;
 
   await run('git', ['push', 'origin', wt.branch], { cwd: wt.path });
 
   for (let attempt = 1; ; attempt++) {
     try {
-      await run('gh', mergeArgs(prUrl, method), { cwd: wt.path });
+      await run('gh', mergeArgs(prUrl, subject), { cwd: wt.path });
       return;
     } catch (error) {
       if (await merged(prUrl, wt.path)) return;

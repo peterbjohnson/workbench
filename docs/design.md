@@ -65,6 +65,25 @@ It is not a bypass — the pull request is still a review and merging is still d
 but it means two agents disagreeing can no longer be the end of a ticket. When a limit is
 reached the ticket stops and asks you to settle it rather than being given up on.
 
+## The workbench owns how work lands
+
+Every ticket lands as a merge commit. There is no choice about it, on the board or on the
+command line, and the repository must allow merge commits — `wb init` and `wb serve` refuse
+to run when it does not.
+
+What is on the branch is exactly what reaches the base, and everything else depends on
+that. A ticket that waits on another is cut from the base and merges that ticket's branch
+into its own; `wb new --from` starts on a branch outright. Both, and the base a ticket
+measures its diff from, assume those commits will be in the base's ancestry. A squash puts
+the same content there under a new commit with no ancestry, so the next time a dependent
+brings the base in, every file the dependency created and the dependent touched is an
+add/add conflict — indistinguishable from a real clash. On a project run through the
+workbench that was most of the conflicts the board hit.
+
+"Squash when nothing depends on it" is not enough: `--from` can arrive after the merge.
+The one-line-per-ticket history a squash gave is not lost — `git log --first-parent` reads
+it, which is why the merge commit's subject is `<title> (<id>)`.
+
 ## Nothing decides anything but the rules
 
 `wb serve` is the only process that touches the database or calls an agent. The command

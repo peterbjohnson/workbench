@@ -326,13 +326,10 @@ async function handle(
           if (!ticket.offered || ticket.prUrl === null) {
             return send(res, 400, { error: 'there is no pull request to merge' });
           }
-          // Absent means squash: what a merge meant before there was a choice, and
-          // what `wb merge` and any older client still mean by asking for one.
-          const method = payload['method'] === undefined ? 'squash' : String(payload['method']);
-          if (method !== 'squash' && method !== 'merge') {
-            return send(res, 400, { error: `no such merge method: ${method}` });
-          }
-          store.append(id, { type: 'merge_requested', method });
+          // Any `method` a client sends is ignored rather than refused: there is one
+          // way to land work now, and an older client asking for the one that is gone
+          // means the merge it can have.
+          store.append(id, { type: 'merge_requested' });
           return send(res, 200, { ticket: store.ticket(id) });
         }
         case 'restart':

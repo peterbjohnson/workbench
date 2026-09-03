@@ -189,19 +189,22 @@ test('asking for the merge records it, and only where there is an offer to merge
   });
 });
 
-test('the merge carries the method the manager chose, and squash is the default', async () => {
+test('a merge takes no method, and one an older client sends is ignored', async () => {
   await withApi(async (wb, store, _config, base) => {
     await wb.create('a thing', '');
     store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
 
-    assert.equal((await wb.merge('t1', 'merge')).mergeMethod, 'merge');
-    assert.equal((await wb.merge('t1', 'squash')).mergeMethod, 'squash');
-    await assert.rejects(() => wb.merge('t1', 'rebase' as 'merge'), /no such merge method: rebase/);
+    assert.equal((await wb.merge('t1')).mergeRequested, true);
 
-    // A client too old to name one is asking for what a merge has always meant.
-    const bare = await fetch(`${base}/tickets/t1/merge`, { method: 'POST' });
-    assert.equal(bare.status, 200);
-    assert.equal(store.ticket('t1').mergeMethod, 'squash');
+    // A client from when there was a choice gets the one merge there is, rather
+    // than a refusal it can do nothing about.
+    const older = await fetch(`${base}/tickets/t1/merge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'squash' }),
+    });
+    assert.equal(older.status, 200);
+    assert.equal(store.ticket('t1').mergeRequested, true);
   });
 });
 

@@ -648,9 +648,8 @@ function Actions({
         </>
       )}
 
-      {/* Answering the offer here rather than on GitHub, and saying how: one commit
-          on the base, which is what the branch's own history — the stages arguing —
-          is not worth putting there, or a merge commit when it is. */}
+      {/* Answering the offer here rather than on GitHub. One way to land it, and no
+          choice about it: what is on the branch is exactly what reaches the base. */}
       {t.status === 'awaiting_verdict' &&
         t.prUrl !== null &&
         (t.mergeRequested ? (
@@ -659,19 +658,11 @@ function Actions({
           </div>
         ) : (
           <div className="row">
-            <button
-              type="button"
-              className="go"
-              onClick={() => void onAct(wb.merge(t.id, 'squash'))}
-            >
-              Squash and merge
-            </button>
-            <button type="button" onClick={() => void onAct(wb.merge(t.id, 'merge'))}>
-              Merge commit
+            <button type="button" className="go" onClick={() => void onAct(wb.merge(t.id))}>
+              Accept
             </button>
             <span className="quiet">
-              accepts it — squashed into one commit on the base, or keeping the ticket&rsquo;s
-              commits under a merge commit
+              merges it onto the base, keeping the ticket&rsquo;s commits
             </span>
           </div>
         ))}
