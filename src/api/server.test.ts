@@ -49,15 +49,16 @@ function scratchConfig() {
 
 /** A real server on an ephemeral port, with a real client talking to it. */
 async function withApi(
-  fn: (wb: Client, store: Store, config: Config) => Promise<void>,
+  fn: (wb: Client, store: Store, config: Config, base: string) => Promise<void>,
   deps: ApiDeps = {},
 ): Promise<void> {
   const store = openStore(':memory:');
   const config = scratchConfig();
   const api = createApi(store, config, deps);
   const port = await api.listen(0);
+  const base = `http://127.0.0.1:${port}`;
   try {
-    await fn(createClient(`http://127.0.0.1:${port}`), store, config);
+    await fn(createClient(base), store, config, base);
   } finally {
     await api.close();
     store.close();
@@ -185,6 +186,22 @@ test('asking for the merge records it, and only where there is an offer to merge
     // it would land whatever the rework has got to so far.
     store.append('t1', { type: 'changes_requested', changes: 'rename it' });
     await assert.rejects(() => wb.merge('t1'), /no pull request to merge/);
+  });
+});
+
+test('the merge carries the method the manager chose, and squash is the default', async () => {
+  await withApi(async (wb, store, _config, base) => {
+    await wb.create('a thing', '');
+    store.append('t1', { type: 'pr_opened', url: 'https://example/pr/1' });
+
+    assert.equal((await wb.merge('t1', 'merge')).mergeMethod, 'merge');
+    assert.equal((await wb.merge('t1', 'squash')).mergeMethod, 'squash');
+    await assert.rejects(() => wb.merge('t1', 'rebase' as 'merge'), /no such merge method: rebase/);
+
+    // A client too old to name one is asking for what a merge has always meant.
+    const bare = await fetch(`${base}/tickets/t1/merge`, { method: 'POST' });
+    assert.equal(bare.status, 200);
+    assert.equal(store.ticket('t1').mergeMethod, 'squash');
   });
 });
 

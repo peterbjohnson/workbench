@@ -219,11 +219,14 @@ at all.
 | `POST /tickets/:id/restart` | run a failed stage again, from the top |
 | `POST /tickets/:id/continue` | carry a stopped stage on, keeping the run it was in the middle of |
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
-| `POST /tickets/:id/merge` | squash the offered work onto the base and accept it |
+| `POST /tickets/:id/merge` | merge the offered work onto the base and accept it — `{method}`, `squash` (the default) or `merge` |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
 | `POST /tickets/:id/chat-warm` | the ticket's chat pane is open, so the process that will answer its turns starts now |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
 | `POST /name-check/warm` | the ticket form is open, so whatever answers a name check gets ready now |
+| `GET /stop` | whether the board is stopped, and what is still running — `{stopped, running}` |
+| `POST /stop` | stop everything: nothing new starts. Pressed again while stopped it interrupts what is still going — `{stopped, running, interrupted}` |
+| `POST /start` | start again; the one write answered while stopped |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |
@@ -233,6 +236,10 @@ at all.
 | `GET /events` | server-sent events, live |
 
 Nothing here decides anything: each endpoint appends one event and lets the rules react.
+The three stop routes are the exception. Being stopped is a state of the board rather than
+something that happened to a ticket, so they write a setting instead of an event — and the
+second `POST /stop` reaches into the runs in flight, which is the one thing here that does
+not wait for the rules.
 
 ## Layout
 

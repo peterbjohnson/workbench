@@ -107,8 +107,11 @@ gaps are worth knowing before you rely on it:
   interrupted run kept lives with the agent SDK on the machine that ran it, and
   `runStage` is deliberately told to start the stage afresh rather than fail if it cannot
   pick that up. So an interrupt you resume within the hour costs almost nothing, and one
-  you resume after updating the workbench or moving machines may silently be a whole
-  stage bought twice. Nothing currently records which of the two happened.
+  you resume after updating the workbench or moving machines may be a whole stage bought
+  twice. Which of the two happened is half-recorded: a resume that fails writes "could not
+  pick the … run back up" on the ticket before starting again, and a resume that works says
+  nothing at all. So the cost of an interrupt can be found, but only by reading a transcript
+  for the absence of a line.
 - **Being stopped also switches off the chat.** A conversation about a ticket is a
   `POST`, so while stopped it is refused with everything else. If you stopped *because*
   the board is in a muddle, the tool for working out the muddle is the one thing that is
@@ -127,8 +130,9 @@ gaps are worth knowing before you rely on it:
 
 Recommended as later tickets, and deliberately not done here:
 
-1. Record whether a carried-on stage really resumed its conversation or started again, and
-   show it — so the cost of interrupting is observed rather than assumed.
+1. Record a successful resume as plainly as a failed one is, and show it on the ticket —
+   so the cost of interrupting is read off the board rather than inferred from a line
+   missing in a transcript.
 2. Let the chat through while the workbench is stopped, since it changes no ticket state.
 3. Disable the board's actions while stopped, rather than letting each one fail.
 4. Say what an interrupted stage left behind in its worktree — uncommitted work, and a

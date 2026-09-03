@@ -648,9 +648,9 @@ function Actions({
         </>
       )}
 
-      {/* Answering the offer here rather than on GitHub. It says what it does: the
-          ticket's commits become one commit on the base, which is what the branch's
-          own history — the stages arguing — is not worth putting there. */}
+      {/* Answering the offer here rather than on GitHub, and saying how: one commit
+          on the base, which is what the branch's own history — the stages arguing —
+          is not worth putting there, or a merge commit when it is. */}
       {t.status === 'awaiting_verdict' &&
         t.prUrl !== null &&
         (t.mergeRequested ? (
@@ -659,11 +659,19 @@ function Actions({
           </div>
         ) : (
           <div className="row">
-            <button type="button" className="go" onClick={() => void onAct(wb.merge(t.id))}>
+            <button
+              type="button"
+              className="go"
+              onClick={() => void onAct(wb.merge(t.id, 'squash'))}
+            >
               Squash and merge
             </button>
+            <button type="button" onClick={() => void onAct(wb.merge(t.id, 'merge'))}>
+              Merge commit
+            </button>
             <span className="quiet">
-              squashes this ticket&rsquo;s commits into one on the base, and accepts it
+              accepts it — squashed into one commit on the base, or keeping the ticket&rsquo;s
+              commits under a merge commit
             </span>
           </div>
         ))}

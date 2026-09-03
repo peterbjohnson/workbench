@@ -1070,6 +1070,40 @@ test('interrupting a running stage parks it to be carried on, not to be paid for
   }
 });
 
+test('stopping while the standing checks run abandons the stage rather than buying it', async () => {
+  // A stage is under way from `stage_started`, not from the moment the agent is
+  // asked. STOP pressed while the suite runs used to find nothing to abort, tell the
+  // manager nothing had been abandoned, and then buy the verify run anyway.
+  let interrupted: string[] | undefined;
+  let h: Harness;
+
+  h = harness({
+    checks: () => {
+      if (interrupted === undefined) {
+        h.store.setStopped(true);
+        interrupted = h.orch.interrupt();
+      }
+      return [{ command: 'yarn test', ok: true, output: '131 passing' }];
+    },
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(interrupted, ['t1'], 'the second press says what it abandoned');
+    assert.ok(!h.ran.includes('verify'), 'and no agent was asked for after it');
+
+    const t = h.store.ticket('t1');
+    assert.equal(t.running, false, 'the slot is free');
+    assert.equal(t.interrupted, true, 'and the board offers to carry the stage on');
+  } finally {
+    await h.close();
+  }
+});
+
 test('a code host that cannot be reached does not stop the ticket', async () => {
   // Five of the eight tickets ever blocked over GitHub were blocked by this, and
   // one outage took two of them a tenth of a second apart. Reading a verdict is a

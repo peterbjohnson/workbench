@@ -525,6 +525,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     const { path: worktree, scratch } = await prepare(ticket);
     const runId = randomUUID();
 
+    // Interruptible from the moment it is running, not from the moment the agent
+    // starts. Everything between the two — the refresh, the standing checks — is
+    // this run happening, and a STOP pressed during it used to find nothing to
+    // abort, report that nothing was abandoned, and then let the stage go on and
+    // buy the whole agent run it was pressed to prevent.
+    const abort = new AbortController();
+    aborts.set(ticket.id, abort);
+
     store.append(ticket.id, { type: 'stage_started', stage, runId });
 
     const conflict = await refreshForStage(ticket, stage, runId);
@@ -544,12 +552,33 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     // there is a tree worth asking about.
     if (stage === 'verify' && conflict === undefined) {
       const passed = await standingChecks(ticket, runId, worktree);
-      if (passed === null) return; // rejected, and no agent was asked
+      if (passed === null) {
+        // Rejected, and no agent was asked. The stage is over, so it is no longer
+        // anyone's to stop: a name left in either of these belongs to a run that has
+        // ended, and would be answered by whatever ran next under the same id.
+        aborts.delete(ticket.id);
+        broken.delete(ticket.id);
+        return;
+      }
       checks = passed;
     }
 
-    const abort = new AbortController();
-    aborts.set(ticket.id, abort);
+    // Stopped before the agent was ever asked. Recorded as `interrupted` — the same
+    // as a run stopped mid-flight — rather than started and immediately abandoned,
+    // which is the difference between a STOP that costs nothing and one that costs a
+    // stage. The session is the one this run was about to resume, because it never
+    // got as far as naming one of its own.
+    if (broken.delete(ticket.id)) {
+      aborts.delete(ticket.id);
+      store.append(ticket.id, {
+        type: 'stage_finished',
+        runId,
+        outcome: 'interrupted',
+        summary: 'stopped by the manager',
+        sessionId: ticket.session ?? undefined,
+      });
+      return;
+    }
 
     let commit: string | null = null;
     let result: RunResult;
