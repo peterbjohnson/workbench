@@ -244,6 +244,8 @@ header .stopper:hover {
 }
 
 header .stopper.go {
+  background: var(--accent);
+  border-color: var(--accent);
   color: var(--on-fill);
   font-weight: 600;
 }
