@@ -1,0 +1,199 @@
+import { createOrchestrator, type RunResult, type StageRunner, type Verdict } from './loop.ts';
+import { openStore, type Store } from '../store/store.ts';
+import type { CheckRun, Event, Refreshed, Stage } from '../domain/events.ts';
+import type { Credentials } from '../run/credentials.ts';
+
+export type StageOutcome = RunResult | ((attempt: number) => RunResult);
+
+export type Harness = {
+  store: Store;
+  orch: ReturnType<typeof createOrchestrator>;
+  /** Every stage run that happened, in order. */
+  ran: Stage[];
+  prsOpened: string[];
+  /** Every branch-bringing-in that was asked for, in order. */
+  refreshed: { id: string; alsoMerge: readonly string[]; keepConflict: boolean }[];
+  /** The pull requests the loop merged, in order. */
+  prsMerged: string[];
+  /** Tickets whose worktree was cleaned up. */
+  tidied: string[];
+  /** Every stage commit that was made, as `<ticket>: <message>`. */
+  committed: string[];
+  /** What the loop told whoever is watching. */
+  announced: string[];
+  close: () => Promise<void>;
+};
+
+export const ok = (summary: string): RunResult => ({ outcome: 'completed', summary });
+
+/**
+ * A whole orchestrator with the outside world faked: no agents, no git, no GitHub.
+ * Everything else is the real thing.
+ *
+ * The only way a test builds an orchestrator, so a field added to `Deps` is filled
+ * in one place. Say what the test is about — `stages` for what an agent returns, or
+ * `runStage` when the test is about the run itself — and leave the rest alone.
+ */
+export function harness(
+  opts: {
+    stages?: Partial<Record<Stage, StageOutcome>>;
+    runStage?: StageRunner;
+    /** The manager's answer. A function when it differs by ticket. */
+    verdict?: Verdict | ((ticketId: string) => Verdict);
+    openPr?: () => Promise<string>;
+    merge?: (ticketId: string) => Promise<void>;
+    /**
+     * What tidying up does. Somewhere to watch an acceptance from: it is the first
+     * thing that follows one, whether the merge was asked for here or found on the
+     * host, and the pass over the other branches comes straight after it.
+     */
+    discard?: (ticketId: string) => Promise<void>;
+    /** The store to drive. Its own in-memory one unless a test needs two over one. */
+    store?: Store;
+    credentials?: () => Credentials;
+    /** What the standing checks say. None configured is the default. */
+    checks?: CheckRun[] | (() => CheckRun[]);
+    /**
+     * What bringing the base in does. An up-to-date branch is the default.
+     * `keepConflict` tells the two callers apart: it is the refresh at the start of
+     * a stage, which takes the base alone and leaves a clash for the stage, rather
+     * than the ones that bring in work and hand a clash to the manager.
+     */
+    refresh?: (ticketId: string, keepConflict: boolean) => Refreshed;
+    /**
+     * What a stage left of a merge it was handed. Nothing — the stage resolved it
+     * — is the default, because that is what a stage handed one is asked to do.
+     */
+    unresolved?: (paths: readonly string[]) => string[];
+  } = {},
+): Harness {
+  const store = opts.store ?? openStore(':memory:');
+  // A base is reported only by the call that actually cuts the branch, as the real
+  // one does — otherwise every stage re-announces a branch that already exists.
+  const branched = new Set<string>();
+  const ran: Stage[] = [];
+  const prsOpened: string[] = [];
+  const refreshed: { id: string; alsoMerge: readonly string[]; keepConflict: boolean }[] = [];
+  const prsMerged: string[] = [];
+  const tidied: string[] = [];
+  const committed: string[] = [];
+  const announced: string[] = [];
+  const attempts = new Map<Stage, number>();
+
+  const orch = createOrchestrator({
+    store,
+    workspace: {
+      prepare: async (id) => {
+        const first = !branched.has(id);
+        branched.add(id);
+        return {
+          path: `/tmp/wb/${id}`,
+          scratch: `/tmp/wb/${id}.scratch`,
+          base: first ? 'abc1234' : null,
+        };
+      },
+      refresh: async (id, alsoMerge = [], keepConflict = false) => {
+        refreshed.push({ id, alsoMerge, keepConflict });
+        return opts.refresh?.(id, keepConflict) ?? { kind: 'up-to-date' };
+      },
+      unresolved: async (_id, paths) => opts.unresolved?.(paths) ?? [],
+      commit: async (ticket, message) => {
+        committed.push(`${ticket.id}: ${message}`);
+        // A hash of its own each time, as real commits have: a test that counts what
+        // is on the branch cannot be answered by one the fake repeats.
+        return `c0ffee${committed.length}`;
+      },
+      discard: async (id) => {
+        tidied.push(id);
+        await opts.discard?.(id);
+      },
+    },
+    host: {
+      openPr: async (t) => {
+        const url = opts.openPr ? await opts.openPr() : `https://example/pr/${t.id}`;
+        prsOpened.push(url);
+        return url;
+      },
+      verdict: async (t) => {
+        const configured = opts.verdict ?? { kind: 'pending' };
+        return typeof configured === 'function' ? configured(t.id) : configured;
+      },
+      merge: async (t) => {
+        await opts.merge?.(t.id);
+        prsMerged.push(t.prUrl ?? '');
+      },
+    },
+    runStage: async (args) => {
+      ran.push(args.stage);
+      if (opts.runStage) return opts.runStage(args);
+      const attempt = (attempts.get(args.stage) ?? 0) + 1;
+      attempts.set(args.stage, attempt);
+      const configured = opts.stages?.[args.stage];
+      if (configured === undefined) return ok(`${args.stage} done`);
+      return typeof configured === 'function' ? configured(attempt) : configured;
+    },
+    checks: async () => (typeof opts.checks === 'function' ? opts.checks() : (opts.checks ?? [])),
+    credentials: async () => opts.credentials?.() ?? { ok: true, how: 'a test' },
+    announce: (message) => announced.push(message),
+  });
+
+  return {
+    store,
+    orch,
+    ran,
+    prsOpened,
+    refreshed,
+    prsMerged,
+    tidied,
+    committed,
+    announced,
+    close: async () => {
+      await orch.stop();
+      // A store the test brought is the test's to close: the point of sharing one
+      // is that a second orchestrator opens over it after this one has gone.
+      if (!opts.store) store.close();
+    },
+  };
+}
+
+/** A ticket the manager has committed to. A backlogged one would never start. */
+export function create(store: Store, id = 't1'): void {
+  store.append(id, { type: 'ticket_created', title: `ticket ${id}`, body: 'do it' });
+  store.append(id, { type: 'queued' });
+}
+
+/**
+ * A ticket whose work is already offered and waiting on the manager. Written
+ * rather than run, so it is standing before anything else starts: what happens to
+ * a pull request while another one merges cannot be tested against a race to
+ * reach one.
+ */
+export function standing(store: Store, id: string): void {
+  create(store, id);
+  store.append(id, { type: 'pr_opened', url: `https://example/pr/${id}` });
+}
+
+/** A ticket committed to, told what it waits for, and only then queued. */
+export function waiting(store: Store, id: string, tickets: string[]): void {
+  store.append(id, { type: 'ticket_created', title: `ticket ${id}`, body: 'do it' });
+  store.append(id, { type: 'waits_for', tickets });
+  store.append(id, { type: 'queued' });
+}
+
+/** Lets the loop settle until `want` is true, rather than guessing how many turns it takes. */
+export async function waitFor(want: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 500; i++) {
+    if (want()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/** What one stage run recorded, from its `stage_started` to its `stage_finished`. */
+export function during(store: Store, ticketId: string, stage: Stage): Event[] {
+  const events = store.eventsFor(ticketId);
+  const from = events.findIndex((e) => e.type === 'stage_started' && e.stage === stage);
+  if (from === -1) return [];
+  const to = events.findIndex((e, i) => i > from && e.type === 'stage_finished');
+  return events.slice(from, to === -1 ? undefined : to);
+}
