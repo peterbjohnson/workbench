@@ -75,11 +75,20 @@ test('closing a pull request without merging rejects it', () => {
 });
 
 test('merging squashes the ticket into one commit on the base', () => {
-  assert.deepEqual(mergeArgs('https://example/pr/7'), [
+  assert.deepEqual(mergeArgs('https://example/pr/7', 'squash'), [
     'pr',
     'merge',
     'https://example/pr/7',
     '--squash',
+  ]);
+});
+
+test('or makes an ordinary merge commit, when that is what was asked for', () => {
+  assert.deepEqual(mergeArgs('https://example/pr/7', 'merge'), [
+    'pr',
+    'merge',
+    'https://example/pr/7',
+    '--merge',
   ]);
 });
 

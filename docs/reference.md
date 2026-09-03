@@ -217,7 +217,7 @@ at all.
 | `POST /tickets/:id/restart` | run a failed stage again, from the top |
 | `POST /tickets/:id/continue` | carry a stopped stage on, keeping the run it was in the middle of |
 | `POST /tickets/:id/ship` | offer what it has as a pull request |
-| `POST /tickets/:id/merge` | squash the offered work onto the base and accept it |
+| `POST /tickets/:id/merge` | merge the offered work onto the base and accept it — `{method}`, `squash` (the default) or `merge` |
 | `POST /tickets/:id/cancel` | stop a ticket — `{reason}` |
 | `POST /tickets/:id/chat-warm` | the ticket's chat pane is open, so the process that will answer its turns starts now |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
