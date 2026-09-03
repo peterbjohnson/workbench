@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CheckRun, EventBody, Refreshed, Scale, Stage } from '../domain/events.ts';
+import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
 import { ended, type Ticket } from '../domain/ticket.ts';
 import { awaitedWork, carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
@@ -10,9 +10,14 @@ import { readStep } from '../run/protocol.ts';
 /** An action that has something to carry out — everything except waiting. */
 type Doable = Exclude<Action, { kind: 'wait' }>;
 
-/** What a stage run reports back. The orchestrator turns this into events. */
+/**
+ * What a stage run reports back. The orchestrator turns this into events.
+ *
+ * A runner never reports `interrupted`; the orchestrator writes it over whatever
+ * the run said, for a run it stopped underneath. See `interrupt`.
+ */
 export type RunResult = {
-  outcome: 'completed' | 'blocked' | 'failed';
+  outcome: RunOutcome;
   summary: string;
   /** Set by review and verify when the approach itself is wrong. */
   rejected?: string;
@@ -162,6 +167,11 @@ export type Orchestrator = {
   tick: () => Promise<unknown>;
   /** Resolves once nothing is in flight and no further action is permitted. */
   idle: () => Promise<void>;
+  /**
+   * Stop the stages still running, and say which they were. The second press of
+   * the board's STOP: the first left them to finish.
+   */
+  interrupt: () => string[];
   start: () => void;
   stop: () => Promise<void>;
 };
@@ -204,6 +214,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   const inFlight = new Map<string, Promise<void>>();
   /** How a cancellation reaches a run that has already started. */
   const aborts = new Map<string, AbortController>();
+  /**
+   * Tickets whose run was stopped by `interrupt` rather than by the manager
+   * cancelling the ticket. Both arrive at the run as the same aborted signal, and
+   * this is what tells them apart when it comes back.
+   */
+  const broken = new Set<string>();
   /**
    * The merge gate: the ticket merging, and any that arrived while it was. One
    * merge at a time, the pass over every other open pull request included.
@@ -324,6 +340,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    */
   async function tick({ poll = false }: { poll?: boolean } = {}): Promise<boolean> {
     if (stopped) return false;
+    // The manager stopped the whole workbench. Nothing starts at all — not a stage,
+    // not a pull request, not a verdict poll — until `wb start`. Asked before the
+    // tickets are read, because being stopped is not a fact about any of them.
+    if (store.stopped()) return false;
 
     /**
      * Whether this pass found anything happening: work it started, or a ticket it
@@ -572,6 +592,24 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       result = { outcome: 'failed', summary: describe(error) };
     } finally {
       aborts.delete(ticket.id);
+    }
+
+    // The run did not end, it was ended: `interrupt` aborted it, and whatever the
+    // runner said on the way out is a description of being stopped rather than of
+    // anything that went wrong. Recorded as `interrupted` — not `failed` — because
+    // that is what keeps the conversation and offers to carry the stage on instead
+    // of buying it again, the same distinction `reconcile` draws for a workbench
+    // that died mid-stage. Nothing is committed: the tree is half-written.
+    if (broken.delete(ticket.id)) {
+      result = {
+        outcome: 'interrupted',
+        summary: 'stopped by the manager',
+        costUsd: result.costUsd,
+        // Whatever conversation the run got as far as naming. Read back from the
+        // store, because `session_started` is emitted by the run rather than
+        // returned by it, and a run stopped mid-flight returns very little.
+        sessionId: result.sessionId ?? store.ticket(ticket.id).session ?? undefined,
+      };
     }
 
     // The far end of the merge handed over at the start. A run that finished with
@@ -931,6 +969,18 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
 
   return {
     tick,
+
+    interrupt() {
+      // Named before they are aborted, so `doStage` finds the name however fast the
+      // abort comes back. The same wire a cancellation travels; what differs is what
+      // the stopped run is recorded as.
+      const ids = [...aborts.keys()];
+      for (const id of ids) {
+        broken.add(id);
+        aborts.get(id)?.abort();
+      }
+      return ids;
+    },
 
     async idle() {
       for (let i = 0; i < SETTLE_LIMIT; i++) {

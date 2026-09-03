@@ -36,6 +36,13 @@ test('a stop says what ending it early would leave unfinished', () => {
   assert.doesNotMatch(said, /from the top/);
 });
 
+test('the same message told from the command line names the command, not the key', () => {
+  // `wb stop` leaves the same stages running and is pressed twice for the same
+  // reason, so it says the same thing — but telling someone to press Ctrl-C in a
+  // terminal that is not the one running the workbench is telling them nothing.
+  assert.match(draining([running('t12', 'implement', 3.4)], 'wb stop'), /wb stop again/);
+});
+
 test('one stage is not "1 stages"', () => {
   assert.match(draining([running('t12', 'implement', 1)]), /finishing 1 stage before/);
   assert.match(abandoning([running('t12', 'implement', 1)]), /abandoning 1 stage: t12\./);

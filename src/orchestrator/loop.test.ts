@@ -1007,6 +1007,69 @@ test('cancelling stops a stage that is already running', async () => {
   }
 });
 
+test('a stopped board starts nothing, and starting again picks the ticket up', async () => {
+  const h = harness();
+  try {
+    h.store.setStopped(true);
+    create(h.store);
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, [], 'no stage was bought');
+    assert.equal(h.store.ticket('t1').status, 'queued', 'it is still waiting its turn');
+
+    h.store.setStopped(false);
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['plan'], 'and it goes the moment the board does');
+  } finally {
+    await h.close();
+  }
+});
+
+test('interrupting a running stage parks it to be carried on, not to be paid for again', async () => {
+  let sawAbort = false;
+  let release: (() => void) | undefined;
+
+  const h = harness({
+    runStage: async ({ signal, emit, runId }) => {
+      // Named the moment the model service names it, as a real run does — this is
+      // what an interrupted stage has left to carry on from.
+      emit({ type: 'session_started', runId, sessionId: 'sess-abc' });
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        signal.addEventListener('abort', () => {
+          sawAbort = true;
+          resolve();
+        });
+      });
+      // What a runner really answers an aborted signal with. Left alone it would be
+      // recorded as a stage that broke, and a broken stage is bought again.
+      return { outcome: 'failed', summary: 'the manager stopped this run' };
+    },
+  });
+
+  try {
+    create(h.store);
+    void h.orch.tick();
+    await waitFor(() => release !== undefined, 'the stage to start');
+
+    // The second press of STOP: the board is already stopped and the manager is not
+    // waiting for what is in flight.
+    h.store.setStopped(true);
+    assert.deepEqual(h.orch.interrupt(), ['t1'], 'it says what it stopped');
+    await waitFor(() => sawAbort, 'the run to be told to stop');
+    await h.orch.idle();
+
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.running, false, 'the slot is free');
+    assert.equal(ticket.interrupted, true, 'and the board offers to carry it on');
+    assert.equal(ticket.session, 'sess-abc', 'from the conversation it kept');
+  } finally {
+    release?.();
+    await h.close();
+  }
+});
+
 test('a code host that cannot be reached does not stop the ticket', async () => {
   // Five of the eight tickets ever blocked over GitHub were blocked by this, and
   // one outage took two of them a tenth of a second apart. Reading a verdict is a

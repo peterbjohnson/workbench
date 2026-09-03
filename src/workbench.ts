@@ -111,6 +111,7 @@ export async function startWorkbench(
   // Fake agents spend nothing, and a name check is a model call like any other:
   // trying the workbench out must not be the one thing that quietly costs money.
   const api = createApi(store, config, {
+    orchestrator,
     chat: chats === undefined ? createFakeChatRunner() : chats.chat,
     ...(chats === undefined ? {} : { warmChat: chats.warm }),
     ...(pool === undefined
