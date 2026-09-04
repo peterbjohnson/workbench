@@ -101,6 +101,8 @@ export function App() {
   const [settingsVersion, setSettingsVersion] = useState(0);
   // Which end of Done to read from. The browser's choice, not the workbench's.
   const [order, chooseOrder] = useOrder();
+  // Whether the whole board is stopped, and what is still running in spite of it.
+  const [stopped, setStopped] = useState<{ stopped: boolean; running: string[] } | null>(null);
 
   /** Anything appended redraws the board. No polling, and no refresh button. */
   useEffect(() => {
@@ -111,11 +113,12 @@ export function App() {
 
   useEffect(() => {
     let live = true;
-    Promise.all([wb.tickets(), wb.policy()])
-      .then(([ts, p]) => {
+    Promise.all([wb.tickets(), wb.policy(), wb.stopped()])
+      .then(([ts, p, s]) => {
         if (!live) return;
         setTickets(ts);
         setPolicy(p);
+        setStopped(s);
         setError(null);
       })
       .catch((e: unknown) => live && setError(describe(e)));
@@ -182,6 +185,16 @@ export function App() {
       setError(describe(e));
     }
   }, []);
+
+  /**
+   * Something about the whole board rather than about a ticket. Nothing is appended
+   * when the board is stopped or started, so there is no event to redraw off: the
+   * press asks for the read again itself.
+   */
+  const control = useCallback(
+    (work: Promise<unknown>) => act(work.then(() => setVersion((v) => v + 1))),
+    [act],
+  );
 
   const move = useCallback(
     (t: Ticket, column: string) => {
@@ -273,6 +286,7 @@ export function App() {
         </nav>
         {waiting > 0 && <span className="waiting">{waiting} waiting on you</span>}
         {policy !== null && <span className="quiet">{policy.wipLimit} at a time</span>}
+        {stopped !== null && <Stop state={stopped} onAct={control} />}
         <Theme />
       </header>
 
@@ -399,6 +413,43 @@ export function App() {
           onAct={act}
           onClose={() => open(null)}
         />
+      )}
+    </>
+  );
+}
+
+/**
+ * The whole board, stopped and started.
+ *
+ * One press stops it: nothing new starts, and the stages already going are left to
+ * finish — which is why the second button appears rather than a dialog. Pressing
+ * stop again is what ends them, and the first press is the confirmation for it: you
+ * have already decided, and now you are deciding whether to wait.
+ */
+function Stop({
+  state,
+  onAct,
+}: {
+  state: { stopped: boolean; running: string[] };
+  onAct: (work: Promise<unknown>) => void;
+}) {
+  if (!state.stopped) {
+    return (
+      <button type="button" className="stopper" onClick={() => onAct(wb.stop())}>
+        Stop
+      </button>
+    );
+  }
+
+  return (
+    <>
+      <button type="button" className="stopper go" onClick={() => onAct(wb.start())}>
+        Start
+      </button>
+      {state.running.length > 0 && (
+        <button type="button" className="stopper" onClick={() => onAct(wb.stop())}>
+          Stop {state.running.length} still running
+        </button>
       )}
     </>
   );

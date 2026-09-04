@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CheckRun, EventBody, Refreshed, Scale, Stage } from '../domain/events.ts';
+import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
 import { ended, type Ticket } from '../domain/ticket.ts';
 import { awaitedWork, carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
@@ -10,9 +10,14 @@ import { readStep } from '../run/protocol.ts';
 /** An action that has something to carry out — everything except waiting. */
 type Doable = Exclude<Action, { kind: 'wait' }>;
 
-/** What a stage run reports back. The orchestrator turns this into events. */
+/**
+ * What a stage run reports back. The orchestrator turns this into events.
+ *
+ * A runner never reports `interrupted`; the orchestrator writes it over whatever
+ * the run said, for a run it stopped underneath. See `interrupt`.
+ */
 export type RunResult = {
-  outcome: 'completed' | 'blocked' | 'failed';
+  outcome: RunOutcome;
   summary: string;
   /** Set by review and verify when the approach itself is wrong. */
   rejected?: string;
@@ -162,6 +167,11 @@ export type Orchestrator = {
   tick: () => Promise<unknown>;
   /** Resolves once nothing is in flight and no further action is permitted. */
   idle: () => Promise<void>;
+  /**
+   * Stop the stages still running, and say which they were. The second press of
+   * the board's STOP: the first left them to finish.
+   */
+  interrupt: () => string[];
   start: () => void;
   stop: () => Promise<void>;
 };
@@ -204,6 +214,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   const inFlight = new Map<string, Promise<void>>();
   /** How a cancellation reaches a run that has already started. */
   const aborts = new Map<string, AbortController>();
+  /**
+   * Tickets whose run was stopped by `interrupt` rather than by the manager
+   * cancelling the ticket. Both arrive at the run as the same aborted signal, and
+   * this is what tells them apart when it comes back.
+   */
+  const broken = new Set<string>();
   /**
    * The merge gate: the ticket merging, and any that arrived while it was. One
    * merge at a time, the pass over every other open pull request included.
@@ -324,6 +340,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    */
   async function tick({ poll = false }: { poll?: boolean } = {}): Promise<boolean> {
     if (stopped) return false;
+    // The manager stopped the whole workbench. Nothing starts at all — not a stage,
+    // not a pull request, not a verdict poll — until `wb start`. Asked before the
+    // tickets are read, because being stopped is not a fact about any of them.
+    if (store.stopped()) return false;
 
     /**
      * Whether this pass found anything happening: work it started, or a ticket it
@@ -505,173 +525,231 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     const { path: worktree, scratch } = await prepare(ticket);
     const runId = randomUUID();
 
-    store.append(ticket.id, { type: 'stage_started', stage, runId });
-
-    const conflict = await refreshForStage(ticket, stage, runId);
-    // A merge that landed moved the base on the stored ticket, and everything
-    // downstream — the brief's diff above all — is taken from the object rather than
-    // the store. Without this the stage sees the base it was cut from, and the whole
-    // of the merged-in work reads as its own. The base alone, not the whole ticket:
-    // the one held here is deliberately the one from before `stage_started`, which
-    // clears the answer and the session this run is about to carry in.
-    ticket = { ...ticket, base: store.ticket(ticket.id).base };
-
-    let checks: CheckRun[] | undefined;
-    // Not while a merge is waiting: the checks would be run against a tree full of
-    // conflict markers, fail for that and nothing else, and send the ticket back to
-    // planning before the agent had so much as looked at it. Resolving the merge is
-    // the first thing this run does, and they are asked at the far end of it, once
-    // there is a tree worth asking about.
-    if (stage === 'verify' && conflict === undefined) {
-      const passed = await standingChecks(ticket, runId, worktree);
-      if (passed === null) return; // rejected, and no agent was asked
-      checks = passed;
-    }
-
+    // Interruptible from the moment it is running, not from the moment the agent
+    // starts. Everything between the two — the refresh, the standing checks — is
+    // this run happening, and a STOP pressed during it used to find nothing to
+    // abort, report that nothing was abandoned, and then let the stage go on and
+    // buy the whole agent run it was pressed to prevent.
     const abort = new AbortController();
     aborts.set(ticket.id, abort);
 
-    let commit: string | null = null;
-    let result: RunResult;
     try {
-      result = await deps.runStage({
-        ticket,
-        stage,
-        runId,
-        worktree,
-        scratch,
-        checks,
-        conflict,
-        // Whatever conversation the ticket is holding. It is holding one only if it
-        // stopped with something to come back to — a question it asked, or a
-        // workbench that stopped underneath it — and only if what moved it here was
-        // one of the two moves that goes back to that run: `movedOn` in ticket.ts
-        // drops the session on every other one. So the rule can be that single
-        // fact, rather than a list of the reasons it might be true.
-        //
-        // Never while a merge is waiting, though: a resumed run is not given a
-        // brief, and the merge is in the brief.
-        resume: conflict === undefined ? (ticket.session ?? undefined) : undefined,
-        // A stage announcing which step it has reached is recorded as a fact of its
-        // own, so the board shows progress without anyone reading prose. Done here
-        // rather than in a runner: it is what a stage *said* that counts, so every
-        // runner gets it, and the fake one exercises the same path.
-        emit: (body) => {
-          store.append(ticket.id, body);
-          if (body.type !== 'agent_said') return;
-          const index = readStep(body.text);
-          if (index !== undefined) store.append(ticket.id, { type: 'step_reached', runId, index });
-        },
-        signal: abort.signal,
-      });
-    } catch (error) {
-      // A crash is not a rejection: the ticket parks rather than looping back to plan.
-      // Nothing is charged for it, because a runner that gets here died rather than
-      // answered and there is no figure to charge: the real one reports its failures,
-      // with what they spent, rather than throwing them.
-      result = { outcome: 'failed', summary: describe(error) };
-    } finally {
-      aborts.delete(ticket.id);
-    }
+      store.append(ticket.id, { type: 'stage_started', stage, runId });
 
-    // The far end of the merge handed over at the start. A run that finished with
-    // any of it still conflicted parks the ticket, and nothing is committed:
-    // `commit` stages everything it finds, so an unresolved merge would put
-    // conflict markers on the branch as though they were the stage's work.
-    if (conflict !== undefined && result.outcome === 'completed') {
-      const left = await deps.workspace.unresolved(ticket.id, conflict.paths);
-      if (left.length > 0) {
-        result = {
-          outcome: 'blocked',
-          // The run's own summary is kept: what it did is still what it did, and
-          // whoever answers this needs it as much as they need the unfinished merge.
-          summary: `${left.join(', ')} are still conflicted: ${result.summary}`,
-          costUsd: result.costUsd,
-        };
-      }
-    }
+      const conflict = await refreshForStage(ticket, stage, runId);
+      // A merge that landed moved the base on the stored ticket, and everything
+      // downstream — the brief's diff above all — is taken from the object rather than
+      // the store. Without this the stage sees the base it was cut from, and the whole
+      // of the merged-in work reads as its own. The base alone, not the whole ticket:
+      // the one held here is deliberately the one from before `stage_started`, which
+      // clears the answer and the session this run is about to carry in.
+      ticket = { ...ticket, base: store.ticket(ticket.id).base };
 
-    // Commit before announcing the stage finished: the next stage's diff is
-    // taken against the base branch, so uncommitted work is invisible to it.
-    if (result.outcome === 'completed') {
-      try {
-        commit = await deps.workspace.commit(ticket, `${stage}: ${ticket.title} (${ticket.id})`);
-        // The merge handed over at the start is on the branch now, so this is where
-        // the base it brought in is recorded — `conflicted` deliberately moves
-        // nothing, because until this commit there was nothing to move. Without it
-        // the ticket keeps the base it was cut from, and every later diff is taken
-        // from there: the whole of the merged-in work read as this ticket's own.
-        if (conflict !== undefined && commit !== null) {
-          store.append(ticket.id, {
-            type: 'refreshed',
-            base: conflict.base,
-            commit,
-            carrying: carriedWork(ticket, store.tickets(), []),
-          });
+      let checks: CheckRun[] | undefined;
+      // Not while a merge is waiting: the checks would be run against a tree full of
+      // conflict markers, fail for that and nothing else, and send the ticket back to
+      // planning before the agent had so much as looked at it. Resolving the merge is
+      // the first thing this run does, and they are asked at the far end of it, once
+      // there is a tree worth asking about.
+      if (stage === 'verify' && conflict === undefined) {
+        const passed = await standingChecks(ticket, runId, worktree);
+        if (passed === null) {
+          // Rejected, and no agent was asked. The stage is over, so it is no longer
+          // anyone's to stop: a name left in either of these belongs to a run that has
+          // ended, and would be answered by whatever ran next under the same id.
+          aborts.delete(ticket.id);
+          broken.delete(ticket.id);
+          return;
         }
+        checks = passed;
+      }
+
+      // Stopped before the agent was ever asked. Recorded as `interrupted` — the same
+      // as a run stopped mid-flight — rather than started and immediately abandoned,
+      // which is the difference between a STOP that costs nothing and one that costs a
+      // stage. The session is the one this run was about to resume, because it never
+      // got as far as naming one of its own.
+      if (broken.delete(ticket.id)) {
+        aborts.delete(ticket.id);
+        store.append(ticket.id, {
+          type: 'stage_finished',
+          runId,
+          outcome: 'interrupted',
+          summary: 'stopped by the manager',
+          sessionId: ticket.session ?? undefined,
+        });
+        return;
+      }
+
+      let commit: string | null = null;
+      let result: RunResult;
+      try {
+        result = await deps.runStage({
+          ticket,
+          stage,
+          runId,
+          worktree,
+          scratch,
+          checks,
+          conflict,
+          // Whatever conversation the ticket is holding. It is holding one only if it
+          // stopped with something to come back to — a question it asked, or a
+          // workbench that stopped underneath it — and only if what moved it here was
+          // one of the two moves that goes back to that run: `movedOn` in ticket.ts
+          // drops the session on every other one. So the rule can be that single
+          // fact, rather than a list of the reasons it might be true.
+          //
+          // Never while a merge is waiting, though: a resumed run is not given a
+          // brief, and the merge is in the brief.
+          resume: conflict === undefined ? (ticket.session ?? undefined) : undefined,
+          // A stage announcing which step it has reached is recorded as a fact of its
+          // own, so the board shows progress without anyone reading prose. Done here
+          // rather than in a runner: it is what a stage *said* that counts, so every
+          // runner gets it, and the fake one exercises the same path.
+          emit: (body) => {
+            store.append(ticket.id, body);
+            if (body.type !== 'agent_said') return;
+            const index = readStep(body.text);
+            if (index !== undefined)
+              store.append(ticket.id, { type: 'step_reached', runId, index });
+          },
+          signal: abort.signal,
+        });
       } catch (error) {
-        // The run still cost what it cost, whatever happened afterwards.
+        // A crash is not a rejection: the ticket parks rather than looping back to plan.
+        // Nothing is charged for it, because a runner that gets here died rather than
+        // answered and there is no figure to charge: the real one reports its failures,
+        // with what they spent, rather than throwing them.
+        result = { outcome: 'failed', summary: describe(error) };
+      } finally {
+        aborts.delete(ticket.id);
+      }
+
+      // The run did not end, it was ended: `interrupt` aborted it, and whatever the
+      // runner said on the way out is a description of being stopped rather than of
+      // anything that went wrong. Recorded as `interrupted` — not `failed` — because
+      // that is what keeps the conversation and offers to carry the stage on instead
+      // of buying it again, the same distinction `reconcile` draws for a workbench
+      // that died mid-stage. Nothing is committed: the tree is half-written.
+      if (broken.delete(ticket.id)) {
         result = {
-          outcome: 'failed',
-          summary: `could not commit: ${describe(error)}`,
+          outcome: 'interrupted',
+          summary: 'stopped by the manager',
           costUsd: result.costUsd,
+          // Whatever conversation the run got as far as naming. Read back from the
+          // store, because `session_started` is emitted by the run rather than
+          // returned by it, and a run stopped mid-flight returns very little.
+          sessionId: result.sessionId ?? store.ticket(ticket.id).session ?? undefined,
         };
       }
-    }
 
-    // The checks the merge kept this run from starting with, asked now that it is
-    // resolved and committed. Nothing else will ask: the next action is `open_pr`,
-    // whose refresh finds a branch already up to date and runs them only when
-    // something merged — so the change most likely to break the suite would be the
-    // one offered without it ever being run.
-    if (stage === 'verify' && conflict !== undefined && result.outcome === 'completed') {
-      const results = await deps.checks(worktree);
-      if (results.length > 0) store.append(ticket.id, { type: 'checks_run', runId, results });
-
-      const failed = results.filter((r) => !r.ok);
-      if (failed.length > 0) {
-        const why = failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n');
-        // Back to planning, the way a failure found before the run already goes. What
-        // the run itself objected to is kept alongside: both are reasons it is going
-        // back, and the next plan has to answer both.
-        result = { ...result, rejected: result.rejected ? `${result.rejected}\n\n${why}` : why };
+      // The far end of the merge handed over at the start. A run that finished with
+      // any of it still conflicted parks the ticket, and nothing is committed:
+      // `commit` stages everything it finds, so an unresolved merge would put
+      // conflict markers on the branch as though they were the stage's work.
+      if (conflict !== undefined && result.outcome === 'completed') {
+        const left = await deps.workspace.unresolved(ticket.id, conflict.paths);
+        if (left.length > 0) {
+          result = {
+            outcome: 'blocked',
+            // The run's own summary is kept: what it did is still what it did, and
+            // whoever answers this needs it as much as they need the unfinished merge.
+            summary: `${left.join(', ')} are still conflicted: ${result.summary}`,
+            costUsd: result.costUsd,
+          };
+        }
       }
-    }
 
-    // One rejected credential means every other ticket would be refused too. Stop,
-    // rather than working through the queue burning a stage on each of them. The
-    // failure can arrive thrown or returned, so it is recognised here, where both
-    // have already become the same thing.
-    // Recording it is enough: the next tick sees it and announces the pause once,
-    // with the same wording as every other reason the board is not working.
-    if (result.outcome === 'failed' && isCredentialRejection(result.summary) && !rejection) {
-      rejection = result.summary;
-    }
+      // Commit before announcing the stage finished: the next stage's diff is
+      // taken against the base branch, so uncommitted work is invisible to it.
+      if (result.outcome === 'completed') {
+        try {
+          commit = await deps.workspace.commit(ticket, `${stage}: ${ticket.title} (${ticket.id})`);
+          // The merge handed over at the start is on the branch now, so this is where
+          // the base it brought in is recorded — `conflicted` deliberately moves
+          // nothing, because until this commit there was nothing to move. Without it
+          // the ticket keeps the base it was cut from, and every later diff is taken
+          // from there: the whole of the merged-in work read as this ticket's own.
+          if (conflict !== undefined && commit !== null) {
+            store.append(ticket.id, {
+              type: 'refreshed',
+              base: conflict.base,
+              commit,
+              carrying: carriedWork(ticket, store.tickets(), []),
+            });
+          }
+        } catch (error) {
+          // The run still cost what it cost, whatever happened afterwards.
+          result = {
+            outcome: 'failed',
+            summary: `could not commit: ${describe(error)}`,
+            costUsd: result.costUsd,
+          };
+        }
+      }
 
-    if (result.question) {
+      // The checks the merge kept this run from starting with, asked now that it is
+      // resolved and committed. Nothing else will ask: the next action is `open_pr`,
+      // whose refresh finds a branch already up to date and runs them only when
+      // something merged — so the change most likely to break the suite would be the
+      // one offered without it ever being run.
+      if (stage === 'verify' && conflict !== undefined && result.outcome === 'completed') {
+        const results = await deps.checks(worktree);
+        if (results.length > 0) store.append(ticket.id, { type: 'checks_run', runId, results });
+
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length > 0) {
+          const why = failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n');
+          // Back to planning, the way a failure found before the run already goes. What
+          // the run itself objected to is kept alongside: both are reasons it is going
+          // back, and the next plan has to answer both.
+          result = { ...result, rejected: result.rejected ? `${result.rejected}\n\n${why}` : why };
+        }
+      }
+
+      // One rejected credential means every other ticket would be refused too. Stop,
+      // rather than working through the queue burning a stage on each of them. The
+      // failure can arrive thrown or returned, so it is recognised here, where both
+      // have already become the same thing.
+      // Recording it is enough: the next tick sees it and announces the pause once,
+      // with the same wording as every other reason the board is not working.
+      if (result.outcome === 'failed' && isCredentialRejection(result.summary) && !rejection) {
+        rejection = result.summary;
+      }
+
+      if (result.question) {
+        store.append(ticket.id, {
+          type: 'question_asked',
+          runId,
+          question: result.question.question,
+          reasoning: result.question.reasoning,
+        });
+      }
+
       store.append(ticket.id, {
-        type: 'question_asked',
+        type: 'stage_finished',
         runId,
-        question: result.question.question,
-        reasoning: result.question.reasoning,
+        outcome: result.outcome,
+        summary: result.summary,
+        rejected: result.rejected,
+        changes: result.changes,
+        costUsd: result.costUsd,
+        commit: commit ?? undefined,
+        scale: result.scale,
+        steps: result.steps,
+        completionCriteria: result.completionCriteria,
+        later: result.later,
+        sessionId: result.sessionId,
       });
+    } finally {
+      // Whatever ends this run — returning, or a refresh, a check or an append
+      // throwing on the way — ends its claim on being stoppable. A name left behind
+      // in either of these belongs to a run that is over: `interrupt` would report
+      // abandoning it, and the next stage under the same id would find itself
+      // already broken and be recorded `interrupted` before it began.
+      if (aborts.get(ticket.id) === abort) aborts.delete(ticket.id);
+      broken.delete(ticket.id);
     }
-
-    store.append(ticket.id, {
-      type: 'stage_finished',
-      runId,
-      outcome: result.outcome,
-      summary: result.summary,
-      rejected: result.rejected,
-      changes: result.changes,
-      costUsd: result.costUsd,
-      commit: commit ?? undefined,
-      scale: result.scale,
-      steps: result.steps,
-      completionCriteria: result.completionCriteria,
-      later: result.later,
-      sessionId: result.sessionId,
-    });
   }
 
   /**
@@ -931,6 +1009,18 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
 
   return {
     tick,
+
+    interrupt() {
+      // Named before they are aborted, so `doStage` finds the name however fast the
+      // abort comes back. The same wire a cancellation travels; what differs is what
+      // the stopped run is recorded as.
+      const ids = [...aborts.keys()];
+      for (const id of ids) {
+        broken.add(id);
+        aborts.get(id)?.abort();
+      }
+      return ids;
+    },
 
     async idle() {
       for (let i = 0; i < SETTLE_LIMIT; i++) {

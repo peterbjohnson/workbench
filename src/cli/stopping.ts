@@ -16,8 +16,13 @@ import type { Ticket } from '../domain/ticket.ts';
  * to read it.
  */
 
-/** What is still in flight, and what waiting for it means. */
-export function draining(running: readonly Ticket[]): string {
+/**
+ * What is still in flight, and what waiting for it means.
+ *
+ * @param again what to press to stop now. `wb stop` is the other way here — it
+ *   leaves the same stages running and is pressed twice for the same reason.
+ */
+export function draining(running: readonly Ticket[], again = 'Ctrl-C'): string {
   if (running.length === 0) return 'nothing in flight. Stopping.';
 
   // Lined up, because this is read while waiting and a column of costs is the thing
@@ -33,7 +38,7 @@ export function draining(running: readonly Ticket[]): string {
         `  ${t.id.padEnd(id)}  ${(t.stage ?? UNKNOWN).padEnd(stage)}  ${money(t.costUsd)} so far`,
     ),
     '',
-    'Ctrl-C again to stop now — each keeps its conversation and can carry on from',
+    `${again} again to stop now — each keeps its conversation and can carry on from`,
     'where it got to, but not until you pick it back up.',
   ].join('\n');
 }

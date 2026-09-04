@@ -1054,3 +1054,58 @@ test('a colour that is not one of the presets is refused, and nothing is written
     assert.equal('colour' in file(), false);
   });
 });
+
+test('stopping refuses every write and leaves every read alone', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('a thing', '');
+
+    assert.deepEqual(await wb.stopped(), { stopped: false, running: [] });
+    assert.deepEqual(await wb.stop(), { stopped: true, running: [], interrupted: [] });
+    assert.equal(store.stopped(), true, 'and it is written down, so a restart still has it');
+
+    // Whatever the board or the command line was asked to do, this is what it says
+    // instead — and it names the way back rather than only refusing.
+    const refusal = /the workbench is stopped — "wb start" to start it again/;
+    await assert.rejects(() => wb.create('another', ''), refusal);
+    await assert.rejects(() => wb.queue('t1'), refusal);
+    await assert.rejects(() => wb.setPolicy({ wipLimit: 3 }), refusal);
+
+    // The board still has to render, and show the way back.
+    assert.equal((await wb.tickets()).length, 1);
+    assert.equal((await wb.ticket('t1')).ticket.title, 'a thing');
+
+    await wb.start();
+    assert.equal(store.stopped(), false);
+    await wb.queue('t1');
+    assert.equal((await wb.ticket('t1')).ticket.status, 'queued');
+  });
+});
+
+test('stopping again interrupts the runs that were left to finish', async () => {
+  const interrupted: string[] = ['t1'];
+  const ticked: number[] = [];
+
+  await withApi(
+    async (wb, store) => {
+      await wb.create('a thing', '');
+      store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+
+      const first = await wb.stop();
+      assert.deepEqual(first, { stopped: true, running: ['t1'], interrupted: [] });
+
+      // The second press, which is the impatient one. The loop is what stops the
+      // runs; this route only says so, and reports what it stopped.
+      const second = await wb.stop();
+      assert.deepEqual(second.interrupted, ['t1']);
+
+      await wb.start();
+      assert.deepEqual(ticked, [1], 'starting looks for work at once, not in thirty seconds');
+    },
+    {
+      orchestrator: {
+        interrupt: () => interrupted,
+        tick: async () => ticked.push(1),
+      },
+    },
+  );
+});

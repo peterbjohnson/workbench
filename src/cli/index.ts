@@ -279,6 +279,30 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case 'stop': {
+      // The tickets first, because what comes back from stopping is ids, and what
+      // is worth reading about a stage in flight is its stage and what it has cost.
+      const before = await wb.tickets();
+      const { running, interrupted } = await wb.stop();
+      const named = (ids: string[]) => before.filter((t) => ids.includes(t.id));
+
+      // The same two things `wb serve` says on the way out, because they are the
+      // same two moments: the polite stop that waits, and the one that does not.
+      console.log(
+        interrupted.length > 0
+          ? abandoning(named(interrupted))
+          : draining(named(running), 'wb stop'),
+      );
+      console.log('\nnothing new will start until: wb start');
+      return 0;
+    }
+
+    case 'start': {
+      await wb.start();
+      console.log('started — whatever is queued goes now');
+      return 0;
+    }
+
     case 'wip': {
       const n = Number(args[0]);
       if (!Number.isInteger(n)) return fail('how many tickets at once?');
@@ -706,6 +730,13 @@ async function serve(config: Config): Promise<number> {
   wb.orchestrator.start();
   const how = config.runner === 'fake' ? 'fake agents, nothing is charged' : 'real agents';
   console.log(`workbench on http://127.0.0.1:${wb.port}  (${how})  —  Ctrl-C to stop\n`);
+
+  // Being stopped outlives the process that was stopped, which is the point of it —
+  // it is how you update the workbench without it starting work underneath you. A
+  // board that then sits silent has to say why rather than look broken.
+  if (wb.store.stopped()) {
+    console.warn('⚠️  the workbench is stopped: nothing will start until "wb start".\n');
+  }
 
   await new Promise<void>((resolve) => {
     process.once('SIGINT', () => resolve());

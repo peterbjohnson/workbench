@@ -45,6 +45,8 @@ workbench — a board of tickets that agents work through
   wb ship <id>                 offer what it has as a pull request, and decide there
   wb merge <id>                merge the offered work onto the base and accept it
   wb cancel <id> [why]         stop a ticket, including one that is running
+  wb stop                      stop the whole workbench; again to interrupt what is running
+  wb start                     let it work again
   wb wip <n>                   how many tickets may run at once
 
 Every command except "init", "auth", "update" and "serve" talks to a running
@@ -222,6 +224,9 @@ at all.
 | `POST /tickets/:id/chat-warm` | the ticket's chat pane is open, so the process that will answer its turns starts now |
 | `POST /name-check` | a better name for a ticket being written — `{title, body}`; `{name: null}` if the one given is fine |
 | `POST /name-check/warm` | the ticket form is open, so whatever answers a name check gets ready now |
+| `GET /stop` | whether the board is stopped, and what is still running — `{stopped, running}` |
+| `POST /stop` | stop everything: nothing new starts. Pressed again while stopped it interrupts what is still going — `{stopped, running, interrupted}` |
+| `POST /start` | start again; the one write answered while stopped |
 | `GET`/`PUT /policy` | the limits — `PUT` takes any of them, and leaves the rest |
 | `GET`/`PUT /settings` | everything the workbench is set to |
 | `GET /agents`, `GET /skills` | each file, with its text and what it declares |
@@ -231,6 +236,10 @@ at all.
 | `GET /events` | server-sent events, live |
 
 Nothing here decides anything: each endpoint appends one event and lets the rules react.
+The three stop routes are the exception. Being stopped is a state of the board rather than
+something that happened to a ticket, so they write a setting instead of an event — and the
+second `POST /stop` reaches into the runs in flight, which is the one thing here that does
+not wait for the rules.
 
 ## Layout
 
