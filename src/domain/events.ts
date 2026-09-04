@@ -15,10 +15,11 @@ export type Scale = 'small' | 'standard' | 'large';
 export type MergeMethod = 'squash' | 'merge';
 
 /**
- * `interrupted` is not one a runner ever reports: it is written by `reconcile`
- * alone, for a run nobody is left to answer for, exactly like the `runId` of
- * `interrupted` it is written beside. Being stopped is not failing, and the
- * difference is what lets the stage carry on rather than begin again.
+ * `interrupted` is not one a runner ever reports: it is written for a run that was
+ * stopped rather than answered — by `reconcile`, for one nobody is left to answer
+ * for, and by the orchestrator for one the manager stopped the workbench out from
+ * under. Being stopped is not failing, and the difference is what lets the stage
+ * carry on rather than begin again.
  */
 export type RunOutcome = 'completed' | 'blocked' | 'failed' | 'interrupted';
 

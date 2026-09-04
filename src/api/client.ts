@@ -133,6 +133,17 @@ export function createClient(baseUrl: string) {
     acceptProposal: (id: string, at: number) =>
       post<{ ticket: Ticket }>(`/tickets/${id}/chat-accept`, { at }).then((r) => r.ticket),
 
+    /** Whether the whole workbench is stopped, and what is still running. */
+    stopped: () => call<{ stopped: boolean; running: string[] }>('/stop'),
+    /**
+     * Stop everything. Nothing new starts, and what is in flight is left to finish
+     * — unless it is already stopped, in which case this is the second press and
+     * those runs are stopped too, and named in `interrupted`.
+     */
+    stop: () => post<{ stopped: true; running: string[]; interrupted: string[] }>('/stop'),
+    /** Start it again. The only write the workbench accepts while stopped. */
+    start: () => post<{ stopped: false }>('/start'),
+
     policy: () => call<Policy>('/policy'),
     /** Change some of the limits, leaving the rest. Takes effect at once. */
     setPolicy: (patch: Partial<Policy>) =>

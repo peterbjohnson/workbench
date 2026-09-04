@@ -1007,6 +1007,172 @@ test('cancelling stops a stage that is already running', async () => {
   }
 });
 
+test('a stopped board starts nothing, and starting again picks the ticket up', async () => {
+  const h = harness();
+  try {
+    h.store.setStopped(true);
+    create(h.store);
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, [], 'no stage was bought');
+    assert.equal(h.store.ticket('t1').status, 'queued', 'it is still waiting its turn');
+
+    h.store.setStopped(false);
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['plan'], 'and it goes the moment the board does');
+  } finally {
+    await h.close();
+  }
+});
+
+test('interrupting a running stage parks it to be carried on, not to be paid for again', async () => {
+  let sawAbort = false;
+  let release: (() => void) | undefined;
+
+  const h = harness({
+    runStage: async ({ signal, emit, runId }) => {
+      // Named the moment the model service names it, as a real run does — this is
+      // what an interrupted stage has left to carry on from.
+      emit({ type: 'session_started', runId, sessionId: 'sess-abc' });
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        signal.addEventListener('abort', () => {
+          sawAbort = true;
+          resolve();
+        });
+      });
+      // What a runner really answers an aborted signal with. Left alone it would be
+      // recorded as a stage that broke, and a broken stage is bought again.
+      return { outcome: 'failed', summary: 'the manager stopped this run' };
+    },
+  });
+
+  try {
+    create(h.store);
+    void h.orch.tick();
+    await waitFor(() => release !== undefined, 'the stage to start');
+
+    // The second press of STOP: the board is already stopped and the manager is not
+    // waiting for what is in flight.
+    h.store.setStopped(true);
+    assert.deepEqual(h.orch.interrupt(), ['t1'], 'it says what it stopped');
+    await waitFor(() => sawAbort, 'the run to be told to stop');
+    await h.orch.idle();
+
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.running, false, 'the slot is free');
+    assert.equal(ticket.interrupted, true, 'and the board offers to carry it on');
+    assert.equal(ticket.session, 'sess-abc', 'from the conversation it kept');
+  } finally {
+    release?.();
+    await h.close();
+  }
+});
+
+test('stopping while the standing checks run abandons the stage rather than buying it', async () => {
+  // A stage is under way from `stage_started`, not from the moment the agent is
+  // asked. STOP pressed while the suite runs used to find nothing to abort, tell the
+  // manager nothing had been abandoned, and then buy the verify run anyway.
+  let interrupted: string[] | undefined;
+  let h: Harness;
+
+  h = harness({
+    checks: () => {
+      if (interrupted === undefined) {
+        h.store.setStopped(true);
+        interrupted = h.orch.interrupt();
+      }
+      return [{ command: 'yarn test', ok: true, output: '131 passing' }];
+    },
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(interrupted, ['t1'], 'the second press says what it abandoned');
+    assert.ok(!h.ran.includes('verify'), 'and no agent was asked for after it');
+
+    const t = h.store.ticket('t1');
+    assert.equal(t.running, false, 'the slot is free');
+    assert.equal(t.interrupted, true, 'and the board offers to carry the stage on');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a stage that dies before the agent leaves nothing to stop', async () => {
+  // The window between `stage_started` and the agent belongs to the run, so the run
+  // is stoppable through it — and a run that dies in there has to give the name back
+  // as surely as one that finishes. Left behind, STOP reports abandoning a run that
+  // was already over.
+  const h = harness({
+    checks: () => {
+      throw new Error('the suite could not be run');
+    },
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    const t = h.store.ticket('t1');
+    assert.equal(t.status, 'blocked', 'the ticket parks on what went wrong');
+    assert.match(t.question?.question ?? '', /the suite could not be run/);
+    assert.deepEqual(h.orch.interrupt(), [], 'and there is nothing left to stop');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a run that broke while stopped does not mark the next stage stopped', async () => {
+  // The other half of the leak: STOP reached this run, so its name went into
+  // `broken`, and then the run died before the agent. Whatever runs next under that
+  // id must not find itself already stopped and be recorded `interrupted` before it
+  // has begun — a stage nobody stopped, reported as one that was.
+  let firstRefresh = true;
+  let h: Harness;
+
+  h = harness({
+    refresh: () => {
+      if (!firstRefresh) return { kind: 'up-to-date' };
+      firstRefresh = false;
+      h.store.setStopped(true);
+      h.orch.interrupt();
+      throw new Error('could not bring the base in');
+    },
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.equal(h.store.ticket('t1').status, 'blocked', 'the run that broke parked it');
+
+    // Started again the way the manager starts one: the board goes back on, and the
+    // ticket is put back into the stage it stopped in.
+    h.store.setStopped(false);
+    h.store.append('t1', { type: 'stage_restarted' });
+    await h.orch.idle();
+
+    assert.ok(h.ran.includes('implement'), 'the stage runs');
+    const finished = h.store
+      .eventsFor('t1')
+      .filter((e) => e.type === 'stage_finished' && e.outcome === 'interrupted');
+    assert.deepEqual(finished, [], 'and nothing is recorded as stopped');
+    assert.equal(h.store.ticket('t1').status, 'awaiting_verdict', 'it carries on to the end');
+  } finally {
+    await h.close();
+  }
+});
+
 test('a code host that cannot be reached does not stop the ticket', async () => {
   // Five of the eight tickets ever blocked over GitHub were blocked by this, and
   // one outage took two of them a tenth of a second apart. Reading a verdict is a

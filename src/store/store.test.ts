@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { openStore, type Store } from './store.ts';
 import { nextAction } from '../domain/rules.ts';
@@ -115,6 +118,32 @@ test('the wip limit is settable and survives in the database', () => {
     assert.equal(s.policy().wipLimit, 4);
     assert.throws(() => s.setPolicy({ wipLimit: 0 }), /wipLimit/);
   });
+});
+
+test('stopped is off to begin with and can be set both ways', () => {
+  withStore((s) => {
+    assert.equal(s.stopped(), false, 'a fresh workbench is running');
+    s.setStopped(true);
+    assert.equal(s.stopped(), true);
+    s.setStopped(false);
+    assert.equal(s.stopped(), false);
+  });
+});
+
+test('stopped survives the database being reopened', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'wb-store-')), 'wb.db');
+  const first = openStore(path);
+  first.setStopped(true);
+  first.close();
+
+  // The point of stopping to update the workbench is that you then restart it, and
+  // a stop that forgot itself over the restart would be no stop at all.
+  const second = openStore(path);
+  try {
+    assert.equal(second.stopped(), true);
+  } finally {
+    second.close();
+  }
 });
 
 test('subscribers see each appended event until they unsubscribe', () => {

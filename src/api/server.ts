@@ -13,6 +13,7 @@ import type { ChatRunner } from '../run/chat.ts';
 import { createDoc, deleteDoc, listDocs, writeDoc, type DocKind } from './documents.ts';
 import { applySettings, settings } from './settings.ts';
 import type { NameChecker } from '../run/nameCheck.ts';
+import type { Orchestrator } from '../orchestrator/loop.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
 export const UI_DIST = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -53,7 +54,20 @@ export type ApiDeps = {
    * same reason `warmNameCheck` is: getting ready costs nothing to skip.
    */
   warmChat?: (ticket: Ticket) => void;
+  /**
+   * The loop, so stopping can reach the runs already going and starting need not
+   * wait for the next poll. Absent in a test that only drives the routes, and then
+   * stopping is still a stop — it just has nothing in flight to interrupt.
+   */
+  orchestrator?: Pick<Orchestrator, 'tick' | 'interrupt'>;
 };
+
+/**
+ * What every write is refused with while the workbench is stopped. One string,
+ * because `createClient` throws the server's reason verbatim: whatever the board
+ * or the command line was asked to do, this is what it says instead.
+ */
+export const STOPPED_MESSAGE = 'the workbench is stopped — "wb start" to start it again';
 
 export type Api = {
   /** Returns the port it really got, which is not the one asked for when that is 0. */
@@ -125,6 +139,44 @@ async function handle(
 
   if (method === 'GET' && route === '/events') {
     return stream(store, req, res);
+  }
+
+  // The whole workbench, stopped and started. Above the refusal below, because the
+  // second press of stop is the one that interrupts what is still going, and the
+  // refusal would otherwise turn it away along with every other write.
+  if (route === '/stop') {
+    const running = () =>
+      store
+        .tickets()
+        .filter((t) => t.running)
+        .map((t) => t.id);
+
+    if (method === 'GET') return send(res, 200, { stopped: store.stopped(), running: running() });
+    if (method === 'POST') {
+      // The polite press: nothing new starts, and what is in flight is left to
+      // finish. Pressed again while already stopped it is not polite any more —
+      // the manager is not waiting for those stages after all.
+      if (!store.stopped()) {
+        store.setStopped(true);
+        return send(res, 200, { stopped: true, running: running(), interrupted: [] });
+      }
+      const interrupted = deps.orchestrator?.interrupt() ?? [];
+      return send(res, 200, { stopped: true, running: running(), interrupted });
+    }
+  }
+
+  if (method === 'POST' && route === '/start') {
+    store.setStopped(false);
+    // At once, rather than whenever the next poll comes round.
+    void deps.orchestrator?.tick();
+    return send(res, 200, { stopped: false });
+  }
+
+  // Stopped means stopped: nothing about the board changes until it is started
+  // again, whether the change is asked for here or from the command line. Reads are
+  // left open, because the board still has to render and offer the way back.
+  if (store.stopped() && method !== 'GET') {
+    return send(res, 409, { error: STOPPED_MESSAGE });
   }
 
   if (route === '/policy') {

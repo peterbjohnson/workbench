@@ -226,6 +226,30 @@ header form {
   margin-left: auto;
 }
 
+/* Stopping the whole board, and starting it again. A chip like the repository badge
+   beside it: quiet while the workbench is working, because it is not a thing to
+   press in passing — and filled once it is stopped, because a board that starts
+   nothing has to say why from across the room. */
+header .stopper {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--brand, var(--line)) 40%, var(--line));
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+}
+
+header .stopper:hover {
+  color: inherit;
+}
+
+header .stopper.go {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-fill);
+  font-weight: 600;
+}
+
 .waiting {
   color: var(--accent);
   font-weight: 600;

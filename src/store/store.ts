@@ -35,12 +35,22 @@ export type Store = {
   policy(): Policy;
   /** Change some of the limits, leaving the rest. Returns the whole policy after. */
   setPolicy(patch: Partial<Policy>): Policy;
+  /**
+   * Whether the whole workbench is stopped. Kept in the database rather than in
+   * memory because stopping to update the workbench means restarting it, and a
+   * stop that forgot itself over the restart would be no stop at all.
+   */
+  stopped(): boolean;
+  setStopped(on: boolean): void;
   /** Called after each append, in process. Returns an unsubscribe function. */
   subscribe(fn: (e: Event) => void): () => void;
   close(): void;
 };
 
 type Row = { id: number; ticket_id: string; at: string; body: string };
+
+/** The settings key the whole-workbench stop lives under. Not a policy limit. */
+const STOPPED = 'stopped';
 
 export function openStore(path: string): Store {
   const db = new DatabaseSync(path);
@@ -138,6 +148,14 @@ export function openStore(path: string): Store {
         if (value !== undefined) upsertSetting.run(key, String(value));
       }
       return store.policy();
+    },
+
+    stopped() {
+      return (selectSetting.get(STOPPED) as { value: string } | undefined)?.value === 'true';
+    },
+
+    setStopped(on) {
+      upsertSetting.run(STOPPED, String(on));
     },
 
     subscribe(fn) {

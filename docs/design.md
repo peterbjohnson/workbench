@@ -76,6 +76,68 @@ updated; it is rebuilt from its own history every time it is read. That is why s
 workbench mid-flight loses nothing, and why the record of what happened cannot disagree
 with the state it produced.
 
+## Stopping is a switch, and pressing it twice means it
+
+One switch stops the whole board, from the header, from `wb stop`, or from `POST /stop`.
+
+**The first press is polite.** Nothing new starts — no stage, no pull request, no verdict
+poll — and the stages already running are left to finish and record themselves normally.
+
+**The second press is not.** Pressed again while already stopped, it aborts the runs still
+going. They are recorded as `interrupted` rather than `failed`, keeping whatever
+conversation they had got as far as naming, so the board offers to carry each one on
+instead of buying it again. Nothing is committed for them: a stage that did not finish
+leaves its work in the worktree, exactly as it does after a Ctrl-C. The first press is the
+confirmation for the second, so there is no dialog.
+
+**While stopped, the workbench refuses to change anything.** Every non-`GET` request —
+from the board and from the command line alike — is answered with `the workbench is
+stopped — "wb start" to start it again`. Reads still answer, because the board has to
+render and show the way back. `wb start` clears it.
+
+The flag is in the database, not in memory. That is the point of it: you stop the
+workbench, update it, restart it, and it is still stopped until you say otherwise.
+
+### How well the recovery actually works
+
+Stopping and starting is safe. Interrupting and carrying on is *usually* safe, and the
+gaps are worth knowing before you rely on it:
+
+- **Carrying a stage on is best-effort, and quietly not free.** The conversation an
+  interrupted run kept lives with the agent SDK on the machine that ran it, and
+  `runStage` is deliberately told to start the stage afresh rather than fail if it cannot
+  pick that up. So an interrupt you resume within the hour costs almost nothing, and one
+  you resume after updating the workbench or moving machines may be a whole stage bought
+  twice. Which of the two happened is half-recorded: a resume that fails writes "could not
+  pick the … run back up" on the ticket before starting again, and a resume that works says
+  nothing at all. So the cost of an interrupt can be found, but only by reading a transcript
+  for the absence of a line.
+- **Being stopped also switches off the chat.** A conversation about a ticket is a
+  `POST`, so while stopped it is refused with everything else. If you stopped *because*
+  the board is in a muddle, the tool for working out the muddle is the one thing that is
+  off.
+- **The board still shows buttons it is going to refuse.** The Interrupted panel and
+  every card action are drawn as usual while stopped, and pressing one answers with the
+  refusal. It says the right words, but a refusal is a worse way to say "not now" than a
+  disabled button.
+- **"Stop everything" means every stage, not literally everything.** A merge already
+  under way, the pass that brings other branches up to a base that just moved, and a chat
+  turn in flight are not aborted — they are short, and git half-done is worse than git
+  finished. Worth knowing if the thing you are stopping is a merge going wrong.
+- **What the abandoned runs spent is not lost.** An interrupted run still records its
+  cost, so stopping because credits are running dry still leaves an honest account of
+  what was spent getting there.
+
+Recommended as later tickets, and deliberately not done here:
+
+1. Record a successful resume as plainly as a failed one is, and show it on the ticket —
+   so the cost of interrupting is read off the board rather than inferred from a line
+   missing in a transcript.
+2. Let the chat through while the workbench is stopped, since it changes no ticket state.
+3. Disable the board's actions while stopped, rather than letting each one fail.
+4. Say what an interrupted stage left behind in its worktree — uncommitted work, and a
+   half-resolved merge in particular — on the ticket, where whoever picks it up is looking.
+
 ## The agents cannot reach the workbench
 
 An agent that can edit the guardrails it runs under is not running under guardrails.
