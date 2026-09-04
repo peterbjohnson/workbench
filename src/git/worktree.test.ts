@@ -346,6 +346,137 @@ test('a ticket can carry on from another, with its work already in the worktree'
   }
 });
 
+// What a stage is shown must be what this branch changed against everything it
+// stood on. On three tickets in one project it was not: the base was held while a
+// dependency was still offered, main moved and was merged in, and the reviewer read
+// the files main had added as the ticket's own — asked for them to be untracked, and
+// got it. These four are the cases that have to come out right.
+
+test('main moving on and being merged in is not the ticket’s work', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'mine.py'), 'what t1 wrote\n');
+    await commitAll(wt, 'implement: t1');
+
+    await landOnBase(cfg, 'project/elsewhere.py', 'what another ticket landed\n');
+    const refreshed = await refresh(cfg, 't1');
+    assert.equal(refreshed.kind, 'merged');
+
+    // Nothing carried, so the base advanced with the refresh.
+    const shown = await diff(cfg, wt, refreshed.kind === 'merged' ? refreshed.base : null);
+    assert.match(shown, /what t1 wrote/, "the ticket's own work is there");
+    assert.doesNotMatch(shown, /elsewhere\.py/, "and main's advance is not");
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a dependency that has since landed is nobody’s work but its own', async () => {
+  const cfg = await scratchRepo();
+  try {
+    // t1 offers, t2 takes the work in before it lands, and does some of its own.
+    await offeredWork(cfg, 't1', 'project/first.py', 'what t1 wrote\n');
+    const wt = await create(cfg, 't2');
+    await fs.writeFile(path.join(wt.path, 'project', 'mine.py'), 'what t2 wrote\n');
+    await commitAll(wt, 'implement: t2');
+    assert.equal((await refresh(cfg, 't2', ['wb/t1'])).kind, 'merged');
+
+    // Then t1's pull request lands with a merge commit, and main moves on again.
+    await run('git', ['merge', '--no-edit', 'wb/t1'], { cwd: cfg.repoRoot });
+    await landOnBase(cfg, 'project/elsewhere.py', 'what another ticket landed\n');
+    const after = await refresh(cfg, 't2', ['wb/t1']);
+    assert.equal(after.kind, 'merged');
+
+    // `carrying` stops naming a merge once its work has landed, so nothing holds
+    // the base any more.
+    const shown = await diff(cfg, wt, after.kind === 'merged' ? after.base : null, []);
+    assert.match(shown, /what t2 wrote/, "the ticket's own work is there");
+    assert.doesNotMatch(shown, /first\.py/, "the dependency's work is not");
+    assert.doesNotMatch(shown, /elsewhere\.py/, "nor is main's advance");
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a dependency still unlanded hides its own work without hiding main’s', async () => {
+  // The case the held base cannot describe on its own: the branch is standing on a
+  // commit of the dependency's that the base has not got, and on a base that has
+  // moved since. No single commit is both, so one is synthesised.
+  const cfg = await scratchRepo();
+  try {
+    await offeredWork(cfg, 't1', 'project/first.py', 'what t1 wrote\n');
+    const wt = await create(cfg, 't2');
+    await fs.writeFile(path.join(wt.path, 'project', 'mine.py'), 'what t2 wrote\n');
+    await commitAll(wt, 'implement: t2');
+    assert.equal((await refresh(cfg, 't2', ['wb/t1'])).kind, 'merged');
+
+    // Main moves on and is merged in. t1 is still only offering, so the base is
+    // held where it was cut.
+    await landOnBase(cfg, 'project/elsewhere.py', 'what another ticket landed\n');
+    assert.equal((await refresh(cfg, 't2', ['wb/t1'])).kind, 'merged');
+
+    const shown = await diff(cfg, wt, wt.base, ['wb/t1']);
+    assert.match(shown, /what t2 wrote/, "the ticket's own work is there");
+    assert.doesNotMatch(shown, /first\.py/, "the dependency's work is not");
+    assert.doesNotMatch(shown, /elsewhere\.py/, "nor is main's advance since the refresh");
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a ticket continuing a cancelled one shows neither its work nor main’s', async () => {
+  const cfg = await scratchRepo();
+  try {
+    // t1 was released without ever being accepted; t2 carries on from its branch.
+    const first = await create(cfg, 't1');
+    await fs.writeFile(path.join(first.path, 'project', 'draft.md'), '# a draft\n');
+    await commitAll(first, 'implement: a draft (t1)');
+
+    const wt = await create(cfg, 't2', 'wb/t1');
+    await fs.writeFile(path.join(wt.path, 'project', 'mine.py'), 'what t2 wrote\n');
+    await commitAll(wt, 'implement: t2');
+
+    await landOnBase(cfg, 'project/elsewhere.py', 'what another ticket landed\n');
+    assert.equal((await refresh(cfg, 't2')).kind, 'merged');
+
+    // A continuation holds its base at the branch it was cut from for good, so the
+    // base alone has none of main's advance in it.
+    const shown = await diff(cfg, wt, wt.base);
+    assert.match(shown, /what t2 wrote/, "the ticket's own work is there");
+    assert.doesNotMatch(shown, /a draft/, "the cancelled ticket's work is not");
+    assert.doesNotMatch(shown, /elsewhere\.py/, "nor is main's advance");
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a carried branch that will not merge with the base falls back rather than throwing', async () => {
+  const cfg = await scratchRepo();
+  try {
+    // t1 and main both change the same file, differently. t2 has taken in both and
+    // settled the conflict on its own branch — so there is no clean merge of what it
+    // stood on to be had, and the synthetic base cannot be built.
+    await offeredWork(cfg, 't1', 'project/model.py', 'what t1 wrote\n');
+    const wt = await create(cfg, 't2');
+    await fs.writeFile(path.join(wt.path, 'project', 'mine.py'), 'what t2 wrote\n');
+    await commitAll(wt, 'implement: t2');
+
+    await landOnBase(cfg, 'project/model.py', 'what main landed\n');
+    const stuck = await refresh(cfg, 't2', ['wb/t1'], true);
+    assert.equal(stuck.kind, 'conflicted');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'settled between them\n');
+    await commitAll(wt, 'implement: settle the conflict');
+
+    const shown = await diff(cfg, wt, wt.base, ['wb/t1']);
+    assert.match(shown, /what t2 wrote/, "the ticket's own work is there");
+    const { stdout } = await run('git', ['diff', `${wt.base}...HEAD`], { cwd: wt.path });
+    assert.equal(shown, stdout, 'and the diff is the one this always gave, not an error');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
 // A ticket's diff is read by a model on a budget, and the size of a change and
 // the size of its diff are unrelated: t-mimi's was one function and two tests,
 // plus a generated 15,862-row CSV it had committed. Review spent its whole $3 on

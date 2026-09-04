@@ -1,7 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
 
-import { alreadyMerged, mergeArgs, readVerdict, retryableMergeFailure, reusablePr } from './pr.ts';
+import {
+  allowsMergeCommits,
+  alreadyMerged,
+  mergeArgs,
+  mergeCommitsRefusal,
+  mergeSubject,
+  readVerdict,
+  retryableMergeFailure,
+  reusablePr,
+} from './pr.ts';
 
 test('a merged pull request is an acceptance', () => {
   assert.deepEqual(readVerdict({ state: 'MERGED' }), { kind: 'accepted' });
@@ -74,22 +84,37 @@ test('closing a pull request without merging rejects it', () => {
   });
 });
 
-test('merging squashes the ticket into one commit on the base', () => {
-  assert.deepEqual(mergeArgs('https://example/pr/7', 'squash'), [
-    'pr',
-    'merge',
-    'https://example/pr/7',
-    '--squash',
-  ]);
-});
-
-test('or makes an ordinary merge commit, when that is what was asked for', () => {
-  assert.deepEqual(mergeArgs('https://example/pr/7', 'merge'), [
+test('merging always makes a merge commit, under the subject it is given', () => {
+  assert.deepEqual(mergeArgs('https://example/pr/7', 'rename the thing (t7)'), [
     'pr',
     'merge',
     'https://example/pr/7',
     '--merge',
+    '--subject',
+    'rename the thing (t7)',
   ]);
+});
+
+test('the subject carries the ticket, so first-parent history reads one line each', () => {
+  assert.equal(mergeSubject('rename the thing', 't7'), 'rename the thing (t7)');
+  assert.equal(mergeSubject('  padded  ', 't7'), 'padded (t7)');
+  assert.equal(mergeSubject('', 't7'), 't7', 'a ticket with no title is still named');
+});
+
+test('a repository that forbids merge commits is one the workbench cannot land work on', () => {
+  assert.equal(allowsMergeCommits('true\n'), true);
+  assert.equal(allowsMergeCommits('false\n'), false);
+
+  // Anything that is not a definite no is taken as yes: only "false" is `gh`
+  // answering the question, and the merge itself settles the rest.
+  assert.equal(allowsMergeCommits(''), true);
+  assert.equal(allowsMergeCommits('null'), true);
+});
+
+test('a repository `gh` cannot answer for is not refused', async () => {
+  // No remote, no `gh`, no network: not being able to ask is not a no, and a
+  // workbench on a repository with no GitHub at all still runs.
+  assert.equal(await mergeCommitsRefusal(os.tmpdir()), undefined);
 });
 
 test('a branch keeps its pull request when it is offered again — unless that one merged', () => {

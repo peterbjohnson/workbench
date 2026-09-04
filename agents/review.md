@@ -42,7 +42,10 @@ Read the ticket, the approved plan, and the diff. Then look for, in this order:
 3. **Claims not backed by tests.** A test that would pass whether or not the code works
    is worse than no test. Say which.
 4. **Scope that was not asked for.** New abstractions, options nobody wanted, error
-   handling for impossible states.
+   handling for impossible states. An edit to `README.md` or `docs/using-it.md` counts too
+   unless the ticket changes what a user sees or does and the approved plan named that
+   section — as does any hand edit to the generated `docs/reference.md`. Ask for its
+   removal under `CHANGES:`, the same as any other change beyond the ticket.
 5. **Contradictions with what already exists.** Two ways to do the same thing now, or a
    convention quietly broken.
 

@@ -271,22 +271,97 @@ export async function commitAll(wt: Worktree, message: string): Promise<string |
 }
 
 /**
- * The change this ticket has made, against what it actually started from.
+ * The change this ticket has made, against everything the branch stood on.
  *
- * `from` is the commit recorded when the branch was cut. Using it rather than
- * `cfg.base` matters twice over: a ticket carrying on from another started on
- * that one's branch, and diffing against `main` would present all of the earlier
- * ticket's work as this one's change — several thousand words for a reviewer to
- * read as though they were new. And for an ordinary ticket `cfg.base` is the
- * *local* branch, which is the staleness `startPoint` exists to avoid.
+ * Not one commit, because no one commit is it. A ticket holds its recorded base
+ * where it was whenever it is carrying work that is offered and so in no commit
+ * of the base — and a held base goes stale the moment the base moves, so every
+ * stage was handed main's advance as this ticket's own work. On three tickets in
+ * one project the reviewer read files main had added as the ticket's, asked for
+ * them to be untracked, and got it: a dependency reverted on four branches.
  *
- * Falls back to the configured base for tickets branched before this was recorded.
+ * So what a stage is shown is `HEAD` against `stoodOn` — the recorded base, the
+ * base as it now is, and every carried branch, merged into one synthetic commit.
+ * Falls back to `${from}...HEAD` when that cannot be built, and to the configured
+ * base for tickets branched before `from` was recorded at all.
  *
  * Not raw git output: what comes back has been cut down to a size the model it is
  * put in front of can afford to read. See `readable`.
  */
-export async function diff(cfg: GitConfig, wt: Worktree, from?: string | null): Promise<string> {
-  return readable(await git(wt.path, 'diff', `${from ?? cfg.base}...HEAD`));
+export async function diff(
+  cfg: GitConfig,
+  wt: Worktree,
+  from?: string | null,
+  /** The branches this ticket is carrying — `Ticket.carrying`. */
+  carrying: readonly string[] = [],
+): Promise<string> {
+  if (from === undefined || from === null) {
+    return readable(await git(wt.path, 'diff', `${cfg.base}...HEAD`));
+  }
+  const stood = await stoodOn(cfg, wt, from, carrying);
+  if (stood === null) return readable(await git(wt.path, 'diff', `${from}...HEAD`));
+  // Two-dot: three-dot against a synthetic merge would resolve to one of its
+  // parents and hand back the other side as the ticket's work.
+  return readable(await git(wt.path, 'diff', stood, 'HEAD'));
+}
+
+/**
+ * A commit with the tree the branch would have if it had done nothing of its own:
+ * the recorded base, the base as it now is, and each carried branch, merged.
+ *
+ * Every input is first clipped to HEAD with `merge-base`, so none of them can
+ * contain something HEAD has not got — otherwise the newest work on main, which
+ * this branch has not merged yet, would come back out of the diff as this ticket
+ * deleting it.
+ *
+ * The merge is pairwise: `merge-tree --write-tree` gives a tree, and `commit-tree`
+ * wraps it so the next round still has a merge base to find. Nothing is written to
+ * any worktree and the commit is unreferenced, so git collects it. Identity is
+ * given inline because an unconfigured machine must not be what fails.
+ *
+ * Returns null on a conflict, an unresolvable ref, or a git too old for
+ * `--write-tree` — all of which mean the caller should measure the old way.
+ */
+async function stoodOn(
+  cfg: GitConfig,
+  wt: Worktree,
+  from: string,
+  carrying: readonly string[],
+): Promise<string | null> {
+  try {
+    const clipped: string[] = [];
+    for (const ref of [from, await startPoint(cfg), ...carrying]) {
+      const at = (await git(wt.path, 'merge-base', 'HEAD', ref)).trim();
+      if (at !== '' && !clipped.includes(at)) clipped.push(at);
+    }
+    let acc = clipped[0];
+    if (acc === undefined) return null;
+    for (const ref of clipped.slice(1)) {
+      // `merge-tree` exits non-zero on a conflict, so getting here at all means the
+      // tree it printed is a clean merge.
+      const tree = (await git(wt.path, 'merge-tree', '--write-tree', acc, ref)).trim();
+      acc = (
+        await git(
+          wt.path,
+          '-c',
+          'user.name=workbench',
+          '-c',
+          'user.email=workbench@localhost',
+          'commit-tree',
+          tree,
+          '-p',
+          acc,
+          '-p',
+          ref,
+          '-m',
+          'what the branch stood on',
+        )
+      ).trim();
+    }
+    return acc;
+  } catch {
+    return null;
+  }
 }
 
 /**
