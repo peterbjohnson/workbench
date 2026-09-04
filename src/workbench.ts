@@ -76,7 +76,8 @@ export async function startWorkbench(
             pluginRoot: config.pluginRoot,
             skills: () => loadSkills(config.pluginRoot),
             about: readAbout(config),
-            diff: (ticket) => diff(config, worktreeFor(config, ticket.id), ticket.base),
+            diff: (ticket) =>
+              diff(config, worktreeFor(config, ticket.id), ticket.base, ticket.carrying),
             continued: (ticketId) =>
               whatHappenedTo(store.ticket(ticketId), store.eventsFor(ticketId)),
           }),
