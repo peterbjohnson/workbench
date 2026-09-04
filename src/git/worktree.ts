@@ -18,6 +18,7 @@ export function gitWorkspace(cfg: GitConfig): Workspace {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
     refresh: (ticketId, alsoMerge, keepConflict) => refresh(cfg, ticketId, alsoMerge, keepConflict),
     unresolved: (ticketId, paths) => unresolved(cfg, ticketId, paths),
+    abandonMerge: (ticketId) => abandonMerge(cfg, ticketId),
     removedFromBase: (ticketId, from) => removedFromBase(cfg, ticketId, from),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
@@ -626,6 +627,23 @@ async function unmergedPaths(wt: Worktree): Promise<string[]> {
     (out) => out.split('\n').filter((line) => line !== ''),
     () => [],
   );
+}
+
+/**
+ * Undoes a merge left in the worktree, putting the branch back where it stood
+ * before it: the attempt to settle it did not land, and what the manager is asked
+ * about is the work as it was offered. Whatever the attempt wrote over the files it
+ * was given goes with it, which is the point — nothing half-resolved is left where
+ * the next commit would pick it up.
+ *
+ * The abort is best-effort, as it is everywhere else here: there may be no merge
+ * left to undo. Hiding the protected paths again because an abort rewrites the
+ * tree, and can put one of them back on disk.
+ */
+export async function abandonMerge(cfg: GitConfig, ticketId: string): Promise<void> {
+  const wt = worktreeFor(cfg, ticketId);
+  await git(wt.path, 'merge', '--abort').catch(() => {});
+  await hideProtectedPaths(cfg, wt);
 }
 
 /**

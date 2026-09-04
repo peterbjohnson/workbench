@@ -17,6 +17,8 @@ export type Harness = {
   prsMerged: string[];
   /** Tickets whose worktree was cleaned up. */
   tidied: string[];
+  /** Tickets whose left-behind merge was undone, in order. */
+  abandoned: string[];
   /** Every stage commit that was made, as `<ticket>: <message>`. */
   committed: string[];
   /** What the loop told whoever is watching. */
@@ -55,9 +57,10 @@ export function harness(
     checks?: CheckRun[] | (() => CheckRun[]);
     /**
      * What bringing the base in does. An up-to-date branch is the default.
-     * `keepConflict` tells the two callers apart: it is the refresh at the start of
-     * a stage, which takes the base alone and leaves a clash for the stage, rather
-     * than the ones that bring in work and hand a clash to the manager.
+     * `keepConflict` says the caller has a stage that can finish the merge: the
+     * refresh at the start of one, or the pass over the offered branches after a
+     * merge, which runs implement to settle what it finds. The rest hand a clash to
+     * the manager and want the branch left as it was.
      */
     refresh?: (ticketId: string, keepConflict: boolean) => Refreshed;
     /**
@@ -81,6 +84,7 @@ export function harness(
   const refreshed: { id: string; alsoMerge: readonly string[]; keepConflict: boolean }[] = [];
   const prsMerged: string[] = [];
   const tidied: string[] = [];
+  const abandoned: string[] = [];
   const committed: string[] = [];
   const announced: string[] = [];
   const attempts = new Map<Stage, number>();
@@ -102,6 +106,9 @@ export function harness(
         return opts.refresh?.(id, keepConflict) ?? { kind: 'up-to-date' };
       },
       unresolved: async (_id, paths) => opts.unresolved?.(paths) ?? [],
+      abandonMerge: async (id) => {
+        abandoned.push(id);
+      },
       removedFromBase: async (id, from) => opts.removedFromBase?.(id, from) ?? [],
       commit: async (ticket, message) => {
         committed.push(`${ticket.id}: ${message}`);
@@ -151,6 +158,7 @@ export function harness(
     refreshed,
     prsMerged,
     tidied,
+    abandoned,
     committed,
     announced,
     close: async () => {

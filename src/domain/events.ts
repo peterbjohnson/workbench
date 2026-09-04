@@ -229,6 +229,17 @@ export type EventBody =
        * Picking the ticket back up continues that instead of starting again.
        */
       sessionId?: string;
+      /**
+       * This run was the workbench settling a clash on a branch that was offered,
+       * rather than a stage the board asked for. What routes the report: there is no
+       * next stage to send it to, so it goes back to the wait it interrupted.
+       *
+       * A fact about the run, and it has to be — the ticket was read for it once and
+       * a settling run takes minutes. In those minutes a verdict or an objection can
+       * land and end the offer, so a ticket that was offered when this started can be
+       * `done` or `implementing` by the time it reports.
+       */
+      settling?: true;
     }
   /** The ticket's branch exists, cut from this commit of the base. */
   | { type: 'branched'; branch: string; base: string }

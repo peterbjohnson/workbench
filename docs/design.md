@@ -97,6 +97,25 @@ workbench that was most of the conflicts the board hit.
 The one-line-per-ticket history a squash gave is not lost — `git log --first-parent` reads
 it, which is why the merge commit's subject is `<title> (<id>)`.
 
+## A conflict is work, not a question
+
+Merging one pull request refreshes every other, so one merge can leave several offered
+branches clashing with the base. Each of those used to block for a click that always said
+the same thing — send it back to resolve them — while the agent that had just written the
+change was the one thing that knew what the resolution should be.
+
+So the workbench takes the click itself. A clash with the base on an offered branch you
+have not answered runs implement over the merge, with the same brief a stage that starts on
+a conflict is given, then the standing checks, then a commit pushed to the same pull
+request. One attempt: a run that leaves any handed path conflicted, or that fails the
+checks, aborts the merge, leaves nothing committed and blocks as before, saying that a
+resolution was tried and what it left.
+
+Not a stage of its own, deliberately. t20 built a `resolve` stage, a fifth agent and a
+`startMerge` action for exactly this, and was superseded by t5, which had implement do it
+instead — finishing a merge is the work implement already does, and a status a ticket can
+only be in for minutes is one more thing every rule has to know about for ever.
+
 ## Nothing decides anything but the rules
 
 `wb serve` is the only process that touches the database or calls an agent. The command

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { create, harness, standing } from './harness.ts';
 import { openStore } from '../store/store.ts';
+import { deriveTicket } from '../domain/ticket.ts';
+import type { Refreshed } from '../domain/events.ts';
 
 test('a pull request that will not open parks the ticket with the reason', async () => {
   const h = harness({
@@ -186,6 +188,285 @@ test('a pull request the manager has already answered is left alone', async () =
     const refreshed = h.store.eventsFor('t2').filter((e) => e.type === 'refreshed');
     assert.deepEqual(refreshed, [], 'the answer is what it hears, not a merge');
     assert.equal(h.store.ticket('t2').rejection, 'not like that');
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * A merge landing under an offered branch that will not take it. The clash is
+ * reported twice — once to the pass over the offered branches, and once to the
+ * refresh at the start of the run it hands the merge to, which finds the same
+ * merge still on disk — and after that the branch is up to date.
+ */
+const CLASH: Extract<Refreshed, { kind: 'conflicted' }> = {
+  kind: 'conflicted',
+  base: 'newbase',
+  paths: ['src/domain/rules.ts'],
+  with: 'newbase',
+  merged: [],
+  commit: 'head0001',
+  merging: true,
+};
+
+function clashingOffer(opts: Parameters<typeof harness>[0] = {}) {
+  let asked = 0;
+  return harness({
+    ...opts,
+    refresh: (id) => {
+      if (id !== 't2') return { kind: 'up-to-date' };
+      return ++asked <= 2 ? CLASH : { kind: 'up-to-date' };
+    },
+  });
+}
+
+test('a clash on an offered branch is settled by a run, not by a click', async () => {
+  const handed: unknown[] = [];
+  const h = clashingOffer({
+    runStage: async ({ conflict }) => {
+      handed.push(conflict);
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['implement'], 'the merge that landed bought one implement run');
+    assert.deepEqual(
+      handed,
+      [{ base: 'newbase', paths: ['src/domain/rules.ts'] }],
+      'given the merge to finish, the way the start of a stage already is',
+    );
+
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'awaiting_verdict', 'still offered, and nobody was asked anything');
+    assert.equal(t2.prUrl, 'https://example/pr/t2', 'on the pull request it already had');
+    assert.deepEqual(h.prsOpened, ['https://example/pr/t2'], 'which the resolution was pushed to');
+    assert.deepEqual(h.committed, ['t2: implement: ticket t2 (t2)'], 'as a commit of its own');
+    assert.equal(t2.base, 'newbase', 'measured from the base it has now taken in');
+    assert.deepEqual(h.abandoned, [], 'nothing to undo');
+    assert.deepEqual(t2.conflicts, [], 'and nothing left for the manager to resolve');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a resolution that leaves a path conflicted is undone, and the manager asked', async () => {
+  const h = clashingOffer({ unresolved: (paths) => [...paths] });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.committed, [], 'nothing half-resolved was committed');
+    assert.deepEqual(h.abandoned, ['t2'], 'the branch is back where it was');
+    assert.deepEqual(h.prsOpened, [], 'and the pull request never saw it');
+
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'blocked');
+    assert.deepEqual(t2.conflicts, ['src/domain/rules.ts'], 'the panel can still list them');
+    const asked = t2.question?.question ?? '';
+    assert.match(asked, /src\/domain\/rules\.ts/, 'named as the clash it is');
+    assert.match(asked, /resolution was tried/, 'and said to have been attempted');
+    assert.match(asked, /still conflicted/, 'with what the attempt left');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a resolution the standing checks fail is undone too', async () => {
+  // The last moment anything asks: what this leaves is pushed to a pull request a
+  // person is reading, and no stage follows it to find out that the suite is broken.
+  const h = clashingOffer({
+    checks: () => [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }],
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.committed, [], 'checked before the commit, so there is nothing to undo');
+    assert.deepEqual(h.abandoned, ['t2']);
+    assert.deepEqual(h.prsOpened, []);
+
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'blocked');
+    assert.deepEqual(t2.conflicts, ['src/domain/rules.ts']);
+    assert.match(t2.question?.question ?? '', /1 failing/, 'with the failure, not a summary');
+    assert.match(t2.question?.question ?? '', /resolution was tried/);
+  } finally {
+    await h.close();
+  }
+});
+
+test('a resolution is not pushed onto an offer taken back while it ran', async () => {
+  // The window used to be a git merge and is now a whole agent run, and in that
+  // time the manager can read the pull request and ask for something else. Pushing
+  // the resolution then puts a commit on the offer they have just objected to, and
+  // the `pr_opened` that follows it puts the ticket back in front of them as
+  // though they had said nothing.
+  const store = openStore(':memory:');
+  let runs = 0;
+  const h = clashingOffer({
+    store,
+    runStage: async () => {
+      // The objection lands during the settle, and every run after it is parked —
+      // so what the ticket did about it is `h.ran`, and nothing cascades past it.
+      if (++runs > 1) return { outcome: 'blocked', summary: 'not what this is about' };
+      store.append('t2', { type: 'changes_requested', changes: 'not like that' });
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsOpened, [], 'nothing was pushed to the offer they had objected to');
+    assert.deepEqual(
+      h.committed,
+      ['t2: implement: ticket t2 (t2)'],
+      'the resolution is on the branch, where whatever runs next will find it',
+    );
+    assert.equal(h.store.ticket('t2').offered, false, 'and the offer is still over');
+
+    // And the settle reported back into the objection rather than over it. Routed
+    // on the offer, which the objection had just ended, this walked on to a review
+    // of the work that was objected to — and the changes went unread, cleared by
+    // that stage starting.
+    const events = store.eventsFor('t2');
+    const settled = events.findIndex((e) => e.type === 'stage_finished');
+    assert.equal(deriveTicket(events.slice(0, settled + 1)).status, 'implementing');
+    assert.deepEqual(h.ran, ['implement', 'implement'], 'which is the run it bought');
+  } finally {
+    await h.close();
+    store.close();
+  }
+});
+
+test('nor onto one that was accepted while it ran', async () => {
+  // The other way the wait can end mid-settle: a poll finds the pull request merged
+  // on the host. Routed on the offer, the report walked a `done` ticket into a
+  // review, a verify and a second pull request for work that had already landed.
+  const store = openStore(':memory:');
+  let answered = false;
+  const h = clashingOffer({
+    store,
+    runStage: async () => {
+      if (!answered) {
+        answered = true;
+        store.append('t2', { type: 'verdict', verdict: 'accepted' });
+      }
+      // Everything else this could go on to run says yes, so nothing but the routing
+      // stops it: with the bug it reaches `open_pr`.
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.equal(store.ticket('t2').status, 'done', 'the answer is where the ticket stayed');
+    assert.deepEqual(h.ran, ['implement'], 'the settle, and nothing after it');
+    assert.deepEqual(h.prsOpened, [], 'no second pull request for work already merged');
+  } finally {
+    await h.close();
+    store.close();
+  }
+});
+
+test('nor onto one the code host says has been answered', async () => {
+  // Pending when the pass looked, answered by the time the run came back. Pushing
+  // now moves the branch past a change request, which is exactly what `readVerdict`
+  // reads as having addressed it.
+  let answered = false;
+  const h = clashingOffer({
+    verdict: (id) =>
+      id === 't2' && answered ? { kind: 'rejected', reason: 'not this' } : { kind: 'pending' },
+    runStage: async ({ stage }) => {
+      // The answer is what happens next: a rejection buys a new plan. Parked there,
+      // because the round after one is not what this is about.
+      if (stage !== 'implement') return { outcome: 'blocked', summary: 'not what this is about' };
+      answered = true;
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsOpened, [], 'nothing was pushed');
+    assert.deepEqual(h.ran, ['implement', 'plan'], 'the rejection was read and acted on');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a ticket sent back while another one settles is left where it is', async () => {
+  // The pass reads the offered branches once and then spends minutes settling the
+  // first of them. By the time it reaches the third, that list can be minutes out
+  // of date: a ticket sent back in between has a run of its own going, and merging
+  // the base into a worktree an agent is writing in is not something to find out
+  // about from the diff.
+  const store = openStore(':memory:');
+  const h = clashingOffer({
+    store,
+    runStage: async ({ ticket }) => {
+      if (ticket.id !== 't2') return { outcome: 'blocked', summary: 'not what this is about' };
+      store.append('t3', { type: 'changes_requested', changes: 'not like that' });
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    standing(store, 't3');
+    store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.equal(
+      h.refreshed.filter((r) => r.id === 't3').length,
+      1,
+      'brought up to date by its own run, and not by the pass that had it as offered',
+    );
+  } finally {
+    await h.close();
+    store.close();
+  }
+});
+
+test('a clash with work the ticket waited for is still the manager’s', async () => {
+  // The dependency was theirs to choose, and settling it here would resolve one
+  // ticket's work against another's on a branch neither of them is being built on.
+  const h = harness({
+    refresh: (id) =>
+      id === 't2'
+        ? { ...CLASH, with: 'wb/t3', paths: ['project/shared.py'] }
+        : { kind: 'up-to-date' },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, [], 'nothing was run at it');
+    assert.deepEqual(h.abandoned, ['t2'], 'and the merge kept for one is undone');
+
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'blocked');
+    assert.deepEqual(t2.conflicts, ['project/shared.py']);
+    assert.doesNotMatch(t2.question?.question ?? '', /resolution was tried/, 'because none was');
   } finally {
     await h.close();
   }
@@ -415,6 +696,38 @@ test('work that conflicts with the base it must land on is not offered', async (
     assert.equal(ticket.status, 'blocked');
     assert.match(ticket.question?.question ?? '', /src\/domain\/rules\.ts/, 'and says where');
     assert.deepEqual(h.prsOpened, [], 'nothing was offered against a base it cannot sit on');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a merge a stage stopped partway through is not tidied away by offering the work', async () => {
+  // Left by a run that was handed the merge and stopped to ask something. Its half of
+  // the resolution, and every uncommitted edit it made, are still sitting there: the
+  // pass over the offered branches undoes a merge because it is the one that left it,
+  // and nothing else may. A ticket shipped mid-resolution reaches here.
+  const h = harness({
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/domain/rules.ts'],
+      with: 'newbase',
+      merged: [],
+      commit: 'head0001',
+      merging: true,
+    }),
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.abandoned, [], 'the run’s work is where the run left it');
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.status, 'blocked');
+    assert.deepEqual(ticket.conflicts, ['src/domain/rules.ts'], 'and the manager is asked');
+    assert.deepEqual(h.prsOpened, [], 'over a branch that was not offered');
   } finally {
     await h.close();
   }

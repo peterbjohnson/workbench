@@ -2,7 +2,7 @@ import { ended, type Ticket } from '../domain/ticket.ts';
 import { carriedWork } from '../domain/rules.ts';
 import type { Branch } from './branch.ts';
 import { describe, describeRef } from './describe.ts';
-import type { Deps, Verdict } from './loop.ts';
+import type { Deps, RunResult, Verdict } from './loop.ts';
 
 /** Offering a ticket's work, and everything that follows the manager's answer. */
 export type Merging = {
@@ -19,11 +19,17 @@ export function createMerging({
   deps,
   branch,
   busy,
+  settleOffered,
 }: {
   deps: Deps;
   branch: Branch;
   /** Whether this ticket's work is already in flight in this process. */
   busy: (ticketId: string) => boolean;
+  /**
+   * Runs implement over a merge left in an offered ticket's worktree, and says how
+   * it went. One run: what it does not settle, the manager is asked about.
+   */
+  settleOffered: (ticket: Ticket) => Promise<RunResult>;
 }): Merging {
   const { store } = deps;
 
@@ -122,14 +128,24 @@ export function createMerging({
    * a ticket against work that landed while it was busy, and running them here is
    * how that is found on the ticket rather than by a person at merge time.
    *
-   * A conflict and a failure both park the ticket rather than starting anything: the
-   * work stands, and what to do about it is a decision — ship it, put it right, or
-   * stop it — rather than a stage. What a conflict does leave behind is whatever
-   * merged before it, so that is recorded first: the branch has moved, and a record
-   * that says otherwise is what measures a dependency's change as this ticket's.
+   * A failure parks the ticket rather than starting anything: the work stands, and
+   * what to do about a base that breaks it is a decision — ship it, put it right, or
+   * stop it — rather than a stage. A clash with the base is the one exception, and
+   * only where `settle` says a stage may be given the merge: see the conflicted
+   * branch below. What a conflict does leave behind is whatever merged before it, so
+   * that is recorded first: the branch has moved, and a record that says otherwise is
+   * what measures a dependency's change as this ticket's.
+   *
+   * @param settle whether a clash with the base may be handed to an implement run
+   *   rather than to the manager. Only the pass over the offered branches says yes.
    */
-  async function refresh(ticket: Ticket, worktree: string): Promise<boolean> {
-    const result = await deps.workspace.refresh(ticket.id, branch.awaitedBranches(ticket));
+  async function refresh(ticket: Ticket, worktree: string, settle = false): Promise<boolean> {
+    const result = await deps.workspace.refresh(
+      ticket.id,
+      branch.awaitedBranches(ticket),
+      // Left on disk only where there is something that will finish it.
+      settle,
+    );
 
     if (result.kind !== 'up-to-date') {
       // What came in with the base is recorded along with it, because a branch
@@ -153,11 +169,56 @@ export function createMerging({
       }
 
       if (result.kind === 'conflicted') {
+        // A clash with the base on a branch that is offered is the agents' to settle:
+        // the merge is left where it is and an implement run is asked to finish it,
+        // exactly as the start of a stage already does. The manager's click did not
+        // say anything a run could not work out for itself.
+        //
+        // With the base, and nothing else: a clash with work this ticket waited for
+        // belongs to whoever chose the dependency. And only where the merge is still
+        // on disk — one that failed rather than conflicted has nothing to resolve.
+        const attempt =
+          settle && result.merging && result.with === result.base
+            ? await settleOffered(ticket)
+            : undefined;
+
+        if (attempt?.outcome === 'completed') {
+          // Offered again, which pushes the resolution to the pull request already
+          // standing and runs the refresh and the checks against a branch that is now
+          // up to date. From the store: the settling run moved the base and made a
+          // commit, and the ticket in hand still says otherwise.
+          //
+          // Only while the offer is still standing and still unanswered — the same
+          // thing `refreshOffered` asks before it starts any of this. The window used
+          // to be a git merge and is now a whole agent run, and in that time the
+          // manager can ask for changes and a poll can find the pull request merged.
+          // Pushing then would append `pr_opened` over their answer: the objection
+          // silently undone, or a pull request reopened on work already merged. The
+          // resolution stays on the branch either way, for whatever runs next.
+          const settled = store.ticket(ticket.id);
+          const still = settled.offered && !ended(settled) ? await verdictOf(settled) : null;
+          if (still?.kind === 'pending') await doOpenPr(settled);
+          return false;
+        }
+
+        // Nothing landed, so nothing is kept: whatever the attempt left goes, and the
+        // manager is asked about the work as it was offered. Also for a merge kept for
+        // a settle that was never going to happen — a dependency's clash.
+        //
+        // Only where this pass is what left the merge there. Everywhere else — opening
+        // the offer, merging it — a merge found on disk belongs to a stage that stopped
+        // partway through resolving one, and undoing it is exactly the loss `refresh`
+        // in worktree.ts hands that merge back rather than tidying it away for.
+        if (settle && result.merging) await deps.workspace.abandonMerge(ticket.id);
+
         store.append(ticket.id, {
           type: 'blocked',
           reason:
             `this branch conflicts with ${describeRef(result.with, result.base)}:\n` +
-            result.paths.map((p) => `  ${p}`).join('\n'),
+            result.paths.map((p) => `  ${p}`).join('\n') +
+            (attempt === undefined
+              ? ''
+              : `\n\nA resolution was tried and did not land: ${attempt.summary}`),
           // The same paths as data, so the panel can list them and offer the way out
           // rather than leaving them buried in a paragraph.
           conflicts: result.paths,
@@ -202,13 +263,14 @@ export function createMerging({
   /**
    * A merge moves the base under every other pull request that is standing, and
    * they find out one at a time as somebody tries to merge them. So they are told:
-   * each takes the new base and re-runs its checks, and a clash surfaces on the
-   * ticket that has it, while the ticket is still the thing being worked on.
+   * each takes the new base and re-runs its checks, and a clash is given to an
+   * implement run — the ticket is the thing being worked on, and resolving one is
+   * work rather than a decision.
    *
-   * The ones still being built are told too, but not here and not the same way:
-   * they take the base at the start of their next stage, and a clash there is
-   * given to the agent that is about to work on the files rather than parking the
-   * ticket. Nothing is pushed for them, so there is nothing to do between stages.
+   * The ones still being built are told too, but not here: they take the base at
+   * the start of their next stage, and the same run resolves it as part of what it
+   * was going to do anyway. Nothing is pushed for them, so there is nothing to do
+   * between stages.
    */
   async function refreshOffered(merged: Ticket): Promise<void> {
     // Ended tickets are told nothing. Cancelling does not take the offer back — see
@@ -220,8 +282,17 @@ export function createMerging({
       .tickets()
       .filter((t) => t.id !== merged.id && t.offered && !ended(t) && !t.running && !busy(t.id));
 
-    for (const ticket of standing) {
+    for (const { id } of standing) {
       try {
+        // Read again for each one, because settling the one before it was a whole
+        // agent run rather than a git merge: in those minutes this ticket can have
+        // been sent back and started an implement run of its own. Refreshing it then
+        // puts a `git merge` in a worktree an agent is writing in, and the settle's
+        // claim on `inFlight` lands on top of the one that run already holds — whose
+        // `finally` then deletes it, so the tick stops seeing either as busy.
+        const ticket = store.ticket(id);
+        if (!ticket.offered || ended(ticket) || ticket.running || busy(id)) continue;
+
         // A pull request the manager has already answered is waiting on nobody: it
         // is not refreshed, because pushing a merge to it would be a commit made
         // for reasons that have nothing to do with the answer, and `readVerdict`
@@ -230,9 +301,9 @@ export function createMerging({
         const answered = await verdictOf(ticket);
         if (answered === null || answered.kind !== 'pending') continue;
         const { path: worktree } = await branch.prepare(ticket);
-        await refresh(ticket, worktree);
+        await refresh(ticket, worktree, true);
       } catch (error) {
-        store.append(ticket.id, { type: 'blocked', reason: describe(error) });
+        store.append(id, { type: 'blocked', reason: describe(error) });
       }
     }
   }

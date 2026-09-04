@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  abandonMerge,
   commitAll,
   create,
   diff,
@@ -754,6 +755,42 @@ test('a conflict a stage is going to resolve is left in the worktree', async () 
     const model = await fs.readFile(path.join(wt.path, 'project', 'model.py'), 'utf8');
     assert.match(model, /the ticket said this/, 'with the stage’s own side');
     assert.match(model, /the base says this/, 'and the one it has to take in');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a merge nobody finished is undone, and the branch stands where it stood', async () => {
+  // The way back out of a resolution that did not land: the run that was handed the
+  // merge left it unfinished, so the offer goes to the manager as it was rather than
+  // half-resolved. Protected paths, because an abort rewrites the tree and could put
+  // the workbench's own source back on disk.
+  const cfg = await scratchRepo(['workbench']);
+  try {
+    const wt = await create(cfg, 't1');
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'the ticket said this\n');
+    await commitAll(wt, 'the ticket');
+    const before = await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
+
+    await landOnBase(cfg, 'project/model.py', 'the base says this\n');
+    assert.equal((await refresh(cfg, 't1', [], true)).kind, 'conflicted');
+    // And the run got half way through resolving it before giving up.
+    await fs.writeFile(path.join(wt.path, 'project', 'model.py'), 'a resolution, unfinished\n');
+
+    await abandonMerge(cfg, 't1');
+
+    await assert.rejects(
+      run('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: wt.path }),
+      'no merge left going',
+    );
+    const after = await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
+    assert.equal(after.stdout, before.stdout, 'and nothing committed');
+    assert.equal(
+      await fs.readFile(path.join(wt.path, 'project', 'model.py'), 'utf8'),
+      'the ticket said this\n',
+      'the work as it was offered, with neither the markers nor the half-resolution in it',
+    );
+    assert.equal(await present(path.join(wt.path, 'workbench')), false, 'and still off disk');
   } finally {
     await cleanUp(cfg);
   }
