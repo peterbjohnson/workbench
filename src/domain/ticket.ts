@@ -1,4 +1,4 @@
-import type { Event, MergeMethod, Scale, Stage } from './events.ts';
+import type { Event, Scale, Stage } from './events.ts';
 
 export type Status =
   /** An idea, and nothing more. The workbench never touches a ticket here. */
@@ -135,12 +135,6 @@ export type Ticket = {
    */
   mergeRequested: boolean;
   /**
-   * How the manager asked for that merge to be done. Meaningful only while one is
-   * asked for, and null the rest of the time: it is a fact about one request, so
-   * everything that clears `mergeRequested` clears this beside it.
-   */
-  mergeMethod: MergeMethod | null;
-  /**
    * The files the base and this branch disagree about, as the last attempt to
    * bring the base in found them. Empty when there is no clash — which is the
    * ordinary state, and what anything that moves the ticket on puts it back to:
@@ -225,7 +219,6 @@ function blank(id: string): Ticket {
     prUrl: null,
     offered: false,
     mergeRequested: false,
-    mergeMethod: null,
     conflicts: [],
     base: null,
     carrying: [],
@@ -513,7 +506,6 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         running: false,
         offered: false,
         mergeRequested: false,
-        mergeMethod: null,
         rejection: e.reason,
         ...movedOn,
       };
@@ -526,7 +518,6 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         running: false,
         offered: false,
         mergeRequested: false,
-        mergeMethod: null,
         changes: e.changes,
         ...movedOn,
       };
@@ -547,7 +538,6 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // Whatever the manager asked for did not happen. Asking again is theirs to
         // decide, once they know what stopped it.
         mergeRequested: false,
-        mergeMethod: null,
         conflicts: e.conflicts ?? [],
         question: {
           question: e.reason,
@@ -564,7 +554,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       return { ...t, status: 'gave_up', running: false, question: null, interrupted: false };
 
     case 'merge_requested':
-      return { ...t, mergeRequested: true, mergeMethod: e.method ?? 'squash' };
+      return { ...t, mergeRequested: true };
 
     // A rejection ends the offer as well as the round: the reworked ticket is
     // offered again, on the same branch and so on the same pull request — which is
@@ -581,7 +571,6 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             status: 'done',
             offered: false,
             mergeRequested: false,
-            mergeMethod: null,
             conflicts: [],
             ...movedOn,
           }
@@ -590,7 +579,6 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             status: 'planning',
             offered: false,
             mergeRequested: false,
-            mergeMethod: null,
             conflicts: [],
             rejection: e.reason ?? null,
             ...movedOn,

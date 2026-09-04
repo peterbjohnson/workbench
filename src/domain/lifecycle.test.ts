@@ -517,30 +517,22 @@ test('the manager can ask for the merge here, and it is done once', () => {
 
   const asked = j.add({ type: 'merge_requested' });
   assert.equal(asked.mergeRequested, true);
-  assert.equal(asked.mergeMethod, 'squash', 'a request that names no method squashes');
   assert.deepEqual(j.next(), { kind: 'merge_pr' }, 'an answer given is not one to poll for');
 
   const merged = j.add({ type: 'verdict', verdict: 'accepted' });
   assert.equal(merged.status, 'done');
   assert.equal(merged.mergeRequested, false, 'nothing is left asking to be merged again');
-  assert.equal(merged.mergeMethod, null, 'and no method left over from the one that happened');
   assert.deepEqual(j.next(), { kind: 'wait' });
 });
 
-test('the manager can ask for a merge commit instead of a squash', () => {
+test('a merge recorded when there was a choice of method still replays', () => {
   const j = offeredTicket();
 
-  const asked = j.add({ type: 'merge_requested', method: 'merge' });
+  // Logs written while a merge could be a squash carry the method that was chosen.
+  // There is one way to land work now, and an old log means that one.
+  const asked = j.add({ type: 'merge_requested', method: 'squash' } as EventBody);
   assert.equal(asked.mergeRequested, true);
-  assert.equal(asked.mergeMethod, 'merge', 'the choice is carried to whoever does the merging');
-
-  // The method is a fact about one request, so nothing that ends the request keeps it.
-  const stuck = j.add({
-    type: 'blocked',
-    reason: 'it conflicts',
-    conflicts: ['src/api/server.ts'],
-  });
-  assert.equal(stuck.mergeMethod, null);
+  assert.deepEqual(j.next(), { kind: 'merge_pr' });
 });
 
 test('a merge that cannot happen names the files and stops asking', () => {

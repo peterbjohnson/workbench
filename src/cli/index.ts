@@ -17,6 +17,7 @@ import { nextFree, occupantOf } from '../api/port.ts';
 import { commitIn, compareUrl, install, installed, newest, short } from '../update.ts';
 import { writeConfigFile } from '../api/settings.ts';
 import { heldBy } from '../domain/rules.ts';
+import { mergeCommitsRefusal } from '../github/pr.ts';
 import type { Ticket } from '../domain/ticket.ts';
 
 /**
@@ -242,7 +243,7 @@ async function main(argv: string[]): Promise<number> {
     case 'merge': {
       if (!args[0]) return fail('which ticket?');
       await wb.merge(args[0]);
-      console.log(`${args[0]} will be squashed onto the base`);
+      console.log(`${args[0]} will be merged onto the base`);
       return 0;
     }
 
@@ -332,6 +333,14 @@ async function init(where: string | undefined): Promise<number> {
   // anywhere else it would install cleanly and then fail on the first ticket.
   if (!fs.existsSync(path.join(target, '.git'))) {
     console.error(`${target} is not a git repository. Run this at the root of one.`);
+    return 1;
+  }
+
+  // Every ticket lands as a merge commit, so a repository that forbids them is one
+  // where no ticket can ever be accepted. Better said now than at the first merge.
+  const refusal = await mergeCommitsRefusal(target);
+  if (refusal !== undefined) {
+    console.error(refusal);
     return 1;
   }
 
@@ -680,6 +689,14 @@ async function serve(config: Config): Promise<number> {
   // this one's may still be open when it does.
   const handed = await offerUpdate(config);
   if (handed !== undefined) return handed;
+
+  // Asked again here, not only at `wb init`: the setting can be turned off after a
+  // workbench is running, and every merge from then on would be refused.
+  const refusal = await mergeCommitsRefusal(config.repoRoot);
+  if (refusal !== undefined) {
+    console.error(refusal);
+    return 1;
+  }
 
   const port = await choosePort(config);
   if (port === undefined) return 1;
