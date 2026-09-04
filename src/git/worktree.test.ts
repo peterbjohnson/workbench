@@ -12,6 +12,7 @@ import {
   diff,
   refresh,
   remove,
+  removedFromBase,
   unresolved,
   type GitConfig,
 } from './worktree.ts';
@@ -915,6 +916,111 @@ test('a marker in a file nobody was asked about does not count', async () => {
 
     assert.deepEqual(await unresolved(cfg, 't1', ['project/model.py']), []);
     assert.deepEqual(await unresolved(cfg, 't1', ['project/fixture.txt']), ['project/fixture.txt']);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+/** Where a branch stands, which is the commit its ticket measures its work from. */
+const headOf = async (cwd: string): Promise<string> =>
+  (await run('git', ['rev-parse', 'HEAD'], { cwd })).stdout.trim();
+
+test('a branch that deletes what the base added since it was cut is named for it', async () => {
+  // What reviewers were reading as the ticket's own work: main gained a file while
+  // the branch was being built, the branch took it in with the base and then
+  // removed it, and the diff said the ticket had deleted it.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    const cut = await headOf(wt.path);
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+    await refresh(cfg, 't1');
+
+    await fs.rm(path.join(wt.path, 'project', 'deps.lock'));
+    await commitAll(wt, 'untracked as the review asked');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', cut), ['project/deps.lock']);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('deleting a file that was there when the branch was cut is the ticket’s own business', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    const cut = await headOf(wt.path);
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+    await refresh(cfg, 't1');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', cut), [], 'nothing deleted at all');
+
+    await fs.rm(path.join(wt.path, 'project', 'model.py'));
+    await commitAll(wt, 'the work this ticket was for');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', cut), [], 'older than the base gained it');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a file the branch this one continues from deleted is not the base’s to reinstate', async () => {
+  // An earlier ticket deleted a file as its work and was offered but not merged;
+  // this one carries on from it, so the deletion is in its history before it
+  // starts and the base still has the file. Measured from the anchor's own tip
+  // the base would look to have just added it, and this ticket would be told to
+  // put back exactly what the earlier one was for taking out.
+  const cfg = await scratchRepo();
+  try {
+    const earlier = await create(cfg, 'd1');
+    await fs.rm(path.join(earlier.path, 'project', 'model.py'));
+    await commitAll(earlier, 'the work d1 was for');
+    const anchor = await headOf(earlier.path);
+
+    await create(cfg, 't1', 'wb/d1');
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+    await refresh(cfg, 't1');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', anchor), []);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a base the branch has not taken in yet is not read as files it deleted', async () => {
+  // The base moved after the refresh that brought the old one in — another ticket
+  // merged, or the refresh's fetch failed where this one succeeds. Everything the
+  // newer base has gained is missing from the branch, and without asking whether
+  // the branch has this base at all every one of those files reads as a deletion
+  // of something the base just added.
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    const cut = await headOf(wt.path);
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+
+    assert.deepEqual(await removedFromBase(cfg, 't1', cut), []);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a base commit this worktree has never had is answered without throwing', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const wt = await create(cfg, 't1');
+    await landOnBase(cfg, 'project/deps.lock', 'a dependency main gained\n');
+    await refresh(cfg, 't1');
+    await fs.rm(path.join(wt.path, 'project', 'deps.lock'));
+    await commitAll(wt, 'untracked as the review asked');
+
+    // `[]` here does not distinguish the fallback from no anchor at all, and
+    // cannot: this only ever runs on a branch that has just taken the base in, so
+    // the merge-base of base and HEAD is the base, the window between them holds
+    // no addition, and the fallback can only ever come back empty. What is being
+    // asserted is the whole of what matters — a revision nobody can resolve says
+    // nothing rather than inventing a block or failing the ticket outright.
+    assert.deepEqual(await removedFromBase(cfg, 't1', 'deadbee'), []);
   } finally {
     await cleanUp(cfg);
   }

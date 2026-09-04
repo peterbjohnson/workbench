@@ -18,6 +18,7 @@ export function gitWorkspace(cfg: GitConfig): Workspace {
     prepare: (ticketId, from) => create(cfg, ticketId, from),
     refresh: (ticketId, alsoMerge, keepConflict) => refresh(cfg, ticketId, alsoMerge, keepConflict),
     unresolved: (ticketId, paths) => unresolved(cfg, ticketId, paths),
+    removedFromBase: (ticketId, from) => removedFromBase(cfg, ticketId, from),
     commit: (ticket, message) => commitAll(worktreeFor(cfg, ticket.id), message),
     discard: (ticketId) => remove(cfg, ticketId),
   };
@@ -649,6 +650,85 @@ export async function unresolved(
     if (unmerged.has(p) || (await hasMarkers(path.join(wt.path, p)))) left.push(p);
   }
   return left;
+}
+
+/**
+ * Of the paths this branch deletes relative to the base, the ones the base itself
+ * added while the branch was being built. A ticket that never mentioned a file has
+ * no business deleting one the base has just gained — four branches in a row
+ * reverted the same dependency before anybody read the diff that way.
+ *
+ * `from` is what the ticket's change is measured against, which for a ticket
+ * holding its base is the commit it was cut from rather than the merge-base: it is
+ * exactly those tickets this is for. The merge-base stands in when it is not given
+ * or does not resolve here, and a revision that resolves neither way returns
+ * nothing — a commit this worktree has never heard of must not invent a block.
+ */
+export async function removedFromBase(
+  cfg: GitConfig,
+  ticketId: string,
+  from?: string,
+): Promise<string[]> {
+  const wt = worktreeFor(cfg, ticketId);
+  const base = (await git(wt.path, 'rev-parse', await startPoint(cfg))).trim();
+
+  // Only a base the branch already has can be asked this. The base is resolved
+  // here a second time, with its own fetch, and it can differ from the one the
+  // refresh just merged: another ticket's merge moves `origin/<base>` while this
+  // one is being offered, and a fetch that failed there can succeed here. Then
+  // every file the newer base has and this branch has not merged yet reads as a
+  // deletion — and as an addition on the base's side too — and the ticket is
+  // blocked naming files it never touched. There is nothing to say until the
+  // branch has the base; the next pass, after a refresh that brings it in, says it.
+  const has = await git(wt.path, 'merge-base', '--is-ancestor', base, 'HEAD').then(
+    () => true,
+    () => false,
+  );
+  if (!has) return [];
+
+  const anchor =
+    (from === undefined
+      ? ''
+      : await commitOr(wt, 'rev-parse', '--verify', '--quiet', `${from}^{commit}`)) ||
+    (await commitOr(wt, 'merge-base', base, 'HEAD'));
+  if (anchor === '') return [];
+
+  // What the base added is measured on the base's own side of the fork —
+  // `anchor...base`, never `anchor base`. A ticket carrying on from one that
+  // deleted a file is anchored on a commit without it, and a two-dot diff would
+  // read that file as one the base had just added: the branch inherits the
+  // deletion, so it lands in `gone` too, and the ticket is told to put back what
+  // the earlier one took out. Where the anchor is an ancestor of the base, which
+  // is the ordinary ticket, the two diffs are the same one.
+  //
+  // `--no-renames` on both sides. A rename of a file the base added is a deletion
+  // of the path the base added, and letting git fold the two into an `R` would hide
+  // the one case this exists for.
+  const names = (out: string) => out.split('\n').filter((line) => line !== '');
+  const added = new Set(
+    names(
+      await git(
+        wt.path,
+        'diff',
+        '--no-renames',
+        '--diff-filter=A',
+        '--name-only',
+        `${anchor}...${base}`,
+      ),
+    ),
+  );
+  const gone = names(
+    await git(wt.path, 'diff', '--no-renames', '--diff-filter=D', '--name-only', base, 'HEAD'),
+  );
+  return gone.filter((p) => added.has(p)).sort();
+}
+
+/** The commit a revision-producing git command names, or '' when it names none. */
+async function commitOr(wt: Worktree, ...args: string[]): Promise<string> {
+  return git(wt.path, ...args).then(
+    (out) => out.trim(),
+    () => '',
+  );
 }
 
 /**

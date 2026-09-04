@@ -125,6 +125,13 @@ export type Workspace = {
    */
   unresolved: (ticketId: string, paths: readonly string[]) => Promise<string[]>;
   /**
+   * The paths the base has that the branch's tip has not, of those the base added
+   * since `from` — what this ticket's change is measured against. Asked when work
+   * is about to be offered or merged, because a branch that deletes what the base
+   * just added is reverting somebody else's work rather than doing its own.
+   */
+  removedFromBase: (ticketId: string, from?: string) => Promise<string[]>;
+  /**
    * Records whatever a stage left behind, returning the commit or null when there
    * was nothing to record — normal for the stages that only read. The sha is kept:
    * a ticket's record is its branch, its base, its commits and its pull request.
