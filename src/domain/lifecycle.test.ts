@@ -43,7 +43,7 @@ function newTicket(): Journal {
 function runStage(
   j: Journal,
   stage: 'plan' | 'implement' | 'review' | 'verify',
-  opts: { summary?: string; rejected?: string; costUsd?: number } = {},
+  opts: { summary?: string; rejected?: string; costUsd?: number; settling?: true } = {},
 ): Ticket {
   j.add({ type: 'stage_started', stage, runId: `r-${stage}` });
   return j.add({
@@ -53,6 +53,7 @@ function runStage(
     summary: opts.summary ?? `${stage} done`,
     rejected: opts.rejected,
     costUsd: opts.costUsd,
+    settling: opts.settling,
   });
 }
 
@@ -598,23 +599,76 @@ test('a run that settled a clash on an offered branch goes back to the wait', ()
   // verify have passed on this work already — and going round again would arrive at
   // `ready_for_pr` for a branch that has had a pull request all along.
   const j = offeredTicket();
-  const settled = runStage(j, 'implement', { summary: 'took both sides' });
+  const settled = runStage(j, 'implement', { summary: 'took both sides', settling: true });
 
   assert.equal(settled.status, 'awaiting_verdict');
   assert.equal(settled.offered, true, 'the offer never ended');
   assert.deepEqual(j.next(), { kind: 'poll_verdict' }, 'still waiting on the manager');
 
-  // A run that did not land still parks it: an offer standing is not a reason to
-  // say nothing about work the workbench could not finish.
+  // A settling run that did not land says nothing about where the ticket goes
+  // either: the pass that asked for it appends the `blocked` event, with the paths
+  // and what the attempt left, and that is what parks it.
   const k = offeredTicket();
   k.add({ type: 'stage_started', stage: 'implement', runId: 'r-settle' });
-  const stuck = k.add({
+  const left = k.add({
     type: 'stage_finished',
     runId: 'r-settle',
     outcome: 'blocked',
     summary: 'src/api/server.ts is still conflicted',
+    settling: true,
+  });
+  assert.equal(left.status, 'awaiting_verdict', 'not this run’s to decide');
+  const parked = k.add({
+    type: 'blocked',
+    reason: 'it conflicts',
+    conflicts: ['src/api/server.ts'],
+  });
+  assert.equal(parked.status, 'blocked', 'the pass is what parks it');
+
+  // And a run that was a genuine stage still parks it where it stands: an offer
+  // standing is not a reason to say nothing about work the workbench could not
+  // finish.
+  const m = offeredTicket();
+  m.add({ type: 'stage_started', stage: 'implement', runId: 'r-stage' });
+  const stuck = m.add({
+    type: 'stage_finished',
+    runId: 'r-stage',
+    outcome: 'blocked',
+    summary: 'src/api/server.ts is still conflicted',
   });
   assert.equal(stuck.status, 'blocked');
+});
+
+test('an answer that lands while a clash is settled is what the ticket keeps', () => {
+  // The offered branches are read once and then settled one at a time, an agent run
+  // each. In those minutes the manager can answer the pull request — and every way
+  // of answering it ends the offer, so routing the report on `offered` missed and
+  // walked it on into a review instead: the requested changes dropped at the next
+  // `stage_started`, and accepted work sent round again for a second pull request.
+  const settling = (answer: EventBody): Journal => {
+    const j = offeredTicket();
+    j.add({ type: 'stage_started', stage: 'implement', runId: 'r-settle' });
+    j.add(answer);
+    j.add({
+      type: 'stage_finished',
+      runId: 'r-settle',
+      outcome: 'completed',
+      summary: 'took both sides',
+      settling: true,
+    });
+    return j;
+  };
+
+  const changed = settling({ type: 'changes_requested', changes: 'not like that' }).ticket();
+  assert.equal(changed.status, 'implementing');
+  assert.equal(changed.changes, 'not like that', 'for the run that has to act on it');
+
+  const rejected = settling({ type: 'plan_rejected', reason: 'wrong approach' }).ticket();
+  assert.equal(rejected.status, 'planning');
+
+  const accepted = settling({ type: 'verdict', verdict: 'accepted' });
+  assert.equal(accepted.ticket().status, 'done');
+  assert.deepEqual(accepted.next(), { kind: 'wait' }, 'and nothing offers it a second time');
 });
 
 test('merged work can be sent back to be tweaked, and buys a plan for the tweak', () => {

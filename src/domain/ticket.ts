@@ -605,6 +605,22 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
   // ended; the late report must not resurrect it as blocked.
   if (t.status === 'cancelled' || t.status === 'gave_up') return stopped;
 
+  // Not a stage the board asked for: the workbench settling a clash on a branch
+  // that was offered. What it goes back to is the wait it interrupted, and nothing
+  // else — review and verify have passed on this work already, and going round
+  // again would arrive at `ready_for_pr` for a branch that has had a pull request
+  // all along.
+  //
+  // Ahead of the outcome branches, because the outcomes are not this run's to
+  // decide either. A settling run takes minutes, and an answer arriving in them
+  // ends the offer and puts the ticket somewhere of its own: a settle that then
+  // failed would mark a merged ticket `blocked`, or a ticket carrying the
+  // manager's requested changes `blocked` and lose them at the next stage. So a
+  // settling run sets no status at all where the offer has ended. Nothing goes
+  // unparked by that: `refresh` in merging.ts appends the `blocked` event, with
+  // the conflicting paths, on every outcome but a resolution that landed.
+  if (e.settling) return t.offered ? { ...stopped, status: 'awaiting_verdict' } : stopped;
+
   // A crash is not a rejection. It parks and waits for the manager, same as a question.
   if (e.outcome === 'blocked' || e.outcome === 'failed') {
     return { ...stopped, status: 'blocked' };
@@ -618,11 +634,11 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
   }
 
   // An offer standing means the stages are over, so there is no next one to route
-  // to: this was the workbench settling a clash on a branch that is already
-  // offered, and what it goes back to is the wait for a verdict. Without this the
-  // ticket walks on into a review and a verify of work that has passed both, and
-  // arrives at `ready_for_pr` holding a pull request. `stage_restarted` and
-  // `question_answered` read `offered` for the same reason.
+  // to, and the wait is what a run reporting into one goes back to. The belt: the
+  // settling run, which is the one that gets here on purpose, is routed above.
+  // Without this the ticket walks on into a review and a verify of work that has
+  // passed both, and arrives at `ready_for_pr` holding a pull request.
+  // `stage_restarted` and `question_answered` read `offered` for the same reason.
   if (t.offered) return { ...stopped, status: 'awaiting_verdict' };
 
   if (e.rejected !== undefined) {

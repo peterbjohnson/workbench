@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { create, harness, standing } from './harness.ts';
 import { openStore } from '../store/store.ts';
+import { deriveTicket } from '../domain/ticket.ts';
 import type { Refreshed } from '../domain/events.ts';
 
 test('a pull request that will not open parks the ticket with the reason', async () => {
@@ -310,10 +311,13 @@ test('a resolution is not pushed onto an offer taken back while it ran', async (
   // the `pr_opened` that follows it puts the ticket back in front of them as
   // though they had said nothing.
   const store = openStore(':memory:');
+  let runs = 0;
   const h = clashingOffer({
     store,
-    runStage: async ({ stage }) => {
-      if (stage !== 'implement') return { outcome: 'blocked', summary: 'not what this is about' };
+    runStage: async () => {
+      // The objection lands during the settle, and every run after it is parked —
+      // so what the ticket did about it is `h.ran`, and nothing cascades past it.
+      if (++runs > 1) return { outcome: 'blocked', summary: 'not what this is about' };
       store.append('t2', { type: 'changes_requested', changes: 'not like that' });
       return { outcome: 'completed', summary: 'took both sides' };
     },
@@ -331,6 +335,48 @@ test('a resolution is not pushed onto an offer taken back while it ran', async (
       'the resolution is on the branch, where whatever runs next will find it',
     );
     assert.equal(h.store.ticket('t2').offered, false, 'and the offer is still over');
+
+    // And the settle reported back into the objection rather than over it. Routed
+    // on the offer, which the objection had just ended, this walked on to a review
+    // of the work that was objected to — and the changes went unread, cleared by
+    // that stage starting.
+    const events = store.eventsFor('t2');
+    const settled = events.findIndex((e) => e.type === 'stage_finished');
+    assert.equal(deriveTicket(events.slice(0, settled + 1)).status, 'implementing');
+    assert.deepEqual(h.ran, ['implement', 'implement'], 'which is the run it bought');
+  } finally {
+    await h.close();
+    store.close();
+  }
+});
+
+test('nor onto one that was accepted while it ran', async () => {
+  // The other way the wait can end mid-settle: a poll finds the pull request merged
+  // on the host. Routed on the offer, the report walked a `done` ticket into a
+  // review, a verify and a second pull request for work that had already landed.
+  const store = openStore(':memory:');
+  let answered = false;
+  const h = clashingOffer({
+    store,
+    runStage: async () => {
+      if (!answered) {
+        answered = true;
+        store.append('t2', { type: 'verdict', verdict: 'accepted' });
+      }
+      // Everything else this could go on to run says yes, so nothing but the routing
+      // stops it: with the bug it reaches `open_pr`.
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.equal(store.ticket('t2').status, 'done', 'the answer is where the ticket stayed');
+    assert.deepEqual(h.ran, ['implement'], 'the settle, and nothing after it');
+    assert.deepEqual(h.prsOpened, [], 'no second pull request for work already merged');
   } finally {
     await h.close();
     store.close();

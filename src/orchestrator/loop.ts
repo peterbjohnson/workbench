@@ -516,6 +516,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           outcome: 'interrupted',
           summary: 'stopped by the manager',
           sessionId: ticket.session ?? undefined,
+          settling: settling || undefined,
         });
         return { outcome: 'interrupted', summary: 'stopped by the manager' };
       }
@@ -700,6 +701,9 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         completionCriteria: result.completionCriteria,
         later: result.later,
         sessionId: result.sessionId,
+        // Which the report is routed on, rather than on the ticket still being
+        // offered: it may well not be by now. See `settling` in events.ts.
+        settling: settling || undefined,
       });
 
       return result;
