@@ -617,6 +617,14 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
     return { ...stopped, status: 'blocked', interrupted: true };
   }
 
+  // An offer standing means the stages are over, so there is no next one to route
+  // to: this was the workbench settling a clash on a branch that is already
+  // offered, and what it goes back to is the wait for a verdict. Without this the
+  // ticket walks on into a review and a verify of work that has passed both, and
+  // arrives at `ready_for_pr` holding a pull request. `stage_restarted` and
+  // `question_answered` read `offered` for the same reason.
+  if (t.offered) return { ...stopped, status: 'awaiting_verdict' };
+
   if (e.rejected !== undefined) {
     return { ...stopped, status: 'planning', rejection: e.rejected };
   }

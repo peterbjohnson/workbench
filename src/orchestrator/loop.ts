@@ -125,6 +125,12 @@ export type Workspace = {
    */
   unresolved: (ticketId: string, paths: readonly string[]) => Promise<string[]>;
   /**
+   * Undoes a merge left in the worktree, putting the branch back where it stood.
+   * The way out when the run that was handed one did not finish it: nothing is
+   * committed, and the branch is offered as it was.
+   */
+  abandonMerge: (ticketId: string) => Promise<void>;
+  /**
    * The paths the base has that the branch's tip has not, of those the base added
    * since `from` — what this ticket's change is measured against. Asked when work
    * is about to be offered or merged, because a branch that deletes what the base
@@ -246,7 +252,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
 
   /** A ticket's branch, and the offer made of what is on it. */
   const branch = createBranch(deps);
-  const merging = createMerging({ deps, branch, busy: (id) => inFlight.has(id) });
+  const merging = createMerging({
+    deps,
+    branch,
+    busy: (id) => inFlight.has(id),
+    settleOffered,
+  });
 
   // Subscribed from the moment the orchestrator exists, not from start(), because a
   // cancellation has to reach a running stage whether or not the timer is going.
@@ -412,7 +423,42 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     return null;
   }
 
-  async function doStage(ticket: Ticket, stage: Stage): Promise<void> {
+  /**
+   * The implement run that settles a clash found on a branch that is already
+   * offered. Everything a stage run is, and one thing besides: the standing checks
+   * are run against what it leaves, before anything is committed.
+   *
+   * Held in `inFlight` for the whole run, as a tick's own work is. A tick that
+   * arrived in the middle would see a ticket with no run recorded yet — the
+   * `stage_started` is inside `doStage` — and start one of its own on the same
+   * worktree, and `idle` would return with an agent still going.
+   */
+  async function settleOffered(ticket: Ticket): Promise<RunResult> {
+    const run = doStage(ticket, 'implement', { settling: true });
+    inFlight.set(
+      ticket.id,
+      run.then(
+        () => {},
+        () => {},
+      ),
+    );
+    try {
+      return await run;
+    } finally {
+      inFlight.delete(ticket.id);
+    }
+  }
+
+  /**
+   * @param settling whether this run is settling a clash on an offered branch,
+   *   rather than a stage the board asked for. See `settleOffered`.
+   * @returns what the run reported, for the caller that has something to do with it.
+   */
+  async function doStage(
+    ticket: Ticket,
+    stage: Stage,
+    { settling = false }: { settling?: boolean } = {},
+  ): Promise<RunResult> {
     const { path: worktree, scratch } = await branch.prepare(ticket);
     const runId = randomUUID();
 
@@ -450,7 +496,9 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           // ended, and would be answered by whatever ran next under the same id.
           aborts.delete(ticket.id);
           broken.delete(ticket.id);
-          return;
+          // What was recorded, said back to a caller that reads it. Only a settling
+          // run does, and one of those is always implement, so nothing reads this.
+          return { outcome: 'completed', summary: 'sent back by the standing checks' };
         }
         checks = passed;
       }
@@ -469,7 +517,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           summary: 'stopped by the manager',
           sessionId: ticket.session ?? undefined,
         });
-        return;
+        return { outcome: 'interrupted', summary: 'stopped by the manager' };
       }
 
       let commit: string | null = null;
@@ -546,6 +594,27 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
             // The run's own summary is kept: what it did is still what it did, and
             // whoever answers this needs it as much as they need the unfinished merge.
             summary: `${left.join(', ')} are still conflicted: ${result.summary}`,
+            costUsd: result.costUsd,
+          };
+        }
+      }
+
+      // A settling run is the last thing that happens to work that is already
+      // offered: what it leaves is pushed to the pull request the manager is
+      // reading, and no stage follows it to find out that the suite is broken. So
+      // the checks are run here — before the commit, so a failure leaves the merge
+      // uncommitted and the branch can be put back exactly as it stood.
+      if (settling && result.outcome === 'completed') {
+        const results = await deps.checks(worktree);
+        if (results.length > 0) store.append(ticket.id, { type: 'checks_run', runId, results });
+
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length > 0) {
+          result = {
+            outcome: 'blocked',
+            summary:
+              `${failed.length} standing check(s) fail against the resolution:\n\n` +
+              failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n'),
             costUsd: result.costUsd,
           };
         }
@@ -632,6 +701,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         later: result.later,
         sessionId: result.sessionId,
       });
+
+      return result;
     } finally {
       // Whatever ends this run — returning, or a refresh, a check or an append
       // throwing on the way — ends its claim on being stoppable. A name left behind

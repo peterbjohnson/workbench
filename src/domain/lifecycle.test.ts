@@ -592,6 +592,31 @@ test('the conflicting paths last no longer than the clash does', () => {
   assert.deepEqual(refreshed.conflicts, [], 'the base went in cleanly this time');
 });
 
+test('a run that settled a clash on an offered branch goes back to the wait', () => {
+  // The one stage that runs while a pull request is standing: the workbench settling
+  // a clash the base brought. There is no next stage to route it to — review and
+  // verify have passed on this work already — and going round again would arrive at
+  // `ready_for_pr` for a branch that has had a pull request all along.
+  const j = offeredTicket();
+  const settled = runStage(j, 'implement', { summary: 'took both sides' });
+
+  assert.equal(settled.status, 'awaiting_verdict');
+  assert.equal(settled.offered, true, 'the offer never ended');
+  assert.deepEqual(j.next(), { kind: 'poll_verdict' }, 'still waiting on the manager');
+
+  // A run that did not land still parks it: an offer standing is not a reason to
+  // say nothing about work the workbench could not finish.
+  const k = offeredTicket();
+  k.add({ type: 'stage_started', stage: 'implement', runId: 'r-settle' });
+  const stuck = k.add({
+    type: 'stage_finished',
+    runId: 'r-settle',
+    outcome: 'blocked',
+    summary: 'src/api/server.ts is still conflicted',
+  });
+  assert.equal(stuck.status, 'blocked');
+});
+
 test('merged work can be sent back to be tweaked, and buys a plan for the tweak', () => {
   // Done was the end of the road: a ticket that merged and then wanted a small
   // change had to be written out again as a new one, describing the old one first.

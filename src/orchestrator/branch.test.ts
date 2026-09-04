@@ -93,14 +93,23 @@ test('a branch standing on work it waited for keeps its base as the base moves o
  */
 function carryingT1(merges: Refreshed[]) {
   const answers = new Map<string, Verdict>();
+  /** The refreshes of t2 that brought work in, in the order they happened. */
+  const brought: Refreshed[] = [];
   const h = harness({
     verdict: (id) => answers.get(id) ?? { kind: 'pending' },
-    refresh: (id, keepConflict) =>
-      id === 't2' && !keepConflict
-        ? (merges.shift() ?? { kind: 'up-to-date' })
-        : { kind: 'up-to-date' },
+    // The refreshes at the start of a stage are not what these tests are about: by
+    // then the branch has the base, which is what they go for. They are the ones
+    // that happen while the ticket is running — `keepConflict` no longer tells them
+    // apart on its own, now that the pass over the offered branches keeps a clash
+    // for an implement run to settle.
+    refresh: (id) => {
+      if (id !== 't2' || h.store.ticket('t2').running) return { kind: 'up-to-date' };
+      const merge = merges.shift() ?? { kind: 'up-to-date' };
+      brought.push(merge);
+      return merge;
+    },
   });
-  return { h, answers };
+  return { h, answers, brought };
 }
 
 /** The merge that took t1, made as t2's branch was cut, and the offer that follows. */
@@ -110,7 +119,7 @@ const TOOK_T1: Refreshed[] = [
 ];
 
 test('a branch keeps its base when what it took stops being offered', async () => {
-  const { h, answers } = carryingT1([
+  const { h, answers, brought } = carryingT1([
     ...TOOK_T1,
     // The base moving on again, under a pull request that is standing.
     { kind: 'merged', base: 'newer001', commit: 'merge03', merged: ['newer001'] },
@@ -133,11 +142,7 @@ test('a branch keeps its base when what it took stops being offered', async () =
     await h.orch.idle();
 
     const t2 = h.store.ticket('t2');
-    assert.equal(
-      h.refreshed.filter((r) => r.id === 't2' && !r.keepConflict).length,
-      3,
-      'the merge did reach t2',
-    );
+    assert.equal(brought.length, 3, 'the merge did reach t2');
     assert.equal(t2.base, 'merge01', 'the base stands where the merge that took t1 put it');
     assert.deepEqual(t2.carrying, ['wb/t1'], 'because the branch is still standing on it');
   } finally {
@@ -146,7 +151,7 @@ test('a branch keeps its base when what it took stops being offered', async () =
 });
 
 test('a dependency that merged stops holding the base, because the base has it', async () => {
-  const { h, answers } = carryingT1([
+  const { h, answers, brought } = carryingT1([
     ...TOOK_T1,
     // The base t1's pull request landed on, brought in once it had.
     { kind: 'merged', base: 'newer001', commit: 'merge03', merged: ['newer001'] },
@@ -168,11 +173,7 @@ test('a dependency that merged stops holding the base, because the base has it',
     // is what the base is for.
     const t2 = h.store.ticket('t2');
     assert.equal(h.store.ticket('t1').status, 'done');
-    assert.equal(
-      h.refreshed.filter((r) => r.id === 't2' && !r.keepConflict).length,
-      3,
-      'the merge did reach t2',
-    );
+    assert.equal(brought.length, 3, 'the merge did reach t2');
     assert.deepEqual(t2.carrying, [], 'nothing left that the base has not got');
     assert.equal(t2.base, 'newer001', 'so the base moves on with it');
   } finally {

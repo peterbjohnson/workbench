@@ -162,9 +162,18 @@ branch merges the current base and the standing checks are run against it. A bra
 already has the base is the ordinary case: nothing merges, nothing is recorded, nothing is
 re-run and nothing is spent.
 
-When something does merge and the checks then fail, or the merge conflicts outright, the
-ticket **blocks** with the failing output or the conflicting paths. Its work stands and its
-branch is untouched; what to do about it is a decision rather than another stage.
+When something does merge and the checks then fail, the ticket **blocks** with the failing
+output. Its work stands and its branch is untouched; what to do about a base that breaks it
+is a decision rather than another stage.
+
+A conflict is not a decision. A standing pull request whose branch will not take the base
+is handed to an implement run, which finishes the merge, has the standing checks run
+against what it left, and pushes the result to the same pull request — the ticket stays
+offered and nobody is asked anything. It gets one attempt: a run that leaves a path
+conflicted, or that fails the checks, puts the branch back exactly as it was — nothing
+committed — and **blocks** with the conflicting paths, saying that a resolution was tried
+and what it left. A clash with work the ticket waited for still blocks straight away, since
+the dependency was your choice rather than the agents'.
 
 A pull request you have already answered is left alone. Pushing a merge to it would be a
 commit made for reasons nothing to do with your objection, and a branch that has moved past
