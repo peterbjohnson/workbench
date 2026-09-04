@@ -187,7 +187,17 @@ export function createMerging({
           // standing and runs the refresh and the checks against a branch that is now
           // up to date. From the store: the settling run moved the base and made a
           // commit, and the ticket in hand still says otherwise.
-          await doOpenPr(store.ticket(ticket.id));
+          //
+          // Only while the offer is still standing and still unanswered — the same
+          // thing `refreshOffered` asks before it starts any of this. The window used
+          // to be a git merge and is now a whole agent run, and in that time the
+          // manager can ask for changes and a poll can find the pull request merged.
+          // Pushing then would append `pr_opened` over their answer: the objection
+          // silently undone, or a pull request reopened on work already merged. The
+          // resolution stays on the branch either way, for whatever runs next.
+          const settled = store.ticket(ticket.id);
+          const still = settled.offered && !ended(settled) ? await verdictOf(settled) : null;
+          if (still?.kind === 'pending') await doOpenPr(settled);
           return false;
         }
 
@@ -272,8 +282,17 @@ export function createMerging({
       .tickets()
       .filter((t) => t.id !== merged.id && t.offered && !ended(t) && !t.running && !busy(t.id));
 
-    for (const ticket of standing) {
+    for (const { id } of standing) {
       try {
+        // Read again for each one, because settling the one before it was a whole
+        // agent run rather than a git merge: in those minutes this ticket can have
+        // been sent back and started an implement run of its own. Refreshing it then
+        // puts a `git merge` in a worktree an agent is writing in, and the settle's
+        // claim on `inFlight` lands on top of the one that run already holds — whose
+        // `finally` then deletes it, so the tick stops seeing either as busy.
+        const ticket = store.ticket(id);
+        if (!ticket.offered || ended(ticket) || ticket.running || busy(id)) continue;
+
         // A pull request the manager has already answered is waiting on nobody: it
         // is not refreshed, because pushing a merge to it would be a commit made
         // for reasons that have nothing to do with the answer, and `readVerdict`
@@ -284,7 +303,7 @@ export function createMerging({
         const { path: worktree } = await branch.prepare(ticket);
         await refresh(ticket, worktree, true);
       } catch (error) {
-        store.append(ticket.id, { type: 'blocked', reason: describe(error) });
+        store.append(id, { type: 'blocked', reason: describe(error) });
       }
     }
   }

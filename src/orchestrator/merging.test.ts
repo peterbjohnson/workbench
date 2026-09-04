@@ -303,6 +303,102 @@ test('a resolution the standing checks fail is undone too', async () => {
   }
 });
 
+test('a resolution is not pushed onto an offer taken back while it ran', async () => {
+  // The window used to be a git merge and is now a whole agent run, and in that
+  // time the manager can read the pull request and ask for something else. Pushing
+  // the resolution then puts a commit on the offer they have just objected to, and
+  // the `pr_opened` that follows it puts the ticket back in front of them as
+  // though they had said nothing.
+  const store = openStore(':memory:');
+  const h = clashingOffer({
+    store,
+    runStage: async ({ stage }) => {
+      if (stage !== 'implement') return { outcome: 'blocked', summary: 'not what this is about' };
+      store.append('t2', { type: 'changes_requested', changes: 'not like that' });
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsOpened, [], 'nothing was pushed to the offer they had objected to');
+    assert.deepEqual(
+      h.committed,
+      ['t2: implement: ticket t2 (t2)'],
+      'the resolution is on the branch, where whatever runs next will find it',
+    );
+    assert.equal(h.store.ticket('t2').offered, false, 'and the offer is still over');
+  } finally {
+    await h.close();
+    store.close();
+  }
+});
+
+test('nor onto one the code host says has been answered', async () => {
+  // Pending when the pass looked, answered by the time the run came back. Pushing
+  // now moves the branch past a change request, which is exactly what `readVerdict`
+  // reads as having addressed it.
+  let answered = false;
+  const h = clashingOffer({
+    verdict: (id) =>
+      id === 't2' && answered ? { kind: 'rejected', reason: 'not this' } : { kind: 'pending' },
+    runStage: async ({ stage }) => {
+      // The answer is what happens next: a rejection buys a new plan. Parked there,
+      // because the round after one is not what this is about.
+      if (stage !== 'implement') return { outcome: 'blocked', summary: 'not what this is about' };
+      answered = true;
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.prsOpened, [], 'nothing was pushed');
+    assert.deepEqual(h.ran, ['implement', 'plan'], 'the rejection was read and acted on');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a ticket sent back while another one settles is left where it is', async () => {
+  // The pass reads the offered branches once and then spends minutes settling the
+  // first of them. By the time it reaches the third, that list can be minutes out
+  // of date: a ticket sent back in between has a run of its own going, and merging
+  // the base into a worktree an agent is writing in is not something to find out
+  // about from the diff.
+  const store = openStore(':memory:');
+  const h = clashingOffer({
+    store,
+    runStage: async ({ ticket }) => {
+      if (ticket.id !== 't2') return { outcome: 'blocked', summary: 'not what this is about' };
+      store.append('t3', { type: 'changes_requested', changes: 'not like that' });
+      return { outcome: 'completed', summary: 'took both sides' };
+    },
+  });
+  try {
+    standing(store, 't1');
+    standing(store, 't2');
+    standing(store, 't3');
+    store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.equal(
+      h.refreshed.filter((r) => r.id === 't3').length,
+      1,
+      'brought up to date by its own run, and not by the pass that had it as offered',
+    );
+  } finally {
+    await h.close();
+    store.close();
+  }
+});
+
 test('a clash with work the ticket waited for is still the manager’s', async () => {
   // The dependency was theirs to choose, and settling it here would resolve one
   // ticket's work against another's on a branch neither of them is being built on.
