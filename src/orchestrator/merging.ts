@@ -194,7 +194,12 @@ export function createMerging({
         // Nothing landed, so nothing is kept: whatever the attempt left goes, and the
         // manager is asked about the work as it was offered. Also for a merge kept for
         // a settle that was never going to happen — a dependency's clash.
-        if (result.merging) await deps.workspace.abandonMerge(ticket.id);
+        //
+        // Only where this pass is what left the merge there. Everywhere else — opening
+        // the offer, merging it — a merge found on disk belongs to a stage that stopped
+        // partway through resolving one, and undoing it is exactly the loss `refresh`
+        // in worktree.ts hands that merge back rather than tidying it away for.
+        if (settle && result.merging) await deps.workspace.abandonMerge(ticket.id);
 
         store.append(ticket.id, {
           type: 'blocked',

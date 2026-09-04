@@ -559,6 +559,38 @@ test('work that conflicts with the base it must land on is not offered', async (
   }
 });
 
+test('a merge a stage stopped partway through is not tidied away by offering the work', async () => {
+  // Left by a run that was handed the merge and stopped to ask something. Its half of
+  // the resolution, and every uncommitted edit it made, are still sitting there: the
+  // pass over the offered branches undoes a merge because it is the one that left it,
+  // and nothing else may. A ticket shipped mid-resolution reaches here.
+  const h = harness({
+    refresh: () => ({
+      kind: 'conflicted',
+      base: 'newbase',
+      paths: ['src/domain/rules.ts'],
+      with: 'newbase',
+      merged: [],
+      commit: 'head0001',
+      merging: true,
+    }),
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.abandoned, [], 'the run’s work is where the run left it');
+    const ticket = h.store.ticket('t1');
+    assert.equal(ticket.status, 'blocked');
+    assert.deepEqual(ticket.conflicts, ['src/domain/rules.ts'], 'and the manager is asked');
+    assert.deepEqual(h.prsOpened, [], 'over a branch that was not offered');
+  } finally {
+    await h.close();
+  }
+});
+
 test('work that deletes what the base added is not offered', async () => {
   // Four branches in a row reverted the same dependency, and every reviewer read
   // the deletion as the ticket's own work.
