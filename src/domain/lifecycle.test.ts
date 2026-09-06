@@ -544,9 +544,11 @@ test('a merge that cannot happen names the files and stops asking', () => {
     type: 'blocked',
     reason: 'this branch conflicts with the base',
     conflicts: ['src/api/server.ts', 'ui/src/Detail.tsx'],
+    conflictedWith: { ref: 'newbase1', base: 'newbase1' },
   });
   assert.equal(stuck.status, 'blocked');
   assert.deepEqual(stuck.conflicts, ['src/api/server.ts', 'ui/src/Detail.tsx']);
+  assert.deepEqual(stuck.conflictedWith, { ref: 'newbase1', base: 'newbase1' });
   assert.equal(stuck.mergeRequested, false, 'a merge that failed is not retried by itself');
   assert.deepEqual(j.next(), { kind: 'wait' });
 
@@ -559,6 +561,23 @@ test('a merge that cannot happen names the files and stops asking', () => {
 
   const started = j.add({ type: 'stage_started', stage: 'implement', runId: 'r-fix' });
   assert.deepEqual(started.conflicts, []);
+  assert.equal(started.conflictedWith, null, 'and what they were with goes with them');
+});
+
+test('a clash recorded before what it was with was kept still parks the ticket', () => {
+  // Every log written before `conflictedWith` existed. The paths are all there is,
+  // so the panel says what it always said rather than naming a branch it has not got.
+  const j = offeredTicket();
+  j.add({ type: 'merge_requested' });
+  const stuck = j.add({
+    type: 'blocked',
+    reason: 'it conflicts',
+    conflicts: ['src/api/server.ts'],
+  });
+
+  assert.equal(stuck.status, 'blocked');
+  assert.deepEqual(stuck.conflicts, ['src/api/server.ts']);
+  assert.equal(stuck.conflictedWith, null);
 });
 
 test('the conflicting paths last no longer than the clash does', () => {
@@ -568,21 +587,36 @@ test('the conflicting paths last no longer than the clash does', () => {
   const stuck = (): Journal => {
     const j = offeredTicket();
     j.add({ type: 'merge_requested' });
-    j.add({ type: 'blocked', reason: 'it conflicts', conflicts: ['src/api/server.ts'] });
+    j.add({
+      type: 'blocked',
+      reason: 'it conflicts',
+      conflicts: ['src/api/server.ts'],
+      conflictedWith: { ref: 'wb/t3', base: 'newbase1' },
+    });
     return j;
   };
 
+  // What they were with is the same fact about the same attempt, so it goes wherever
+  // they go: a heading naming a branch over an empty list is the same stale claim.
   const merged = stuck().add({ type: 'verdict', verdict: 'accepted' });
   assert.deepEqual(merged.conflicts, [], 'the merge is what settled them');
+  assert.equal(merged.conflictedWith, null);
+
+  const rejected = stuck().add({ type: 'verdict', verdict: 'rejected' });
+  assert.deepEqual(rejected.conflicts, []);
+  assert.equal(rejected.conflictedWith, null);
 
   const answered = stuck().add({ type: 'question_answered', answer: 'merged it by hand' });
   assert.deepEqual(answered.conflicts, [], 'back to the wait, with the clash dealt with');
+  assert.equal(answered.conflictedWith, null);
 
   const restarted = stuck().add({ type: 'stage_restarted' });
   assert.deepEqual(restarted.conflicts, []);
+  assert.equal(restarted.conflictedWith, null);
 
   const refreshed = stuck().add({ type: 'refreshed', base: 'aaaa111', commit: 'bbbb222' });
   assert.deepEqual(refreshed.conflicts, [], 'the base went in cleanly this time');
+  assert.equal(refreshed.conflictedWith, null);
 });
 
 test('a run that settled a clash on an offered branch goes back to the wait', () => {
