@@ -574,6 +574,13 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         ...t,
         status: 'implementing',
         running: false,
+        // The answer ends the offer, so it ends everything the offer was waiting on
+        // with it: a settle over that branch, and a merge that was queued behind
+        // somebody else's. Without these the card goes on saying "queued behind t1"
+        // over a ticket the manager has already sent back, until some later stage
+        // starts and clears it — which at capacity is a long wait.
+        settling: false,
+        queuedBehind: null,
         offered: false,
         mergeRequested: false,
         changes: e.changes,

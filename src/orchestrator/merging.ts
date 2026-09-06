@@ -77,8 +77,12 @@ export function createMerging({
   /**
    * `<ticket>:<holder>` for every wait already recorded, so it is said once rather
    * than once a tick — and said again when the holder changes, which is the only
-   * part of it that is news. Never cleared: the record is what stops the append
-   * re-entering `tick` through the store subscription for ever.
+   * part of it that is news. The record is what stops the append re-entering `tick`
+   * through the store subscription for ever, and it lasts exactly as long as the
+   * merge it is about: see `runMerge`, which drops a holder's keys as it leaves the
+   * gate. Kept for the life of the process instead, a ticket queued behind the same
+   * one twice — both blocked by a host that refused the merge, both accepted again —
+   * said nothing the second time and read as a bare "merging…" throughout.
    */
   const toldTheyWait = new Set<string>();
   /** So a code host outage is said once, not once per poll. */
@@ -97,6 +101,11 @@ export function createMerging({
     const next = mergeChain.then(fn);
     const done = () => {
       mergeGate.delete(id);
+      // The waits this merge caused go with it. The re-entry the record guards
+      // against is a tick appending the same wait again, and by here this merge is
+      // out of the gate: whoever holds it now is somebody else, so the next wait
+      // behind *this* ticket is a new one, and a new one is worth saying.
+      for (const key of toldTheyWait) if (key.endsWith(`:${id}`)) toldTheyWait.delete(key);
     };
     mergeChain = next.then(done, done);
     return next;
@@ -238,7 +247,7 @@ export function createMerging({
         if (settling === 'detached') {
           holding(ticket.id, async () => {
             try {
-              await settle(ticket, result);
+              await settle(ticket, result, 'detached');
             } catch (error) {
               store.append(ticket.id, { type: 'blocked', reason: describe(error) });
             }
@@ -252,7 +261,7 @@ export function createMerging({
         // another click. Offering says no whatever happened: a settle that landed
         // has pushed the offer already, and the manager has been asked about one
         // that did not.
-        const landed = await settle(ticket, result);
+        const landed = await settle(ticket, result, settling);
         return settling === 'merge' && landed;
       }
     }
@@ -316,11 +325,14 @@ export function createMerging({
    * *where* it runs differs — inside the offer that found the clash, or beside the
    * pass that did, which must not wait for it — and what it does does not.
    *
+   * @param settling which of the four moments asked for it, which decides only
+   *   whether the manager still has to be asked about the offer afterwards.
    * @returns whether the resolution landed and was pushed.
    */
   async function settle(
     ticket: Ticket,
     result: Extract<Refreshed, { kind: 'conflicted' }>,
+    settling: Settling,
   ): Promise<boolean> {
     const attempt = await settleOffered(ticket);
 
@@ -349,14 +361,28 @@ export function createMerging({
       }
 
       // An offer that was already standing, so the resolution is pushed to the pull
-      // request the manager is reading — but only while it is still standing and
-      // still unanswered, the same thing `refreshOffered` asks before it starts any
-      // of this. The window used to be a git merge and is now a whole agent run, and
-      // in that time the manager can ask for changes and a poll can find the pull
-      // request merged. Pushing then would append `pr_opened` over their answer: the
-      // objection silently undone, or a pull request reopened on work already
-      // merged. The resolution stays on the branch either way.
-      const still = !ended(settled) && settled.offered ? await verdictOf(settled) : null;
+      // request the manager is reading — but only while it is still standing, which
+      // the manager can end from the board at any point in the minutes this takes.
+      if (ended(settled) || !settled.offered) return false;
+
+      // A merge the manager asked for is not asked about again: the Accept is the
+      // answer, and the ticket has been in flight for the whole of the settle, so no
+      // poll can have brought a different one back. What asking would add is
+      // `verdictOf`'s null — the blip it exists to tolerate, over a window that is
+      // now a whole agent run — and a null here would leave the resolution committed
+      // and never pushed, with `mergeRequested` still standing: the next tick finds
+      // the branch up to date, skips the settle, and merges a pull request whose head
+      // has none of the resolution.
+      if (settling === 'merge') return await doOpenPr(settled, 'no');
+
+      // Everywhere else the offer is still unanswered too, the same thing
+      // `refreshOffered` asks before it starts any of this. The window used to be a
+      // git merge and is now a whole agent run, and in that time the manager can ask
+      // for changes and a poll can find the pull request merged. Pushing then would
+      // append `pr_opened` over their answer: the objection silently undone, or a
+      // pull request reopened on work already merged. The resolution stays on the
+      // branch either way.
+      const still = await verdictOf(settled);
       return still?.kind === 'pending' ? await doOpenPr(settled, 'no') : false;
     }
 

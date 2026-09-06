@@ -336,7 +336,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       // Only running a stage needs the model service. Opening a pull request, reading
       // a verdict and giving up are the workbench's own work and carry on regardless.
       if (action.kind === 'run_stage' && !mayRunAgents) continue;
-      // Queued, not refused: nothing is appended and `mergeRequested` still stands,
+      // Queued, not refused: the wait is recorded and `mergeRequested` still stands,
       // so the tick after the gate frees is the one that merges it — in this process
       // or in the one that replaces it, since the request is a durable event and the
       // queue is only ever this tick declining to act on it.

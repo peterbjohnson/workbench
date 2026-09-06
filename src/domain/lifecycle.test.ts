@@ -653,6 +653,14 @@ test('a settling run says so while it is going, not only when it reports', () =>
   k.add({ type: 'stage_started', stage: 'implement', runId: 'r-s', settling: true });
   const stage = k.add({ type: 'stage_started', stage: 'implement', runId: 'r-i' });
   assert.equal(stage.settling, false);
+
+  // And an answer that ends the offer ends the settle over it: `running` goes there,
+  // so what says what the run was has to go with it.
+  const m = offeredTicket();
+  m.add({ type: 'stage_started', stage: 'implement', runId: 'r-s', settling: true });
+  const back = m.add({ type: 'changes_requested', changes: 'not like that' });
+  assert.equal(back.settling, false);
+  assert.equal(back.running, false);
 });
 
 test('a merge that has to wait says what it is behind, until it is doing something', () => {
@@ -686,6 +694,11 @@ test('a merge that has to wait says what it is behind, until it is doing somethi
     null,
   );
   assert.equal(queued().add({ type: 'blocked', reason: 'it conflicts' }).queuedBehind, null);
+  assert.equal(
+    queued().add({ type: 'changes_requested', changes: 'not like that' }).queuedBehind,
+    null,
+    'the offer it was queued to merge is over',
+  );
   assert.equal(queued().add({ type: 'verdict', verdict: 'accepted' }).queuedBehind, null);
   assert.equal(queued().add({ type: 'cancelled', reason: 'not now' }).queuedBehind, null);
   assert.equal(queued().add({ type: 'gave_up', reason: 'too many rounds' }).queuedBehind, null);
