@@ -216,6 +216,32 @@ test('the work-in-progress limit is readable and settable', async () => {
   });
 });
 
+test('the analytics are read off the whole log, across every ticket', async () => {
+  await withApi(async (wb, store) => {
+    await wb.create('feature: a thing', '');
+    store.append('t1', { type: 'stage_started', stage: 'plan', runId: 'r1' });
+    store.append('t1', {
+      type: 'stage_finished',
+      runId: 'r1',
+      outcome: 'completed',
+      summary: 'planned',
+      costUsd: 2,
+    });
+    store.append('t1', { type: 'verdict', verdict: 'accepted' });
+    await wb.create('fix: another', '');
+
+    const { headline, money } = await wb.analytics();
+    assert.equal(headline.tickets, 2);
+    assert.equal(headline.accepted, 1);
+    assert.equal(headline.totalUsd, 2);
+    assert.deepEqual(headline.dearest, { id: 't1', title: 'feature: a thing', costUsd: 2 });
+    assert.deepEqual(
+      money.byStage.find((s) => s.label === 'plan'),
+      { label: 'plan', value: 2 },
+    );
+  });
+});
+
 test('bad requests are refused with a reason, not a stack trace', async () => {
   await withApi(async (wb, store) => {
     await assert.rejects(() => wb.create('', ''), /needs a title/);

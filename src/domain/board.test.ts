@@ -11,18 +11,23 @@ import {
   grouped,
   headline,
   inColumn,
+  keepsBoardOrder,
+  kindsInDone,
   madeInto,
   needsYou,
   ordered,
   rejectionStands,
   runs,
   sendableBack,
+  sortedDone,
   statusOf,
   suggestion,
   toneOf,
   tweakable,
   waitingForSlot,
+  WHOLE_OF_DONE,
   withoutProposals,
+  type DoneView,
   type Run,
 } from './board.ts';
 import type { Event, EventBody } from './events.ts';
@@ -111,6 +116,86 @@ test('another column keeps the board order whatever is asked of it', () => {
   assert.deepEqual(
     inColumn(board, 'Backlog').map((t) => t.id),
     ['t1', 't3'],
+  );
+});
+
+/** A finished card with the two things Done can be sorted and filtered on. */
+function finished(id: string, status: Status, title: string, costUsd = 0): Ticket {
+  return { ...card(id, status), title, costUsd };
+}
+
+const FINISHED = [
+  finished('t1', 'done', 'feature: analytics', 3),
+  finished('t2', 'backlog', 'fix: not finished', 99),
+  finished('t3', 'cancelled', 'chore: bin it', 1),
+  finished('t4', 'done', 'fix: a crash', 7),
+  finished('t5', 'gave_up', 'feature: too much', 5),
+];
+
+test('Done sorts by every end the reader can ask for', () => {
+  const ids = (sort: DoneView['sort']) =>
+    sortedDone(FINISHED, { ...WHOLE_OF_DONE, sort }).map((t) => t.id);
+
+  assert.deepEqual(ids('newest'), ['t5', 't4', 't3', 't1']);
+  assert.deepEqual(ids('oldest'), ['t1', 't3', 't4', 't5']);
+  assert.deepEqual(ids('cost'), ['t4', 't5', 't1', 't3']);
+  assert.deepEqual(ids('title'), ['t3', 't1', 't5', 't4'], 'alphabetical, prefix and all');
+  // Merged work first, then the two that ended without it — newest first inside
+  // each group, which is the order the column starts in.
+  assert.deepEqual(ids('outcome'), ['t4', 't1', 't3', 't5']);
+});
+
+test('Done filters by what became of a ticket and by the word its title starts with', () => {
+  const ids = (view: Partial<DoneView>) =>
+    sortedDone(FINISHED, { ...WHOLE_OF_DONE, ...view }).map((t) => t.id);
+
+  assert.deepEqual(ids({ outcome: 'accepted' }), ['t4', 't1']);
+  assert.deepEqual(ids({ outcome: 'cancelled' }), ['t3']);
+  assert.deepEqual(ids({ outcome: 'gave_up' }), ['t5']);
+  assert.deepEqual(ids({ prefix: 'fix' }), ['t4'], 'and never a ticket still being worked on');
+  assert.deepEqual(ids({ prefix: 'feature' }), ['t5', 't1']);
+  assert.deepEqual(ids({ outcome: 'accepted', prefix: 'feature' }), ['t1'], 'both at once');
+  assert.deepEqual(ids({ prefix: 'nonesuch' }), []);
+});
+
+test('the kind filter matches whatever casing the choice was saved in', () => {
+  const board = [...FINISHED, finished('t6', 'done', 'Spike: do a thing')];
+  const ids = (prefix: string) => sortedDone(board, { ...WHOLE_OF_DONE, prefix }).map((t) => t.id);
+
+  assert.deepEqual(ids('Spike'), ['t6'], 'as the settings write it');
+  assert.deepEqual(ids('spike'), ['t6'], 'and as the menu offers it');
+});
+
+test('the kinds Done offers are the words on the cards in it', () => {
+  assert.deepEqual(kindsInDone(FINISHED), ['chore', 'feature', 'fix']);
+  // `fix` above is t4's, not t2's: a ticket still in the backlog says nothing
+  // about what Done can be cut down by.
+  assert.deepEqual(kindsInDone([finished('t2', 'backlog', 'fix: not finished')]), []);
+  assert.deepEqual(kindsInDone([finished('t7', 'done', 'no prefix here')]), []);
+  assert.deepEqual(kindsInDone([...FINISHED, finished('t8', 'done', 'Fix: shouting')]), [
+    'chore',
+    'feature',
+    'fix',
+  ]);
+});
+
+test('only the two ends of Done keep the board order a drag would write', () => {
+  assert.equal(keepsBoardOrder('newest'), true);
+  assert.equal(keepsBoardOrder('oldest'), true);
+  assert.equal(keepsBoardOrder('cost'), false);
+  assert.equal(keepsBoardOrder('title'), false);
+  assert.equal(keepsBoardOrder('outcome'), false);
+});
+
+test('the whole of Done is what nobody choosing anything gets', () => {
+  assert.deepEqual(
+    sortedDone(FINISHED, WHOLE_OF_DONE).map((t) => t.id),
+    inColumn(FINISHED, 'Done', 'newest').map((t) => t.id),
+  );
+  // The board itself is untouched, the same as `inColumn` leaves it.
+  assert.deepEqual(
+    FINISHED.map((t) => t.id),
+    ['t1', 't2', 't3', 't4', 't5'],
   );
 });
 

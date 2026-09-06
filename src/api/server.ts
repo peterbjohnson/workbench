@@ -7,6 +7,7 @@ import type { Store } from '../store/store.ts';
 import type { Event } from '../domain/events.ts';
 import { ended, type Ticket } from '../domain/ticket.ts';
 import type { Config } from '../config.ts';
+import { analyse } from '../domain/analytics.ts';
 import { chatTurns } from '../domain/board.ts';
 import { proposalEvent } from '../domain/proposals.ts';
 import type { ChatRunner } from '../run/chat.ts';
@@ -185,6 +186,15 @@ async function handle(
       const patch = await readJson(req);
       return refusable(res, () => store.setPolicy(patch));
     }
+  }
+
+  // Everything the Analytics tab shows. Read out of the whole log every time it is
+  // asked for, and no store method and no table for it: the durations and the
+  // per-stage costs are only in the events, and a board is thousands of rows. If
+  // that ever gets slow, cache it here — not before, and the same way tickets would.
+  if (method === 'GET' && route === '/analytics') {
+    const events = store.ticketIds().flatMap((id) => store.eventsFor(id));
+    return send(res, 200, analyse(store.tickets(), events));
   }
 
   // How the workbench works, rather than what it is working on: the settings, and

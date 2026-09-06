@@ -1,3 +1,7 @@
+// The two of these are about a ticket rather than about the whole log, and Done is
+// sorted by both — so this file and that one each use a little of the other, which
+// is safe because neither reads the other's names until it is called.
+import { outcomeOf, prefixOf, type Outcome } from './analytics.ts';
 import type { Event, Proposal, RunOutcome, Stage } from './events.ts';
 import { nextAction, type Policy } from './rules.ts';
 import { ended, type Status, type Ticket } from './ticket.ts';
@@ -65,6 +69,86 @@ export function inColumn(
 ): Ticket[] {
   const held = tickets.filter((t) => columnFor(t) === column);
   return order === 'newest' ? held.reverse() : held;
+}
+
+/**
+ * How Done is sorted. `Order` is the two ends every column has; the other three
+ * are only ever asked of the one column that is finished with, where a card is a
+ * record of what something took rather than a place in the queue.
+ */
+export type DoneSort = Order | 'cost' | 'title' | 'outcome';
+
+/** What Done shows, and in what order. The reader's choice, kept in their browser. */
+export type DoneView = {
+  sort: DoneSort;
+  /** Only these, or `all`. Done is three fates in one column, rarely read together. */
+  outcome: Outcome | 'all';
+  /** Only titles written behind this word, or `all`. */
+  prefix: string | 'all';
+};
+
+/** What Done shows before anybody has chosen: everything, newest first. */
+export const WHOLE_OF_DONE: DoneView = { sort: 'newest', outcome: 'all', prefix: 'all' };
+
+/**
+ * The Done column, filtered and then sorted. Its own rule rather than a wider
+ * `inColumn`, because none of this makes sense anywhere else: the other six
+ * columns are the queue, and the order work is taken in is the manager's to set
+ * rather than the reader's to sort by price.
+ */
+export function sortedDone(tickets: readonly Ticket[], view: DoneView): Ticket[] {
+  // Newest first to begin with, so it is what a stable sort leaves inside each
+  // group of equals — and what `newest` and `outcome` both want anyway.
+  const held = inColumn(tickets, DONE, 'newest').filter(
+    (t) =>
+      (view.outcome === 'all' || outcomeOf(t) === view.outcome) &&
+      // `prefixOf` lowercases and the view is not versioned, so a choice saved in a
+      // browser can carry any casing a menu once offered — `Spike` matching nothing
+      // reads as an empty column rather than as a filter, with nothing saying why.
+      (view.prefix === 'all' || prefixOf(t.title) === view.prefix.toLowerCase()),
+  );
+
+  switch (view.sort) {
+    case 'newest':
+      return held;
+    case 'oldest':
+      return held.reverse();
+    case 'cost':
+      return held.sort((a, b) => b.costUsd - a.costUsd);
+    case 'title':
+      return held.sort((a, b) => a.title.localeCompare(b.title));
+    case 'outcome':
+      return held.sort((a, b) => OUTCOMES.indexOf(outcomeOf(a)) - OUTCOMES.indexOf(outcomeOf(b)));
+  }
+}
+
+/** Which fate reads first when Done is grouped by it. Merged work, then the rest. */
+const OUTCOMES: readonly Outcome[] = ['accepted', 'cancelled', 'gave_up', 'open'];
+
+/**
+ * The kinds the Done column can be cut down by: the words actually written on the
+ * cards there. Not the settings' list of prefixes — that is what a title may be
+ * written behind, which is neither what `prefixOf` reads back (it lowercases, and
+ * rejects anything with a space in it) nor what is on the board. Offering only
+ * these means an option that matches nothing is not expressible.
+ */
+export function kindsInDone(tickets: readonly Ticket[]): string[] {
+  const found = new Set<string>();
+  for (const t of inColumn(tickets, DONE)) {
+    const kind = prefixOf(t.title);
+    if (kind !== null) found.add(kind);
+  }
+  return [...found].sort();
+}
+
+/**
+ * Whether a sort still draws Done in the board's order — which is the only time
+ * dragging a card there can be seen to do anything. Under the other three the
+ * order is worked out from the cards themselves, so a move would be appended to
+ * the log and change nothing on screen.
+ */
+export function keepsBoardOrder(sort: DoneSort): boolean {
+  return sort === 'newest' || sort === 'oldest';
 }
 
 /**
