@@ -127,6 +127,13 @@ updated; it is rebuilt from its own history every time it is read. That is why s
 workbench mid-flight loses nothing, and why the record of what happened cannot disagree
 with the state it produced.
 
+The analytics are computed the same way, for the same reason: read out of the whole log
+when the page asks for them, never stored and never rolled up. Most of what they say — how
+long a stage ran, what each one cost, how long a ticket took from being committed to — is
+not on a ticket at all and only ever existed as two timestamps and a `stage_finished`. A
+table of totals kept alongside would be a second account of the same events, free to drift
+from them, and there is nothing it could say that reading them does not.
+
 ## Stopping is a switch, and pressing it twice means it
 
 One switch stops the whole board, from the header, from `wb stop`, or from `POST /stop`.

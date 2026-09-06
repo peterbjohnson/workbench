@@ -1,4 +1,5 @@
 import type { Event } from '../domain/events.ts';
+import type { Analytics } from '../domain/analytics.ts';
 import type { Chat } from '../domain/board.ts';
 import type { Ticket } from '../domain/ticket.ts';
 import type { Policy } from '../domain/rules.ts';
@@ -141,6 +142,9 @@ export function createClient(baseUrl: string) {
     stop: () => post<{ stopped: true; running: string[]; interrupted: string[] }>('/stop'),
     /** Start it again. The only write the workbench accepts while stopped. */
     start: () => post<{ stopped: false }>('/start'),
+
+    /** Every number the Analytics tab draws, worked out from the whole event log. */
+    analytics: () => call<Analytics>('/analytics'),
 
     policy: () => call<Policy>('/policy'),
     /** Change some of the limits, leaving the rest. Takes effect at once. */

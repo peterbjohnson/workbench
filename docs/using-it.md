@@ -5,9 +5,10 @@ The board, the ticket panel, and how work moves. Why it works this way is in
 
 ## The board
 
-`http://127.0.0.1:4600` — four pages, named across the top. **Board** is the work;
-**Agents**, **Skills** and **Settings** are the workbench itself. Each is in the address
-(`#agents`), so one can be linked to and survives a reload.
+`http://127.0.0.1:4600` — five pages, named across the top. **Board** is the work and
+**Analytics** is what that work has come to; **Agents**, **Skills** and **Settings** are the
+workbench itself. Each is in the address (`#agents`), so one can be linked to and survives
+a reload.
 
 Tickets sit in columns and move themselves as the work proceeds:
 
@@ -35,9 +36,30 @@ from a laptop at night and a desktop by a window can be set differently.
 onto another puts it in front of that one, and onto the column behind them puts it last.
 The order a ticket was written in is a default, not a decision.
 
-**Done reads the other way round.** It is not a queue — nothing is taken from it — and the
-ticket that just finished is the one worth seeing, so it is at the top. The control under
-the heading turns the column round, and like the theme the choice is kept in the browser.
+**Done reads the other way round, and reads however you like.** It is not a queue — nothing
+is taken from it — and the ticket that just finished is the one worth seeing, so it is at the
+top. Three menus under the heading say how it is read: sort by **Newest**, **Oldest**,
+**Dearest**, **Title** or **Outcome**; then show only what was **Merged**, **Cancelled** or
+**Given up on**; then only one kind of ticket, by the word its title is written behind. Like
+the theme, the choice is kept in the browser and survives a reload. The count beside the
+heading is what is showing, so a filtered column says how much of it you are looking at.
+
+## Analytics
+
+**What the board has come to, in numbers.** Every figure on it is worked out from the event
+log when the page is asked for — nothing is stored and nothing is a snapshot, so it is as
+current as the board beside it and redraws whenever a stage says anything. Four sections:
+
+| | |
+|---|---|
+| **The board** | how many tickets, where they are, how many merged, and what it has all cost |
+| **Money** | spend by stage and by scale, what a ticket typically costs, and the ten dearest |
+| **Flow** | tickets finished per week, how long one takes, and how often plans are sent back |
+| **Agents** | runs per stage with how long and how much, tools used, tools refused, checks passed |
+
+Costs are what the model service reported, so they are spend and not tokens. Chat is counted
+apart from the stages, for the same reason it is kept off the ticket: talking about a ticket
+must not be able to push it past its limit.
 
 ## The plan gate
 

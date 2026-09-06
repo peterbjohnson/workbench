@@ -303,39 +303,31 @@ header .stopper.go {
   font-variant-numeric: tabular-nums;
 }
 
-/* Which end Done is read from. Shaped like the theme control and as quiet: it is
-   about the reading rather than about the work. */
-.col .order {
+/* How Done is read: sorted, and cut down to a subset. As quiet as the theme
+   control, because it is about the reading rather than about the work — and menus
+   rather than buttons, because five sorts and two filters would not fit a column
+   as a row of anything. */
+.col .done-view {
   display: flex;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-  width: fit-content;
+  flex-wrap: wrap;
+  gap: 0.25rem;
   margin: 0 0 0.5rem 0.2rem;
 }
 
-.col .order button {
-  border: none;
-  border-radius: 0;
-  background: none;
-  color: var(--dim);
+.col .done-view select {
+  font: inherit;
   font-size: 0.7rem;
-  padding: 0.15rem 0.45rem;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.1rem 0.2rem;
+  cursor: pointer;
 }
 
-.col .order button + button {
-  border-left: 1px solid var(--line);
-}
-
-.col .order button:hover {
+.col .done-view select:hover {
   color: var(--ink);
-  background: var(--card);
-}
-
-.col .order button.picked {
-  color: var(--ink);
-  font-weight: 600;
-  background: var(--card);
+  border-color: var(--accent);
 }
 
 .card {
@@ -1715,4 +1707,144 @@ button.danger:hover {
   color: var(--ink);
   font-weight: 600;
   background: var(--card);
+}
+
+/* Analytics ---------------------------------------------------------------- */
+
+/* What the board has come to, in numbers. Read far more than it is interacted
+   with, so it is laid out as a document — sections down the page, each one a
+   heading and the figures under it — rather than as a dashboard of tiles. */
+
+.analytics {
+  max-width: 60rem;
+}
+
+.analytics section {
+  margin-bottom: 2.5rem;
+}
+
+.analytics h2 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.4rem;
+  margin: 0 0 1rem;
+}
+
+.analytics h3 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--dim);
+  margin: 1.4rem 0 0.6rem;
+}
+
+/* As many across as fit, so the same figures read the same on a narrow window. */
+.analytics .stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.8rem;
+}
+
+.analytics .stat {
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+}
+
+.analytics .stat b {
+  font-size: 1.6rem;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics .stat span {
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.analytics .two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 0 2rem;
+}
+
+/* Label, bar, number — the label wide enough for a stage name and the number
+   right against the edge, so a column of them reads down. */
+.analytics .bar {
+  display: grid;
+  grid-template-columns: 7rem 1fr 4rem;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.15rem 0;
+  font-size: 0.82rem;
+}
+
+.analytics .bar .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics .bar .track {
+  background: var(--line);
+  border-radius: 3px;
+  height: 0.6rem;
+}
+
+.analytics .bar .fill {
+  display: block;
+  background: var(--accent);
+  border-radius: 3px;
+  height: 100%;
+}
+
+.analytics .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.analytics th {
+  text-align: left;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.analytics th,
+.analytics td {
+  padding: 0.3rem 0.5rem 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.analytics .chart {
+  width: 100%;
+  height: 9rem;
+}
+
+.analytics .chart rect {
+  fill: var(--accent);
+}
+
+.analytics .chart text {
+  fill: var(--dim);
+  font-size: 10px;
+  text-anchor: middle;
+}
+
+.analytics .chart .value {
+  fill: var(--ink);
+  font-weight: 600;
 }
