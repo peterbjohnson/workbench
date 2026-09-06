@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { create, harness, ok, standing } from './harness.ts';
+import { create, harness, ok, standing, waitFor } from './harness.ts';
 import { openStore } from '../store/store.ts';
 import { deriveTicket } from '../domain/ticket.ts';
 import type { Refreshed } from '../domain/events.ts';
@@ -412,20 +412,25 @@ test('nor onto one the code host says has been answered', async () => {
   }
 });
 
-test('a ticket sent back while another one settles is left where it is', async () => {
-  // The pass reads the offered branches once and then spends minutes settling the
-  // first of them. By the time it reaches the third, that list can be minutes out
-  // of date: a ticket sent back in between has a run of its own going, and merging
-  // the base into a worktree an agent is writing in is not something to find out
-  // about from the diff.
+test('a ticket sent back while the pass is mid-list is left where it is', async () => {
+  // The pass reads the offered branches once and then works through them, handing
+  // each clash to a run beside it. Any of those runs can send another ticket back
+  // while the pass is still going, so the list it read can be out of date by the
+  // time it reaches the third: merging the base into a worktree an agent is writing
+  // in is not something to find out about from the diff.
   const store = openStore(':memory:');
-  const h = clashingOffer({
+  let asked = 0;
+  const h = harness({
     store,
-    runStage: async ({ ticket }) => {
-      if (ticket.id !== 't2') return { outcome: 'blocked', summary: 'not what this is about' };
-      store.append('t3', { type: 'changes_requested', changes: 'not like that' });
-      return { outcome: 'completed', summary: 'took both sides' };
+    refresh: (id) => {
+      if (id !== 't2') return { kind: 'up-to-date' };
+      // Sent back between t2 and t3, which is the window the re-read exists for.
+      if (++asked === 1)
+        store.append('t3', { type: 'changes_requested', changes: 'not like that' });
+      return asked <= 2 ? CLASH : { kind: 'up-to-date' };
     },
+    runStage: async ({ ticket }) =>
+      ticket.id === 't2' ? ok('took both sides') : { outcome: 'blocked', summary: 'not this' },
   });
   try {
     standing(store, 't1');
@@ -656,7 +661,8 @@ test('a merge onto a base that will not merge names the files and merges nothing
       kind: 'conflicted',
       base: 'newbase',
       paths: ['src/api/server.ts'],
-      // Asked without `keep`, so the clash was found and undone rather than left.
+      // A merge that failed rather than conflicted: there is nothing on disk for a
+      // resolution to finish, so this is the clash that goes straight to the manager.
       with: 'newbase',
       merged: [],
       commit: 'head0001',
@@ -754,7 +760,7 @@ test('a poll that finds three pull requests merged takes them one at a time', as
   }
 });
 
-test('a merge asked for while one is running waits, is told so, and then merges', async () => {
+test('a merge asked for while one is running says what it waits for, then merges', async () => {
   let release = () => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -770,13 +776,20 @@ test('a merge asked for while one is running waits, is told so, and then merges'
     h.store.append('t1', { type: 'merge_requested' });
     h.store.append('t2', { type: 'merge_requested' });
 
-    const before = h.store.eventsFor('t2').length;
     await h.orch.tick();
     await h.orch.tick();
     await h.orch.tick();
 
-    assert.deepEqual(h.announced, ["t2 is queued behind t1's merge"], 'said once, not once a tick');
-    assert.equal(h.store.eventsFor('t2').length, before, 'nothing is recorded while it waits');
+    // On the ticket rather than on stdout: a manager watching the board is not
+    // watching `wb serve`'s output, and "merging…" for a ticket that has not started
+    // is the workbench keeping the reason to itself.
+    assert.deepEqual(
+      h.store.eventsFor('t2').flatMap((e) => (e.type === 'merge_queued' ? [e.behind] : [])),
+      ['t1'],
+      'said once, not once a tick',
+    );
+    assert.deepEqual(h.announced, [], 'and nothing was said to nobody');
+    assert.equal(h.store.ticket('t2').queuedBehind, 't1', 'which the panel reads off the ticket');
     assert.equal(h.store.ticket('t2').mergeRequested, true, 'the request still stands');
     assert.deepEqual(h.prsMerged, [], 'and nothing of it has happened yet');
 
@@ -787,6 +800,139 @@ test('a merge asked for while one is running waits, is told so, and then merges'
     assert.equal(h.store.ticket('t2').status, 'done', 'the queue drains on its own');
   } finally {
     release();
+    await h.close();
+  }
+});
+
+test('the settles a merge sets off run beside the gate rather than inside it', async () => {
+  // Five accepts thirteen seconds apart on the FamilyTree board: two landed, and the
+  // other three said "merging…" for seven and a half minutes while the pass after
+  // each landing ran an implement stage over one clashing branch after another,
+  // inside the gate. Nothing was stuck, and nothing on the board said so.
+  let release = () => {};
+  const settling = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started: string[] = [];
+  const h = harness({
+    refresh: (id) => (id === 't2' || id === 't3' ? CLASH : { kind: 'up-to-date' }),
+    runStage: async ({ ticket }) => {
+      started.push(ticket.id);
+      await settling;
+      return { outcome: 'blocked', summary: 'could not finish it' };
+    },
+  });
+  try {
+    for (const id of ['t1', 't2', 't3', 't4']) standing(h.store, id);
+    h.store.append('t1', { type: 'merge_requested' });
+    h.store.append('t4', { type: 'merge_requested' });
+    await h.orch.tick();
+    await waitFor(() => h.prsMerged.length === 2, 'the queue behind t1 to drain');
+
+    assert.deepEqual(h.prsMerged, ['https://example/pr/t1', 'https://example/pr/t4']);
+    assert.deepEqual([...started].sort(), ['t2', 't3'], 'both settles were still going');
+    assert.equal(h.store.ticket('t2').running, true);
+    assert.equal(h.store.ticket('t3').running, true);
+    assert.equal(h.store.ticket('t4').status, 'done', 'and the queued merge did not wait for them');
+    assert.deepEqual(
+      h.store.eventsFor('t4').flatMap((e) => (e.type === 'merge_queued' ? [e.behind] : [])),
+      ['t1'],
+      'having said on the ticket what it was behind',
+    );
+
+    release();
+    await h.orch.idle();
+
+    assert.deepEqual([...h.abandoned].sort(), ['t2', 't3'], 'nothing landed, so nothing is kept');
+    assert.deepEqual(h.store.ticket('t2').conflicts, ['src/domain/rules.ts']);
+    assert.equal(h.store.ticket('t3').status, 'blocked');
+  } finally {
+    release();
+    await h.close();
+  }
+});
+
+test('a ticket whose own merge is queued is left for that merge to settle', async () => {
+  // The base will very likely move again before its turn comes, so settling it from
+  // the pass buys a whole run against a base that is already history.
+  const order: string[] = [];
+  let asked = 0;
+  const h = harness({
+    refresh: (id) => (id === 't2' && ++asked <= 2 ? CLASH : { kind: 'up-to-date' }),
+    merge: async (id) => {
+      order.push(`merge ${id}`);
+    },
+    runStage: async () => {
+      order.push('settle t2');
+      return ok('took both sides');
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    h.store.append('t2', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      order,
+      ['merge t1', 'settle t2', 'merge t2'],
+      'settled by its own merge when it reached the front, not by the pass after t1',
+    );
+    assert.deepEqual(h.prsMerged, ['https://example/pr/t1', 'https://example/pr/t2']);
+    assert.equal(h.store.ticket('t2').status, 'done');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a merge the manager asked for settles a clash with the base, then merges', async () => {
+  // The same one attempt every other branch meeting its base gets, and then the
+  // click they already made. Sending it back by hand cost a run on the FamilyTree
+  // board: the resolution was three minutes in, finished, and a second implement
+  // run started on top of it with the manager's brief.
+  let asked = 0;
+  const handed: unknown[] = [];
+  const h = harness({
+    refresh: () => (++asked <= 2 ? CLASH : { kind: 'up-to-date' }),
+    runStage: async ({ conflict }) => {
+      handed.push(conflict);
+      return ok('took both sides');
+    },
+  });
+  try {
+    standing(h.store, 't1');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['implement'], 'one resolution run, not a click that says resolve it');
+    assert.deepEqual(handed, [{ base: 'newbase', paths: ['src/domain/rules.ts'] }]);
+    assert.deepEqual(h.prsOpened, ['https://example/pr/t1'], 'pushed to the pull request');
+    assert.deepEqual(h.prsMerged, ['https://example/pr/t1'], 'and merged in the same breath');
+    assert.deepEqual(h.abandoned, [], 'nothing to undo');
+    assert.equal(h.store.ticket('t1').status, 'done');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a merge whose clash will not settle blocks with the paths, having tried once', async () => {
+  const h = harness({ refresh: () => CLASH, unresolved: (paths) => [...paths] });
+  try {
+    standing(h.store, 't1');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['implement'], 'one attempt, and no second one from the next tick');
+    assert.deepEqual(h.prsMerged, [], 'nothing is merged over a clash');
+    assert.deepEqual(h.abandoned, ['t1'], 'and the branch is back where it was');
+
+    const t1 = h.store.ticket('t1');
+    assert.equal(t1.status, 'blocked');
+    assert.deepEqual(t1.conflicts, ['src/domain/rules.ts'], 'the panel can list them');
+    assert.match(t1.question?.question ?? '', /resolution was tried/);
+    assert.equal(t1.mergeRequested, false, 'and it does not keep trying');
+  } finally {
     await h.close();
   }
 });

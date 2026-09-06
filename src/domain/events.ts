@@ -160,7 +160,20 @@ export type EventBody =
    * work is good enough, and it is not the reviewer.
    */
   | { type: 'shipped' }
-  | { type: 'stage_started'; stage: Stage; runId: string }
+  | {
+      type: 'stage_started';
+      stage: Stage;
+      runId: string;
+      /**
+       * This run is the workbench settling a clash with the base on a branch that
+       * is already offered, rather than a stage the board asked for. The
+       * counterpart of the flag `stage_finished` carries, written here as well so
+       * the ticket says what the run *is* while it is going: its status reads
+       * `implementing` either way, and a run that takes minutes should not have to
+       * finish before the board can say what it is doing.
+       */
+      settling?: true;
+    }
   /**
    * The conversation this run is, written down the moment the model service names
    * it rather than when the run ends. That is the whole point of it: a run only
@@ -324,6 +337,16 @@ export type EventBody =
    * means the same thing it means now.
    */
   | { type: 'merge_requested' }
+  /**
+   * This ticket's merge did not start, because `behind`'s merge holds the gate.
+   *
+   * A fact about the tick that declined, not a promise about the order: nothing is
+   * refused and `merge_requested` still stands, so the tick after the gate frees is
+   * the one that merges it. Recorded rather than said out loud because the wait is
+   * the ticket's news — five accepts in thirteen seconds left four tickets reading
+   * `merging…` with the only explanation on `wb serve`'s stdout.
+   */
+  | { type: 'merge_queued'; behind: string }
   | { type: 'verdict'; verdict: 'accepted' | 'rejected'; reason?: string }
   /**
    * One turn of the conversation about this ticket, by the manager or by the chat

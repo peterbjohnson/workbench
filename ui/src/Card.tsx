@@ -38,9 +38,22 @@ export function Card(props: {
     ),
     t.running && (
       <span key="running" className="running">
-        {/* Which step, when the stage has said. "running" alone says nothing about
-            how far along a twenty-minute stage is. */}
-        {t.step !== null && t.steps.length > 0 ? `step ${t.step}/${t.steps.length}` : 'running'}
+        {/* A settle is an implement run over a merge on work that is already
+            offered, and it announces no steps. Which step otherwise, when the stage
+            has said: "running" alone says nothing about how far along a
+            twenty-minute stage is. */}
+        {t.settling
+          ? 'settling the base'
+          : t.step !== null && t.steps.length > 0
+            ? `step ${t.step}/${t.steps.length}`
+            : 'running'}
+      </span>
+    ),
+    // Not "queued": no slot coming free would start it. What it is behind is the
+    // whole of the news, and the reason it is not moving.
+    t.queuedBehind !== null && (
+      <span key="behind" className="queued">
+        queued behind {t.queuedBehind}
       </span>
     ),
     props.queued && (

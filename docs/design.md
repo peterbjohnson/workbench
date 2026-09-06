@@ -107,13 +107,25 @@ change was the one thing that knew what the resolution should be.
 So the workbench takes the click itself. Wherever a branch is brought up to the base it has
 to land on, a clash with that base runs implement over the merge, with the same brief a
 stage that starts on a conflict is given, then the standing checks, then a commit and the
-offer. That is both moments a branch meets the base with work finished on it: when the work
-is first offered, straight after verify, and when somebody else's merge moves the base under
-an offer you have not answered. The same clash found half a second apart, so the same
-answer. One attempt: a run that leaves any handed path conflicted, or that fails the checks,
+offer. That is every moment a branch meets the base with work finished on it: when the work
+is first offered, straight after verify, when somebody else's merge moves the base under an
+offer you have not answered, and when you accept it. The same clash found minutes apart, so
+the same answer. One attempt: a run that leaves any handed path conflicted, or that fails the checks,
 aborts the merge, leaves nothing committed and blocks as before, saying that a resolution
 was tried and what it left. The offer a landed resolution goes on to make may not settle
 again, which is where "one attempt" is actually enforced.
+
+The merge gate holds git and not agents. One merge runs at a time, the pass over the other
+offered branches included, so for as long as that pass waited on the runs it started, every
+queued Accept waited on all of them: five accepts thirteen seconds apart left three tickets
+reading `merging…` for seven and a half minutes, with the runs causing it invisible from the
+board. So the pass does the refreshes — seconds each — hands each clash to a run held beside
+it, and frees. A ticket whose own merge is queued it skips entirely: the base will move again
+before that ticket's turn, and its own merge is what brings it up to date and settles it,
+which is also why an accepted merge gets the one attempt rather than blocking. The cost is
+one resolution run per accept, held in the gate, and it is recorded on the ticket rather than
+announced — as against one run per landing per other branch, said nowhere. This revises what
+t32 and t41 settled between them; it is not open again.
 
 Not a stage of its own, deliberately. t20 built a `resolve` stage, a fifth agent and a
 `startMerge` action for exactly this, and was superseded by t5, which had implement do it
