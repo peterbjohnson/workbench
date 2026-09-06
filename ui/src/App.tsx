@@ -510,6 +510,15 @@ function Column(props: {
 }) {
   const { name, tickets, accepts, dragging, view } = props;
 
+  // What the kind filter offers: the words the settings name, plus the one being
+  // filtered on if the settings no longer name it. A saved choice must always have
+  // an option that shows it — otherwise Done is cut down by a word with nothing on
+  // screen saying so, and no way back to Any.
+  const kinds =
+    view === undefined || view.prefix === 'all' || props.prefixes.includes(view.prefix)
+      ? props.prefixes
+      : [...props.prefixes, view.prefix];
+
   return (
     <div
       className={`col${accepts ? ' drop' : ''}`}
@@ -548,20 +557,18 @@ function Column(props: {
               </option>
             ))}
           </select>
-          {props.prefixes.length > 0 && (
-            <select
-              aria-label={`${name} kind`}
-              value={view.prefix}
-              onChange={(e) => props.onView({ prefix: e.target.value })}
-            >
-              <option value="all">Any kind</option>
-              {props.prefixes.map((prefix) => (
-                <option key={prefix} value={prefix}>
-                  {prefix}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            aria-label={`${name} kind`}
+            value={view.prefix}
+            onChange={(e) => props.onView({ prefix: e.target.value })}
+          >
+            <option value="all">Any kind</option>
+            {kinds.map((prefix) => (
+              <option key={prefix} value={prefix}>
+                {prefix}
+              </option>
+            ))}
+          </select>
         </div>
       )}
       {props.action}

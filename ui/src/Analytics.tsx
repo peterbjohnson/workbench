@@ -20,7 +20,14 @@ export function Analytics({ version }: { version: number }) {
   useEffect(() => {
     let live = true;
     wb.analytics()
-      .then((a) => live && setStats(a))
+      .then((a) => {
+        // Clear the error as well as setting the numbers: a fetch that failed once
+        // would otherwise leave the page showing that failure for ever, however
+        // many later reads succeed.
+        if (!live) return;
+        setStats(a);
+        setError(null);
+      })
       .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
