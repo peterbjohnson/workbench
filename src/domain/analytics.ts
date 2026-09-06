@@ -218,6 +218,10 @@ export function analyse(tickets: readonly Ticket[], events: readonly Event[]): A
     agents: {
       stages: STAGES.map((stage) => {
         const its = runs.filter((r) => r.stage === stage);
+        // Both averages describe the same population: the runs that have finished.
+        // A run still going has no duration and a cost of nothing yet, and would
+        // drag the mean down until it ends.
+        const done = its.filter((r) => r.ms !== null);
         return {
           stage,
           runs: its.length,
@@ -228,8 +232,8 @@ export function analyse(tickets: readonly Ticket[], events: readonly Event[]): A
             })),
             { label: 'running', value: its.filter((r) => r.outcome === null).length },
           ].filter((s) => s.value > 0),
-          medianMs: median(its.flatMap((r) => (r.ms === null ? [] : [r.ms]))),
-          meanUsd: mean(its.map((r) => r.costUsd)),
+          medianMs: median(done.map((r) => r.ms as number)),
+          meanUsd: mean(done.map((r) => r.costUsd)),
         };
       }),
       questions: STAGES.map((stage) => ({

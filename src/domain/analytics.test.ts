@@ -295,3 +295,28 @@ test('the agent section counts runs, questions, tools and checks', () => {
     { label: 'blocked', value: 1 },
   ]);
 });
+
+test('a run still going counts as a run but is in neither stage average', () => {
+  // One finished implement run costing $3, and a second one started and still open:
+  // the stage has cost $3 a run so far, and the mean must not say $1.50.
+  const events = log([
+    ['t1', made('a thing'), '2026-01-05T09:00:00.000Z'],
+    ['t1', { type: 'stage_started', stage: 'implement', runId: 'r1' }, '2026-01-05T10:00:00.000Z'],
+    [
+      't1',
+      { type: 'stage_finished', runId: 'r1', outcome: 'completed', summary: '', costUsd: 3 },
+      '2026-01-05T11:00:00.000Z',
+    ],
+    ['t1', { type: 'stage_started', stage: 'implement', runId: 'r2' }, '2026-01-05T12:00:00.000Z'],
+  ]);
+  const { agents } = analyse(tickets(events), events);
+
+  const implement = agents.stages.find((s) => s.stage === 'implement');
+  assert.equal(implement?.runs, 2);
+  assert.equal(implement?.medianMs, 60 * 60 * 1000);
+  assert.equal(implement?.meanUsd, 3);
+  assert.deepEqual(implement?.outcomes, [
+    { label: 'completed', value: 1 },
+    { label: 'running', value: 1 },
+  ]);
+});
