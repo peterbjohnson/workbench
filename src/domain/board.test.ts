@@ -11,6 +11,8 @@ import {
   grouped,
   headline,
   inColumn,
+  keepsBoardOrder,
+  kindsInDone,
   madeInto,
   needsYou,
   ordered,
@@ -154,6 +156,35 @@ test('Done filters by what became of a ticket and by the word its title starts w
   assert.deepEqual(ids({ prefix: 'feature' }), ['t5', 't1']);
   assert.deepEqual(ids({ outcome: 'accepted', prefix: 'feature' }), ['t1'], 'both at once');
   assert.deepEqual(ids({ prefix: 'nonesuch' }), []);
+});
+
+test('the kind filter matches whatever casing the choice was saved in', () => {
+  const board = [...FINISHED, finished('t6', 'done', 'Spike: do a thing')];
+  const ids = (prefix: string) => sortedDone(board, { ...WHOLE_OF_DONE, prefix }).map((t) => t.id);
+
+  assert.deepEqual(ids('Spike'), ['t6'], 'as the settings write it');
+  assert.deepEqual(ids('spike'), ['t6'], 'and as the menu offers it');
+});
+
+test('the kinds Done offers are the words on the cards in it', () => {
+  assert.deepEqual(kindsInDone(FINISHED), ['chore', 'feature', 'fix']);
+  // `fix` above is t4's, not t2's: a ticket still in the backlog says nothing
+  // about what Done can be cut down by.
+  assert.deepEqual(kindsInDone([finished('t2', 'backlog', 'fix: not finished')]), []);
+  assert.deepEqual(kindsInDone([finished('t7', 'done', 'no prefix here')]), []);
+  assert.deepEqual(kindsInDone([...FINISHED, finished('t8', 'done', 'Fix: shouting')]), [
+    'chore',
+    'feature',
+    'fix',
+  ]);
+});
+
+test('only the two ends of Done keep the board order a drag would write', () => {
+  assert.equal(keepsBoardOrder('newest'), true);
+  assert.equal(keepsBoardOrder('oldest'), true);
+  assert.equal(keepsBoardOrder('cost'), false);
+  assert.equal(keepsBoardOrder('title'), false);
+  assert.equal(keepsBoardOrder('outcome'), false);
 });
 
 test('the whole of Done is what nobody choosing anything gets', () => {

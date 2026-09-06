@@ -40,9 +40,13 @@ The order a ticket was written in is a default, not a decision.
 is taken from it — and the ticket that just finished is the one worth seeing, so it is at the
 top. Three menus under the heading say how it is read: sort by **Newest**, **Oldest**,
 **Dearest**, **Title** or **Outcome**; then show only what was **Merged**, **Cancelled** or
-**Given up on**; then only one kind of ticket, by the word its title is written behind. Like
-the theme, the choice is kept in the browser and survives a reload. The count beside the
-heading is what is showing, so a filtered column says how much of it you are looking at.
+**Given up on**; then only one kind of ticket, by the word its title is written behind —
+the kind menu offers the words actually found on the finished tickets, so every choice on it
+shows you something. Like the theme, the choice is kept in the browser and survives a reload.
+The count beside the heading is what is showing, so a filtered column says how much of it you
+are looking at. Sorted by anything but Newest or Oldest, its cards cannot be dragged: the
+order on screen is worked out from the cards rather than the board's, and a move you could
+not see is worse than one you cannot make.
 
 ## Analytics
 

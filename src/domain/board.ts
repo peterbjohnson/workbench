@@ -102,7 +102,10 @@ export function sortedDone(tickets: readonly Ticket[], view: DoneView): Ticket[]
   const held = inColumn(tickets, DONE, 'newest').filter(
     (t) =>
       (view.outcome === 'all' || outcomeOf(t) === view.outcome) &&
-      (view.prefix === 'all' || prefixOf(t.title) === view.prefix),
+      // `prefixOf` lowercases and the view is not versioned, so a choice saved in a
+      // browser can carry any casing a menu once offered — `Spike` matching nothing
+      // reads as an empty column rather than as a filter, with nothing saying why.
+      (view.prefix === 'all' || prefixOf(t.title) === view.prefix.toLowerCase()),
   );
 
   switch (view.sort) {
@@ -121,6 +124,32 @@ export function sortedDone(tickets: readonly Ticket[], view: DoneView): Ticket[]
 
 /** Which fate reads first when Done is grouped by it. Merged work, then the rest. */
 const OUTCOMES: readonly Outcome[] = ['accepted', 'cancelled', 'gave_up', 'open'];
+
+/**
+ * The kinds the Done column can be cut down by: the words actually written on the
+ * cards there. Not the settings' list of prefixes — that is what a title may be
+ * written behind, which is neither what `prefixOf` reads back (it lowercases, and
+ * rejects anything with a space in it) nor what is on the board. Offering only
+ * these means an option that matches nothing is not expressible.
+ */
+export function kindsInDone(tickets: readonly Ticket[]): string[] {
+  const found = new Set<string>();
+  for (const t of inColumn(tickets, DONE)) {
+    const kind = prefixOf(t.title);
+    if (kind !== null) found.add(kind);
+  }
+  return [...found].sort();
+}
+
+/**
+ * Whether a sort still draws Done in the board's order — which is the only time
+ * dragging a card there can be seen to do anything. Under the other three the
+ * order is worked out from the cards themselves, so a move would be appended to
+ * the log and change nothing on screen.
+ */
+export function keepsBoardOrder(sort: DoneSort): boolean {
+  return sort === 'newest' || sort === 'oldest';
+}
 
 /**
  * A blocked ticket keeps the stage it stopped in, so it stays in that stage's

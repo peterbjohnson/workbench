@@ -6,6 +6,8 @@ import {
   columnFor,
   DONE,
   inColumn,
+  keepsBoardOrder,
+  kindsInDone,
   needsYou,
   sortedDone,
   waitingForSlot,
@@ -238,7 +240,7 @@ export function App() {
   );
 
   const tab = tabInHash(at ?? '');
-  // Everything in the address that is not one of the four pages is a ticket.
+  // Everything in the address that is not one of the five pages is a ticket.
   const selected = tab === 'Board' ? at : null;
   const waiting = tickets.filter(needsYou).length;
 
@@ -356,7 +358,12 @@ export function App() {
               // taken in is the manager's to set rather than the reader's to sort.
               view={column.name === DONE ? doneView : undefined}
               onView={chooseDone}
-              prefixes={prefixes}
+              // The kinds on the finished cards, not the ones the settings offer:
+              // the menu filters on what `prefixOf` reads back off a title.
+              kinds={column.name === DONE ? kindsInDone(tickets) : []}
+              // Done under one of its own sorts is not in the board's order, so a
+              // drag there would write a move nothing on screen could show.
+              reorderable={column.name !== DONE || keepsBoardOrder(doneView.sort)}
               // The backlog is where a ticket starts, so that is where writing one
               // belongs — at the top of the column it will appear in, rather than in
               // the header beside things that are about the whole board.
@@ -493,8 +500,10 @@ function Column(props: {
   /** How this column is read, when it is the one column that can be sorted and cut down. */
   view?: DoneView;
   onView: (change: Partial<DoneView>) => void;
-  /** The words titles are written behind, which is what the kind filter offers. */
-  prefixes: string[];
+  /** The words found on this column's titles, which is what the kind filter offers. */
+  kinds: string[];
+  /** Whether a card here can be dragged: only where the board's order is what is drawn. */
+  reorderable: boolean;
   /** Whether a card is next for a slot — the same judgement for every column. */
   queued: (t: Ticket) => boolean;
   /** The tickets a card is held behind. */
@@ -508,16 +517,16 @@ function Column(props: {
   onDragEnd: () => void;
   onOpen: (id: string) => void;
 }) {
-  const { name, tickets, accepts, dragging, view } = props;
+  const { name, tickets, accepts, dragging, view, reorderable } = props;
 
-  // What the kind filter offers: the words the settings name, plus the one being
-  // filtered on if the settings no longer name it. A saved choice must always have
-  // an option that shows it — otherwise Done is cut down by a word with nothing on
-  // screen saying so, and no way back to Any.
+  // What the kind filter offers: the words found on the cards, plus the one being
+  // filtered on if no card carries it. A saved choice must always have an option
+  // that shows it — otherwise Done is cut down by a word with nothing on screen
+  // saying so, and no way back to Any.
   const kinds =
-    view === undefined || view.prefix === 'all' || props.prefixes.includes(view.prefix)
-      ? props.prefixes
-      : [...props.prefixes, view.prefix];
+    view === undefined || view.prefix === 'all' || props.kinds.includes(view.prefix)
+      ? props.kinds
+      : [...props.kinds, view.prefix];
 
   return (
     <div
@@ -579,9 +588,14 @@ function Column(props: {
           queued={props.queued(t)}
           held={props.held(t)}
           // Every card, not only the two that change column: order is the queue,
-          // and a card that cannot be moved cannot be put at the front of it.
-          draggable
-          accepts={dragging !== null && dragging.id !== t.id && name === columnFor(dragging)}
+          // and a card that cannot be moved cannot be put at the front of it. The
+          // exception is Done sorted by price, title or outcome, where the order
+          // drawn is not the board's — there a drag would be a move that happened
+          // in the log and nowhere the reader can see.
+          draggable={reorderable}
+          accepts={
+            reorderable && dragging !== null && dragging.id !== t.id && name === columnFor(dragging)
+          }
           onDragStart={() => props.onDragStart(t)}
           onDragEnd={props.onDragEnd}
           onDrop={() => props.onDropOn(t)}
