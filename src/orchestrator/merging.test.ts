@@ -858,11 +858,14 @@ test('work that conflicts with the base it must land on is not offered', async (
   }
 });
 
-test('a merge a stage stopped partway through is not tidied away by offering the work', async () => {
-  // Left by a run that was handed the merge and stopped to ask something. Its half of
-  // the resolution, and every uncommitted edit it made, are still sitting there: the
-  // pass over the offered branches undoes a merge because it is the one that left it,
-  // and nothing else may. A ticket shipped mid-resolution reaches here.
+test('a merge a stage stopped partway through is settled at the offer, not parked', async () => {
+  // Left by a run that was handed the merge and stopped to ask something: `refresh` in
+  // worktree.ts hands that merge back rather than tidying it away, so the offer finds
+  // one it did not start. It used to park for a click; now it goes to a settling run
+  // like any other clash with the base. This one cannot finish it either, and what
+  // both runs left goes with the merge — the manager is asked about the work as it
+  // stands, rather than about a branch carrying two unfinished resolutions.
+  let runs = 0;
   const h = harness({
     refresh: () => ({
       kind: 'conflicted',
@@ -873,6 +876,10 @@ test('a merge a stage stopped partway through is not tidied away by offering the
       commit: 'head0001',
       merging: true,
     }),
+    // Each of the four stages finishes the merge it is handed. The fifth run is the
+    // settle the offer buys, and it is the one that does not.
+    runStage: async () =>
+      ++runs < 5 ? ok('resolved') : { outcome: 'blocked', summary: 'could not finish it' },
   });
   try {
     create(h.store);
@@ -880,10 +887,17 @@ test('a merge a stage stopped partway through is not tidied away by offering the
     h.store.append('t1', { type: 'plan_approved' });
     await h.orch.idle();
 
-    assert.deepEqual(h.abandoned, [], 'the run’s work is where the run left it');
+    assert.deepEqual(
+      h.ran,
+      ['plan', 'implement', 'review', 'verify', 'implement'],
+      'the merge on disk was handed to a run rather than to the manager',
+    );
+    assert.deepEqual(h.abandoned, ['t1'], 'and when nothing landed, it went with everything else');
+
     const ticket = h.store.ticket('t1');
     assert.equal(ticket.status, 'blocked');
-    assert.deepEqual(ticket.conflicts, ['src/domain/rules.ts'], 'and the manager is asked');
+    assert.deepEqual(ticket.conflicts, ['src/domain/rules.ts'], 'so the manager is asked');
+    assert.match(ticket.question?.question ?? '', /resolution was tried/, 'having tried one');
     assert.deepEqual(h.prsOpened, [], 'over a branch that was not offered');
   } finally {
     await h.close();

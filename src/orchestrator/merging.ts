@@ -236,10 +236,14 @@ export function createMerging({
         // manager is asked about the work as it was offered. Also for a merge kept for
         // a settle that was never going to happen — a dependency's clash.
         //
-        // Only where this pass is what left the merge there. Everywhere else — opening
-        // the offer, merging it — a merge found on disk belongs to a stage that stopped
-        // partway through resolving one, and undoing it is exactly the loss `refresh`
-        // in worktree.ts hands that merge back rather than tidying it away for.
+        // A merge this pass did not start goes with it, and that is taken rather than
+        // guarded against: `refresh` in worktree.ts hands back one an earlier run stopped
+        // partway through, and wherever a settle may run that merge is given to it, so an
+        // attempt that does not land undoes both runs' half of the resolution. What the
+        // alternative keeps is a branch carrying two unfinished merges, for the manager to
+        // answer about and the next commit to pick up, which is the loss `abandonMerge`
+        // exists to prevent. Where no settle may run — merging the offer — a merge found
+        // on disk is still left exactly where its run left it.
         if (settle && result.merging) await deps.workspace.abandonMerge(ticket.id);
 
         store.append(ticket.id, {
