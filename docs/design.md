@@ -104,12 +104,16 @@ branches clashing with the base. Each of those used to block for a click that al
 the same thing — send it back to resolve them — while the agent that had just written the
 change was the one thing that knew what the resolution should be.
 
-So the workbench takes the click itself. A clash with the base on an offered branch you
-have not answered runs implement over the merge, with the same brief a stage that starts on
-a conflict is given, then the standing checks, then a commit pushed to the same pull
-request. One attempt: a run that leaves any handed path conflicted, or that fails the
-checks, aborts the merge, leaves nothing committed and blocks as before, saying that a
-resolution was tried and what it left.
+So the workbench takes the click itself. Wherever a branch is brought up to the base it has
+to land on, a clash with that base runs implement over the merge, with the same brief a
+stage that starts on a conflict is given, then the standing checks, then a commit and the
+offer. That is both moments a branch meets the base with work finished on it: when the work
+is first offered, straight after verify, and when somebody else's merge moves the base under
+an offer you have not answered. The same clash found half a second apart, so the same
+answer. One attempt: a run that leaves any handed path conflicted, or that fails the checks,
+aborts the merge, leaves nothing committed and blocks as before, saying that a resolution
+was tried and what it left. The offer a landed resolution goes on to make may not settle
+again, which is where "one attempt" is actually enforced.
 
 Not a stage of its own, deliberately. t20 built a `resolve` stage, a fifth agent and a
 `startMerge` action for exactly this, and was superseded by t5, which had implement do it

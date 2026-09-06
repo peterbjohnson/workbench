@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { create, harness, standing } from './harness.ts';
+import { create, harness, ok, standing } from './harness.ts';
 import { openStore } from '../store/store.ts';
 import { deriveTicket } from '../domain/ticket.ts';
 import type { Refreshed } from '../domain/events.ts';
@@ -467,6 +467,163 @@ test('a clash with work the ticket waited for is still the manager’s', async (
     assert.equal(t2.status, 'blocked');
     assert.deepEqual(t2.conflicts, ['project/shared.py']);
     assert.doesNotMatch(t2.question?.question ?? '', /resolution was tried/, 'because none was');
+  } finally {
+    await h.close();
+  }
+});
+
+/**
+ * The same clash, found half a second earlier: on the branch the workbench is
+ * offering for the first time, straight after verify. Clean while the work is being
+ * built, and clashing from the moment there is work to offer — the offer finds it,
+ * the run the offer hands the merge to finds the same merge still on disk, and after
+ * `times` of them the branch is up to date.
+ */
+function clashingFirstOffer(opts: Parameters<typeof harness>[0] = {}, times = 2) {
+  let asked = 0;
+  const h = harness({
+    ...opts,
+    refresh: () => {
+      // `ran` gains 'verify' when the run starts, and a stage refreshes before that,
+      // so every refresh the stages ask for is clean and every one after them clashes.
+      if (!h.ran.includes('verify')) return { kind: 'up-to-date' };
+      return ++asked <= times ? CLASH : { kind: 'up-to-date' };
+    },
+  });
+  return h;
+}
+
+test('a clash found as work is first offered is settled by a run too', async () => {
+  // t36 on the FamilyTree board: it finished verify, was offered, clashed on six
+  // files against a base that had moved while it built, and parked for a click that
+  // would have said what every other one says.
+  const handed: unknown[] = [];
+  const askedAbout: (string | null)[] = [];
+  const h = clashingFirstOffer({
+    verdict: () => {
+      askedAbout.push(h.store.ticket('t1').prUrl);
+      return { kind: 'pending' };
+    },
+    runStage: async ({ conflict }) => {
+      if (conflict !== undefined) handed.push(conflict);
+      return ok('took both sides');
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      h.ran,
+      ['plan', 'implement', 'review', 'verify', 'implement'],
+      'the offer bought one implement run rather than parking',
+    );
+    assert.deepEqual(
+      handed,
+      [{ base: 'newbase', paths: ['src/domain/rules.ts'] }],
+      'given the merge to finish, the way the start of a stage already is',
+    );
+    assert.deepEqual(h.prsOpened, ['https://example/pr/t1'], 'and then the work was offered');
+
+    const t1 = h.store.ticket('t1');
+    assert.equal(t1.status, 'awaiting_verdict', 'with nobody asked anything on the way');
+    assert.equal(t1.base, 'newbase', 'measured from the base it has now taken in');
+    assert.deepEqual(t1.conflicts, [], 'and nothing left for the manager to resolve');
+    assert.deepEqual(h.abandoned, [], 'nothing to undo');
+    assert.deepEqual(
+      askedAbout.filter((url) => url === null),
+      [],
+      'the host was never asked for a verdict on a pull request that did not exist',
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test('a resolution that does not land at offer time is undone, and the manager asked', async () => {
+  const h = clashingFirstOffer({ unresolved: (paths) => [...paths] });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.equal(
+      h.committed.filter((m) => m.includes('implement')).length,
+      1,
+      'nothing half-resolved was committed on top of the work',
+    );
+    assert.deepEqual(h.abandoned, ['t1'], 'the branch is back where it was');
+    assert.deepEqual(h.prsOpened, [], 'and the work was not offered');
+
+    const t1 = h.store.ticket('t1');
+    assert.equal(t1.status, 'blocked');
+    assert.deepEqual(t1.conflicts, ['src/domain/rules.ts'], 'the panel can still list them');
+    const asked = t1.question?.question ?? '';
+    assert.match(asked, /src\/domain\/rules\.ts/, 'named as the clash it is');
+    assert.match(asked, /resolution was tried/, 'and said to have been attempted');
+    assert.match(asked, /still conflicted/, 'with what the attempt left');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a settle at offer time gets one attempt, and the offer it makes may not settle', async () => {
+  // A branch nothing brings up to date: without `settle: false` on the way back out,
+  // the offer would settle, offer, settle, offer, for as long as it kept clashing.
+  const h = clashingFirstOffer({}, Infinity);
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      h.ran,
+      ['plan', 'implement', 'review', 'verify', 'implement'],
+      'one settling run, and the manager asked about what it did not settle',
+    );
+    assert.deepEqual(
+      h.refreshed.map((r) => r.keepConflict),
+      [true, true, true, true, false],
+      'the two stages, the offer and its settle may all hand a merge on; the re-offer may not',
+    );
+    assert.equal(h.store.ticket('t1').status, 'blocked');
+  } finally {
+    await h.close();
+  }
+});
+
+test('nothing else picks the ticket up between its settle and its offer', async () => {
+  // The settling run is nested inside the `perform` that is opening the pull request,
+  // and that already holds the ticket in flight. A settle that dropped the claim when
+  // it finished left the ticket reading `implementing` with nothing running, and the
+  // next tick started a real implement stage in the worktree being pushed from.
+  const h = clashingFirstOffer({
+    runStage: async () => {
+      await h.orch.tick();
+      return ok('took both sides');
+    },
+    openPr: async () => {
+      await h.orch.tick();
+      return 'https://example/pr/t1';
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      h.ran,
+      ['plan', 'implement', 'review', 'verify', 'implement'],
+      'the ticket was claimed throughout, so no tick found anything to start',
+    );
+    assert.deepEqual(h.prsOpened, ['https://example/pr/t1'], 'and it was offered once');
+    assert.equal(h.store.ticket('t1').status, 'awaiting_verdict');
   } finally {
     await h.close();
   }

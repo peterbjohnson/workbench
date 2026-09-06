@@ -424,17 +424,26 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   }
 
   /**
-   * The implement run that settles a clash found on a branch that is already
-   * offered. Everything a stage run is, and one thing besides: the standing checks
-   * are run against what it leaves, before anything is committed.
+   * The implement run that settles a clash found on a branch being offered — the
+   * offer itself, or the pass over the offered branches after a merge. Everything a
+   * stage run is, and one thing besides: the standing checks are run against what it
+   * leaves, before anything is committed.
    *
    * Held in `inFlight` for the whole run, as a tick's own work is. A tick that
    * arrived in the middle would see a ticket with no run recorded yet — the
    * `stage_started` is inside `doStage` — and start one of its own on the same
    * worktree, and `idle` would return with an agent still going.
+   *
+   * Whatever held the ticket before the run goes back afterwards rather than the
+   * claim being dropped. At offer time this runs inside the `perform` that is opening
+   * the pull request, which claimed the ticket for the whole of it: deleting here
+   * would free it while the push is still going, and the next tick would find a
+   * ticket reading `implementing` with nothing running and start a real stage in the
+   * worktree being pushed from.
    */
   async function settleOffered(ticket: Ticket): Promise<RunResult> {
     const run = doStage(ticket, 'implement', { settling: true });
+    const held = inFlight.get(ticket.id);
     inFlight.set(
       ticket.id,
       run.then(
@@ -445,7 +454,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     try {
       return await run;
     } finally {
-      inFlight.delete(ticket.id);
+      if (held === undefined) inFlight.delete(ticket.id);
+      else inFlight.set(ticket.id, held);
     }
   }
 
