@@ -183,9 +183,11 @@ export function App() {
   }, [settingsVersion]);
 
   // The tab as well as the header: a window you are looking for is usually one you
-  // cannot see, and its title is all the switcher shows of it.
+  // cannot see, and its title is all the switcher shows of it. Abbreviated to "WB"
+  // because a narrow tab truncates from the end — so the part every board shares
+  // has to be the short one, leaving the folder that tells them apart.
   useEffect(() => {
-    document.title = repo === null ? 'Workbench' : `Workbench — ${folder(repo)}`;
+    document.title = repo === null ? 'WB' : `WB: ${folder(repo)}`;
   }, [repo]);
 
   // The page, and the ticket on it, are both in the address — so a card can be
