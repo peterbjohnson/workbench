@@ -1257,3 +1257,20 @@ test('the gate can be taken off, and put back, any time before the plan is finis
   j.add({ type: 'ticket_edited', requiresApproval: true });
   assert.equal(runStage(j, 'plan', { summary: 'another plan' }).status, 'plan_gate');
 });
+
+test('an estimate is the last one guessed, and moves the ticket nowhere', () => {
+  const j = newTicket();
+  assert.equal(j.ticket().estimate, null, 'nothing has guessed yet');
+
+  const first = j.add({ type: 'estimated', range: '2–4 hours', why: 'like the small ones' });
+  assert.deepEqual(first.estimate, { range: '2–4 hours', why: 'like the small ones' });
+  assert.equal(first.status, 'queued', 'guessing at it is not doing anything to it');
+
+  // Later guesses know more. The one before is not history worth keeping on the
+  // ticket — it is in the log, and what the panel shows is the current answer.
+  const again = j.add({ type: 'estimated', range: '1–2 days', why: 'the plan came back large' });
+  assert.deepEqual(again.estimate, { range: '1–2 days', why: 'the plan came back large' });
+
+  // And nothing clears it: a stale estimate beats no estimate at all.
+  assert.deepEqual(runStage(j, 'plan').estimate, again.estimate);
+});

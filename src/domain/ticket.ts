@@ -162,6 +162,12 @@ export type Ticket = {
   cycles: number;
   /** What the ticket has cost so far, summed over every stage run. */
   costUsd: number;
+  /**
+   * How long this is likely to take, last time anything guessed. Replaced by the
+   * next guess and cleared by nothing: a stale estimate is still the last thing
+   * anybody knew, and a ticket with none showing looks like one nothing has read.
+   */
+  estimate: { range: string; why: string } | null;
 };
 
 const STATUS_FOR_STAGE: Record<Stage, Status> = {
@@ -225,6 +231,7 @@ function blank(id: string): Ticket {
     commits: [],
     cycles: 0,
     costUsd: 0,
+    estimate: null,
   };
 }
 
@@ -380,6 +387,9 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
 
     case 'step_reached':
       return { ...t, step: e.index };
+
+    case 'estimated':
+      return { ...t, estimate: { range: e.range, why: e.why } };
 
     case 'agent_said':
     case 'tool_requested':

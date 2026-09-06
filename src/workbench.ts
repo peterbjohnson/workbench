@@ -9,6 +9,7 @@ import { createOrchestrator, type Orchestrator } from './orchestrator/loop.ts';
 import { createStageRunner } from './run/runStage.ts';
 import { createChatRunner } from './run/chat.ts';
 import { createNameChecker } from './run/nameCheck.ts';
+import { createEstimator, estimateAsTicketsMove } from './run/estimate.ts';
 import { createWarmPool } from './run/warmPool.ts';
 import { cachedCredentials } from './run/credentials.ts';
 import { createFakeRunner } from './run/fakeRunner.ts';
@@ -109,6 +110,14 @@ export async function startWorkbench(
         about: readAbout(config),
       });
 
+  // How long a ticket is likely to take, guessed as it moves rather than when
+  // somebody looks: the moments worth guessing at — queued, and each stage
+  // finishing — are moments nobody is watching, so the answer is written down.
+  const stopEstimating =
+    pool === undefined
+      ? undefined
+      : estimateAsTicketsMove(store, createEstimator(config, store, pool.ask));
+
   // Fake agents spend nothing, and a name check is a model call like any other:
   // trying the workbench out must not be the one thing that quietly costs money.
   const api = createApi(store, config, {
@@ -126,6 +135,8 @@ export async function startWorkbench(
     orchestrator,
     port,
     close: async () => {
+      // First, so that nothing being stopped below starts one more question.
+      stopEstimating?.();
       await orchestrator.stop();
       await api.close();
       await pool?.close();

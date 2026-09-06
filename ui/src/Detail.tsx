@@ -94,6 +94,9 @@ export function Detail(props: {
           {!t.requiresApproval && ' · builds its plan unapproved'}
           {t.plan !== null && ` · ${t.scale}`}
           {t.costUsd > 0 && ` · $${t.costUsd.toFixed(2)}`}
+          {/* A guess, and it says so with the tilde. What it was compared to is on
+            hover: it is one line, and it is not worth a line of the panel. */}
+          {t.estimate !== null && <span title={t.estimate.why}>{` · ~${t.estimate.range}`}</span>}
           {t.cycles > 1 && ` · round ${t.cycles}`}
           {t.continues !== null && (
             <>
@@ -1030,6 +1033,8 @@ function detail(e: Event): string {
       return `merged the base at ${e.base.slice(0, 8)}`;
     case 'conflicted':
       return `the base at ${e.base.slice(0, 8)} conflicts: ${e.paths.join(', ')}`;
+    case 'estimated':
+      return e.range;
     default:
       return '';
   }
