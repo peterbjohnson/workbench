@@ -6,18 +6,22 @@ import {
   columnFor,
   DONE,
   inColumn,
+  keepsBoardOrder,
+  kindsInDone,
   needsYou,
+  sortedDone,
   waitingForSlot,
-  type Order,
+  type DoneView,
 } from '../../src/domain/board.ts';
 import { heldBy, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
+import { Analytics } from './Analytics.tsx';
 import { applyBrand, isColour } from './brand.ts';
 import { Card } from './Card.tsx';
 import { Detail } from './Detail.tsx';
 import { Docs } from './Docs.tsx';
 import { Interrupted } from './Interrupted.tsx';
-import { useOrder } from './order.ts';
+import { SORTS, useDoneView } from './order.ts';
 import { Settings } from './Settings.tsx';
 import { Theme } from './Theme.tsx';
 import { TicketForm } from './TicketForm.tsx';
@@ -43,16 +47,16 @@ function continuing(selected: string | null): string | null {
 }
 
 /**
- * The four pages. The board is the workbench working; the other three are the
- * workbench itself — what each stage is told, what expertise it is handed, and
- * what it all runs under. They were only ever files on disk and a database, so
- * changing any of them meant leaving the board.
+ * The five pages. The board is the workbench working and Analytics is what that
+ * working has come to; the other three are the workbench itself — what each stage
+ * is told, what expertise it is handed, and what it all runs under. They were only
+ * ever files on disk and a database, so changing any of them meant leaving the board.
  *
  * The address holds the page, so one can be linked to and survives a reload —
  * the same way a ticket does. Anything else in it is a ticket, which is why the
  * board is what an unrecognised address falls back to.
  */
-const TABS = ['Board', 'Agents', 'Skills', 'Settings'] as const;
+const TABS = ['Board', 'Agents', 'Skills', 'Analytics', 'Settings'] as const;
 
 type Tab = (typeof TABS)[number];
 
@@ -60,10 +64,24 @@ function tabInHash(hash: string): Tab {
   return TABS.find((tab) => tab.toLowerCase() === hash) ?? 'Board';
 }
 
-/** Both ends of a column, as the control names them. Newest is where Done starts. */
-const ORDERS: readonly [Order, string][] = [
-  ['newest', 'Newest'],
-  ['oldest', 'Oldest'],
+/** The sorts Done offers, as the control names them. Newest is where it starts. */
+const SORT_LABELS: Record<DoneView['sort'], string> = {
+  newest: 'Newest',
+  oldest: 'Oldest',
+  cost: 'Dearest',
+  title: 'Title',
+  outcome: 'Outcome',
+};
+
+/**
+ * The fates a finished ticket can have, as the filter names them. Not every
+ * `Outcome`: a ticket that has not ended is not in this column to be filtered for.
+ */
+const OUTCOMES: readonly [DoneView['outcome'], string][] = [
+  ['all', 'Any outcome'],
+  ['accepted', 'Merged'],
+  ['cancelled', 'Cancelled'],
+  ['gave_up', 'Given up on'],
 ];
 
 /** Which column a ticket may be dragged into, if any. */
@@ -99,8 +117,9 @@ export function App() {
   // Bumped when the settings page saves, so what was read out of the settings is
   // read again — and only then, rather than on every event.
   const [settingsVersion, setSettingsVersion] = useState(0);
-  // Which end of Done to read from. The browser's choice, not the workbench's.
-  const [order, chooseOrder] = useOrder();
+  // How Done is read: sorted, and cut down to a subset. The browser's choice, not
+  // the workbench's.
+  const [doneView, chooseDone] = useDoneView();
   // Whether the whole board is stopped, and what is still running in spite of it.
   const [stopped, setStopped] = useState<{ stopped: boolean; running: string[] } | null>(null);
 
@@ -221,19 +240,21 @@ export function App() {
   );
 
   const tab = tabInHash(at ?? '');
-  // Everything in the address that is not one of the four pages is a ticket.
+  // Everything in the address that is not one of the five pages is a ticket.
   const selected = tab === 'Board' ? at : null;
   const waiting = tickets.filter(needsYou).length;
 
   /**
    * How much is on each page, on its own tab. The board counts what has not ended
    * — a finished ticket is still on it, and counting those would climb for ever
-   * and say nothing. Settings has no count: one page, always the same size.
+   * and say nothing. Settings and Analytics have no count: one page each, always
+   * the same size.
    */
   const counts: Record<Tab, number | null> = {
     Board: tickets.filter((t) => !ended(t)).length,
     Agents: docs?.agent?.length ?? null,
     Skills: docs?.skill?.length ?? null,
+    Analytics: null,
     Settings: null,
   };
 
@@ -310,6 +331,7 @@ export function App() {
           empty="No skills yet. They live in the workbench's skills/ directory."
         />
       )}
+      {tab === 'Analytics' && <Analytics version={version} />}
       {tab === 'Settings' && (
         <Settings
           onSaved={() => {
@@ -325,13 +347,23 @@ export function App() {
             <Column
               key={column.name}
               name={column.name}
-              tickets={inColumn(tickets, column.name, column.name === DONE ? order : 'oldest')}
+              tickets={
+                column.name === DONE
+                  ? sortedDone(tickets, doneView)
+                  : inColumn(tickets, column.name)
+              }
               queued={queued}
               held={held}
               // Only Done: the other six are the queue, and the order work is
-              // taken in is the manager's to set rather than the reader's to flip.
-              order={column.name === DONE ? order : undefined}
-              onOrder={chooseOrder}
+              // taken in is the manager's to set rather than the reader's to sort.
+              view={column.name === DONE ? doneView : undefined}
+              onView={chooseDone}
+              // The kinds on the finished cards, not the ones the settings offer:
+              // the menu filters on what `prefixOf` reads back off a title.
+              kinds={column.name === DONE ? kindsInDone(tickets) : []}
+              // Done under one of its own sorts is not in the board's order, so a
+              // drag there would write a move nothing on screen could show.
+              reorderable={column.name !== DONE || keepsBoardOrder(doneView.sort)}
               // The backlog is where a ticket starts, so that is where writing one
               // belongs — at the top of the column it will appear in, rather than in
               // the header beside things that are about the whole board.
@@ -465,9 +497,13 @@ function Column(props: {
   tickets: Ticket[];
   /** Something to do in this column, under its heading. Only the backlog has one. */
   action?: ReactNode;
-  /** Which end this column is read from, when it is a column that can be turned round. */
-  order?: Order;
-  onOrder: (order: Order) => void;
+  /** How this column is read, when it is the one column that can be sorted and cut down. */
+  view?: DoneView;
+  onView: (change: Partial<DoneView>) => void;
+  /** The words found on this column's titles, which is what the kind filter offers. */
+  kinds: string[];
+  /** Whether a card here can be dragged: only where the board's order is what is drawn. */
+  reorderable: boolean;
   /** Whether a card is next for a slot — the same judgement for every column. */
   queued: (t: Ticket) => boolean;
   /** The tickets a card is held behind. */
@@ -481,7 +517,16 @@ function Column(props: {
   onDragEnd: () => void;
   onOpen: (id: string) => void;
 }) {
-  const { name, tickets, accepts, dragging, order } = props;
+  const { name, tickets, accepts, dragging, view, reorderable } = props;
+
+  // What the kind filter offers: the words found on the cards, plus the one being
+  // filtered on if no card carries it. A saved choice must always have an option
+  // that shows it — otherwise Done is cut down by a word with nothing on screen
+  // saying so, and no way back to Any.
+  const kinds =
+    view === undefined || view.prefix === 'all' || props.kinds.includes(view.prefix)
+      ? props.kinds
+      : [...props.kinds, view.prefix];
 
   return (
     <div
@@ -497,19 +542,42 @@ function Column(props: {
       <h2>
         {name} {tickets.length > 0 && <span>({tickets.length})</span>}
       </h2>
-      {order !== undefined && (
-        <div className="order" role="group" aria-label={`${name} order`}>
-          {ORDERS.map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              className={value === order ? 'picked' : ''}
-              aria-pressed={value === order}
-              onClick={() => props.onOrder(value)}
-            >
-              {label}
-            </button>
-          ))}
+      {view !== undefined && (
+        <div className="done-view">
+          <select
+            aria-label={`${name} order`}
+            value={view.sort}
+            onChange={(e) => props.onView({ sort: e.target.value as DoneView['sort'] })}
+          >
+            {SORTS.map((sort) => (
+              <option key={sort} value={sort}>
+                {SORT_LABELS[sort]}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label={`${name} outcome`}
+            value={view.outcome}
+            onChange={(e) => props.onView({ outcome: e.target.value as DoneView['outcome'] })}
+          >
+            {OUTCOMES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label={`${name} kind`}
+            value={view.prefix}
+            onChange={(e) => props.onView({ prefix: e.target.value })}
+          >
+            <option value="all">Any kind</option>
+            {kinds.map((prefix) => (
+              <option key={prefix} value={prefix}>
+                {prefix}
+              </option>
+            ))}
+          </select>
         </div>
       )}
       {props.action}
@@ -520,9 +588,14 @@ function Column(props: {
           queued={props.queued(t)}
           held={props.held(t)}
           // Every card, not only the two that change column: order is the queue,
-          // and a card that cannot be moved cannot be put at the front of it.
-          draggable
-          accepts={dragging !== null && dragging.id !== t.id && name === columnFor(dragging)}
+          // and a card that cannot be moved cannot be put at the front of it. The
+          // exception is Done sorted by price, title or outcome, where the order
+          // drawn is not the board's — there a drag would be a move that happened
+          // in the log and nowhere the reader can see.
+          draggable={reorderable}
+          accepts={
+            reorderable && dragging !== null && dragging.id !== t.id && name === columnFor(dragging)
+          }
           onDragStart={() => props.onDragStart(t)}
           onDragEnd={props.onDragEnd}
           onDrop={() => props.onDropOn(t)}
