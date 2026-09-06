@@ -1066,6 +1066,33 @@ test('the ticket prefixes are a list in the config file, and the default is take
   });
 });
 
+test('a prose setting keeps its blank lines, and empty is refused', async () => {
+  await withApi(async (wb) => {
+    const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;
+    const file = () =>
+      JSON.parse(fs.readFileSync(path.join(where, CONFIG_FILE), 'utf8')) as Record<string, unknown>;
+
+    const setting = (all: Setting[]) => all.find((s) => s.key === 'estimatePrompt');
+    const shipped = setting(await wb.settings());
+    assert.equal(shipped?.type, 'prose');
+    assert.match(String(shipped?.value), /RANGE:/, 'the prompt that ships is what it is set to');
+
+    // The paragraphs are the whole reason this is not a `lines` setting: that one
+    // drops every blank line, which would eat a prompt a little more each save.
+    const own = 'Guess how long.\n\nCompare it to what is below.';
+    const after = await wb.setSettings({ estimatePrompt: own });
+    assert.equal(setting(after)?.value, own);
+    assert.equal(setting(after)?.restart, false, 'it is read per call, not at startup');
+    assert.equal(file()['estimatePrompt'], own);
+
+    await assert.rejects(() => wb.setSettings({ estimatePrompt: '  ' }), /cannot be empty/);
+    assert.equal(file()['estimatePrompt'], own, 'and the refusal wrote nothing');
+
+    await wb.setSettings({ estimatePrompt: String(shipped?.value) });
+    assert.equal('estimatePrompt' in file(), false, 'back at the default, back out of the file');
+  });
+});
+
 test('a colour that is not one of the presets is refused, and nothing is written', async () => {
   await withApi(async (wb) => {
     const where = (await wb.settings()).find((s) => s.key === 'home')?.value as string;

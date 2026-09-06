@@ -347,7 +347,16 @@ export type EventBody =
    * is, which is appended first — this one only records that the chat is where it
    * came from, so the pane can say which of its offers have been taken.
    */
-  | { type: 'chat_accepted'; proposal: Proposal };
+  | { type: 'chat_accepted'; proposal: Proposal }
+  /**
+   * How long this ticket is likely to take, as a model guessed it from the tickets
+   * already finished. Written when the ticket is queued and again after each stage,
+   * because it is worked out at moments nobody is watching and read later.
+   *
+   * `range` is whatever the model said — "2–4 hours" — and stays text on purpose: a
+   * guess off a handful of rows should not be given a shape it cannot support.
+   */
+  | { type: 'estimated'; range: string; why: string };
 
 export type Event = EventBody & {
   id: number;

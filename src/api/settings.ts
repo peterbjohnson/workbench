@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CONFIG_FILE, type Config } from '../config.ts';
 import { POLICY_KEYS, type Policy } from '../domain/rules.ts';
 import { MAX_REVISIONS } from '../domain/ticket.ts';
+import { DEFAULT_ESTIMATE_PROMPT } from '../run/estimate.ts';
 import type { Store } from '../store/store.ts';
 import { PRESET_VALUES } from './presets.ts';
 
@@ -16,8 +17,11 @@ export type Setting = {
   key: string;
   label: string;
   value: string | number | string[];
-  /** How it is edited. `lines` is a list, one to a line; `colour` is a preset colour or none. */
-  type: 'number' | 'text' | 'lines' | 'choice' | 'colour';
+  /**
+   * How it is edited. `lines` is a list, one to a line; `prose` is writing, blank
+   * lines and all; `colour` is a preset colour or none.
+   */
+  type: 'number' | 'text' | 'lines' | 'prose' | 'choice' | 'colour';
   choices?: string[];
   about: string;
   /** Read-only settings are facts about this installation, not decisions. */
@@ -39,6 +43,7 @@ const CONFIG_DEFAULTS: Record<string, string | number | string[]> = {
   runner: 'claude',
   colour: '',
   ticketPrefixes: ['feature', 'fix', 'chore', 'docs'],
+  estimatePrompt: DEFAULT_ESTIMATE_PROMPT,
 };
 
 const LIMITS: Record<keyof Policy, { label: string; about: string }> = {
@@ -101,6 +106,16 @@ const CONFIGURED: Record<
       'What the drop-down in front of a ticket’s title offers, one to a line. A ' +
       'prefix is never required — "none" is always there — and nothing else in the ' +
       'workbench reads it. It is a nudge towards naming tickets alike, not a rule.',
+  },
+  estimatePrompt: {
+    label: 'Estimate prompt',
+    type: 'prose',
+    group: 'Work',
+    restart: false,
+    about:
+      'What is asked when a ticket is queued and after each of its stages, to guess ' +
+      'how long it will take. The tickets already finished are put below it, and this ' +
+      'ticket below those. A reply that is not a range is simply not shown.',
   },
   runner: {
     label: 'Runner',
@@ -277,6 +292,13 @@ function coerce(setting: Setting, raw: unknown): string | number | string[] {
   if (setting.type === 'lines') {
     const list = Array.isArray(raw) ? raw : String(raw ?? '').split('\n');
     return list.map((one) => String(one).trim()).filter((one) => one !== '');
+  }
+
+  // Kept as it was written but for the ends. `lines` is the other multi-line editor
+  // and it drops every blank line, which in a prompt is the paragraphs.
+  if (setting.type === 'prose') {
+    const written = String(raw ?? '').trim();
+    return written === '' ? bad('cannot be empty') : written;
   }
 
   // Before the empty guard below, because empty is a colour: it is how the top bar

@@ -172,6 +172,19 @@ function Field(props: { setting: Setting; value: string; onChange: (value: strin
     );
   }
 
+  // Writing rather than a list, so blank lines survive being edited and the box is
+  // deep enough to read a paragraph in.
+  if (setting.type === 'prose') {
+    return (
+      <textarea
+        id={id}
+        rows={Math.max(6, value.split('\n').length)}
+        value={value}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+    );
+  }
+
   if (setting.type === 'lines') {
     return (
       <textarea

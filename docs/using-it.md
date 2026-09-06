@@ -89,6 +89,12 @@ which ran and how each ended, then everything identifying it — what it costs, 
 it is on, who it waits for, its pull request — then whatever it is waiting on you for, then
 the buttons that answer it.
 
+**One of those is a guess at how long it will take**, written `~2–4 hours`, with what it was
+compared to on hover. It is asked of a model when the ticket is queued and again after each
+stage, from the tickets this workbench has already finished — so it is a comparison with
+your own work rather than an opinion about software, and it is worth about as much as that
+history is long. What is asked is the **Estimate prompt** setting, and you can rewrite it.
+
 **Only what the ticket is acting on is at the top.** A rejection or a set of changes stays
 on the ticket for good, because the next plan and the hand-over message both read it — so
 it leads the panel only while the stage answering it is the one running, or while the plan
