@@ -51,9 +51,11 @@ export type BriefInput = {
   checks?: readonly CheckRun[];
   /**
    * A merge the workbench started before this stage and could not finish. It is in
-   * the worktree, and finishing it is the first thing this stage does.
+   * the worktree, and finishing it is the first thing this stage does. `with` is the
+   * branch it is against when that is not the base: the offered work this ticket
+   * waited for, which a name says more about than a sha would.
    */
-  conflict?: { base: string; paths: readonly string[] };
+  conflict?: { base: string; paths: readonly string[]; with?: string };
   /** The manager's answer, when this run is resuming a blocked ticket. */
   answer?: string;
   /**
@@ -186,9 +188,22 @@ function whereYouAre({ worktree, scratch, absent, agent }: BriefInput): string {
 function mergeToFinish({ conflict, agent }: BriefInput): string | undefined {
   if (conflict === undefined || conflict.paths.length === 0) return undefined;
 
+  // What is being merged in, named as the thing it is: a branch says which ticket's
+  // work this has to sit beside, which is the whole of what there is to know about
+  // resolving it, and a sha of a base says the same for a base.
+  const what =
+    conflict.with === undefined
+      ? [
+          `The base moved on to ${conflict.base.slice(0, 8)} while this ticket was being worked`,
+          'on, and taking it in did not go cleanly. The merge is in your worktree right now,',
+        ]
+      : [
+          `\`${conflict.with}\` is work this ticket waited for and has to land on top of, and`,
+          'taking it in did not go cleanly. The merge is in your worktree right now,',
+        ];
+
   const lines = [
-    `The base moved on to ${conflict.base.slice(0, 8)} while this ticket was being worked`,
-    'on, and taking it in did not go cleanly. The merge is in your worktree right now,',
+    ...what,
     'with `MERGE_HEAD` set, and these files hold both sides:',
     '',
     ...conflict.paths.map((p) => `- \`${p}\``),

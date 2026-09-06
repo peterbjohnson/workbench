@@ -28,8 +28,11 @@ export function createMerging({
   /**
    * Runs implement over a merge left in the worktree of a ticket being offered, and
    * says how it went. One run: what it does not settle, the manager is asked about.
+   * `clashedWith` names the branch the merge is against when it is not the base —
+   * the run is told what it is resolving, and what it commits is recorded as work
+   * this ticket took in rather than as the base moving.
    */
-  settleOffered: (ticket: Ticket) => Promise<RunResult>;
+  settleOffered: (ticket: Ticket, clashedWith?: string) => Promise<RunResult>;
 }): Merging {
   const { store } = deps;
 
@@ -107,8 +110,8 @@ export function createMerging({
    * ticket back here has commits the pull request has never seen. It is the host
    * that reuses the pull request the branch already has.
    *
-   * @param settle whether a clash with the base found here may be given to an
-   *   implement run. Yes for the offer the board asks for: it is the same clash the
+   * @param settle whether a clash found here may be given to an implement
+   *   run. Yes for the offer the board asks for: it is the same clash the
    *   pass over the offered branches settles a moment later, and blocking for it
    *   spent a click that only ever said resolve them. No for the offer a settle
    *   makes again once it has landed — that is what makes it one attempt.
@@ -139,13 +142,13 @@ export function createMerging({
    *
    * A failure parks the ticket rather than starting anything: the work stands, and
    * what to do about a base that breaks it is a decision — ship it, put it right, or
-   * stop it — rather than a stage. A clash with the base is the one exception, and
-   * only where `settle` says a stage may be given the merge: see the conflicted
-   * branch below. What a conflict does leave behind is whatever merged before it, so
-   * that is recorded first: the branch has moved, and a record that says otherwise is
-   * what measures a dependency's change as this ticket's.
+   * stop it — rather than a stage. A clash is the one exception, and only where
+   * `settle` says a stage may be given the merge: see the conflicted branch below.
+   * What a conflict does leave behind is whatever merged before it, so that is
+   * recorded first: the branch has moved, and a record that says otherwise is what
+   * measures a dependency's change as this ticket's.
    *
-   * @param settle whether a clash with the base may be handed to an implement run
+   * @param settle whether a clash may be handed to an implement run
    *   rather than to the manager. Wherever a branch is brought up to a base it has
    *   to land on and there is a run to be bought: offering the work, and the pass
    *   over the offered branches after somebody else's merge. Not merging, which is a
@@ -182,17 +185,21 @@ export function createMerging({
       }
 
       if (result.kind === 'conflicted') {
-        // A clash with the base on a branch being offered is the agents' to settle:
-        // the merge is left where it is and an implement run is asked to finish it,
-        // exactly as the start of a stage already does. The manager's click did not
-        // say anything a run could not work out for itself.
+        // A clash on a branch being offered is the agents' to settle: the merge is
+        // left where it is and an implement run is asked to finish it, exactly as the
+        // start of a stage already does. The manager's click did not say anything a
+        // run could not work out for itself.
         //
-        // With the base, and nothing else: a clash with work this ticket waited for
-        // belongs to whoever chose the dependency. And only where the merge is still
-        // on disk — one that failed rather than conflicted has nothing to resolve.
+        // Whatever it clashed with, the base or the work this ticket waited for. That
+        // used to stop at the base, on the grounds that a dependency's clash belongs to
+        // whoever chose the dependency — but the resolution is the same mechanical work
+        // either way, and the manager learns whether the decomposition was bad from
+        // what the attempt says about it rather than from a button that always says
+        // resolve them. Only where the merge is still on disk, though: one that failed
+        // rather than conflicted has nothing to resolve.
         const attempt =
-          settle && result.merging && result.with === result.base
-            ? await settleOffered(ticket)
+          settle && result.merging
+            ? await settleOffered(ticket, result.with === result.base ? undefined : result.with)
             : undefined;
 
         if (attempt?.outcome === 'completed') {
@@ -233,8 +240,7 @@ export function createMerging({
         }
 
         // Nothing landed, so nothing is kept: whatever the attempt left goes, and the
-        // manager is asked about the work as it was offered. Also for a merge kept for
-        // a settle that was never going to happen — a dependency's clash.
+        // manager is asked about the work as it was offered.
         //
         // A merge this pass did not start goes with it, and that is taken rather than
         // guarded against: `refresh` in worktree.ts hands back one an earlier run stopped

@@ -445,14 +445,30 @@ test('a ticket sent back while another one settles is left where it is', async (
   }
 });
 
-test('a clash with work the ticket waited for is still the manager’s', async () => {
-  // The dependency was theirs to choose, and settling it here would resolve one
-  // ticket's work against another's on a branch neither of them is being built on.
-  const h = harness({
-    refresh: (id) =>
-      id === 't2'
+/** The same clash, against a branch this ticket waited for rather than the base. */
+function dependencyClash(opts: Parameters<typeof harness>[0] = {}) {
+  let asked = 0;
+  return harness({
+    ...opts,
+    refresh: (id) => {
+      if (id !== 't2') return { kind: 'up-to-date' };
+      return ++asked <= 2
         ? { ...CLASH, with: 'wb/t3', paths: ['project/shared.py'] }
-        : { kind: 'up-to-date' },
+        : { kind: 'up-to-date' };
+    },
+  });
+}
+
+test('a clash with work the ticket waited for is settled by a run too', async () => {
+  // It used to be the manager's, on the grounds that the dependency was theirs to
+  // choose. t36 on the FamilyTree board parked on six files against wb/t37 and then
+  // t37 landed two minutes later, making it a base clash and settling it that way.
+  const handed: unknown[] = [];
+  const h = dependencyClash({
+    runStage: async ({ conflict }) => {
+      handed.push(conflict);
+      return ok('took both sides');
+    },
   });
   try {
     standing(h.store, 't1');
@@ -460,13 +476,62 @@ test('a clash with work the ticket waited for is still the manager’s', async (
     h.store.append('t1', { type: 'merge_requested' });
     await h.orch.idle();
 
-    assert.deepEqual(h.ran, [], 'nothing was run at it');
-    assert.deepEqual(h.abandoned, ['t2'], 'and the merge kept for one is undone');
+    assert.deepEqual(h.ran, ['implement'], 'the dependency clash bought one implement run');
+    assert.deepEqual(
+      handed,
+      [{ base: 'newbase', paths: ['project/shared.py'], with: 'wb/t3' }],
+      'told which branch it is resolving against, not a base sha',
+    );
+
+    const t2 = h.store.ticket('t2');
+    assert.equal(t2.status, 'awaiting_verdict', 'still offered, and nobody was asked anything');
+    assert.deepEqual(h.prsOpened, ['https://example/pr/t2'], 'the resolution was pushed');
+    assert.deepEqual(h.abandoned, [], 'nothing to undo');
+    assert.deepEqual(t2.conflicts, [], 'and nothing left for the manager to resolve');
+  } finally {
+    await h.close();
+  }
+});
+
+test('what a settled dependency clash brought in is recorded as taken, not as the base', async () => {
+  // The merge on disk is another ticket's branch tip. A base moved onto it measures
+  // their whole change as this ticket's, and a record that forgets the branch is in
+  // here lets the next refresh move the base onto a commit without it.
+  const h = dependencyClash();
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    const t2 = h.store.ticket('t2');
+    assert.notEqual(t2.base, 'newbase', 'the dependency’s tip is not this ticket’s base');
+    assert.deepEqual(t2.carrying, ['wb/t3'], 'and the branch says what it is standing on');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a dependency clash a run cannot settle is undone, and the manager asked', async () => {
+  const h = dependencyClash({ unresolved: (paths) => [...paths] });
+  try {
+    standing(h.store, 't1');
+    standing(h.store, 't2');
+    h.store.append('t1', { type: 'merge_requested' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['implement'], 'one attempt, as with any other clash');
+    assert.deepEqual(h.committed, [], 'nothing half-resolved was committed');
+    assert.deepEqual(h.abandoned, ['t2'], 'the branch is back where it was');
+    assert.deepEqual(h.prsOpened, [], 'and the pull request never saw it');
 
     const t2 = h.store.ticket('t2');
     assert.equal(t2.status, 'blocked');
     assert.deepEqual(t2.conflicts, ['project/shared.py']);
-    assert.doesNotMatch(t2.question?.question ?? '', /resolution was tried/, 'because none was');
+    const asked = t2.question?.question ?? '';
+    assert.match(asked, /wb\/t3/, 'named as the branch it clashed with');
+    assert.match(asked, /project\/shared\.py/);
+    assert.match(asked, /resolution was tried/, 'and said to have been attempted');
   } finally {
     await h.close();
   }

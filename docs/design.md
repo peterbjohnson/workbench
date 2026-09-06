@@ -104,16 +104,30 @@ branches clashing with the base. Each of those used to block for a click that al
 the same thing — send it back to resolve them — while the agent that had just written the
 change was the one thing that knew what the resolution should be.
 
-So the workbench takes the click itself. Wherever a branch is brought up to the base it has
-to land on, a clash with that base runs implement over the merge, with the same brief a
-stage that starts on a conflict is given, then the standing checks, then a commit and the
-offer. That is both moments a branch meets the base with work finished on it: when the work
-is first offered, straight after verify, and when somebody else's merge moves the base under
-an offer you have not answered. The same clash found half a second apart, so the same
-answer. One attempt: a run that leaves any handed path conflicted, or that fails the checks,
-aborts the merge, leaves nothing committed and blocks as before, saying that a resolution
-was tried and what it left. The offer a landed resolution goes on to make may not settle
-again, which is where "one attempt" is actually enforced.
+So the workbench takes the click itself. Wherever a branch is brought up to what it has to
+land on, a clash there runs implement over the merge, with the same brief a stage that
+starts on a conflict is given, then the standing checks, then a commit and the offer. That
+is both moments a branch meets that code with work finished on it: when the work is first
+offered, straight after verify, and when somebody else's merge moves the base under an offer
+you have not answered. The same clash found half a second apart, so the same answer. One
+attempt: a run that leaves any handed path conflicted, or that fails the checks, aborts the
+merge, leaves nothing committed and blocks as before, saying what it clashed with and that a
+resolution was tried. The offer a landed resolution goes on to make may not settle again,
+which is where "one attempt" is actually enforced.
+
+What it has to land on includes the branches it waited for, which are offered and so in no
+commit of the base yet. That is a reversal, taken on the manager's decision on 2026-09-06:
+the rule used to stop at the base, because a clash with a dependency was said to belong to
+whoever chose the dependency rather than to an agent. It does not survive the case. t36 on
+the FamilyTree board waited for t37, clashed with `wb/t37` on six files at offer time and
+parked — and two minutes later t37 landed, which made the identical clash a base clash and
+bought it the run it had just been refused. The resolution is the same mechanical work
+whichever branch the merge is against, the run that is asked to do it has the same brief and
+the same worktree, and a decomposition that was wrong is something the manager reads out of
+a failed attempt's summary rather than out of a button that always says the same thing. What
+such a run commits is recorded as work taken in, not as the base moving: the merge was
+against another ticket's branch tip, and a base moved there measures their change as this
+ticket's.
 
 Not a stage of its own, deliberately. t20 built a `resolve` stage, a fifth agent and a
 `startMerge` action for exactly this, and was superseded by t5, which had implement do it
