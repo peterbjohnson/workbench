@@ -204,8 +204,10 @@ against what it left, and pushes the result to the same pull request — the tic
 offered and nobody is asked anything. It gets one attempt: a run that leaves a path
 conflicted, or that fails the checks, puts the branch back exactly as it was — nothing
 committed — and **blocks** with the conflicting paths, saying that a resolution was tried
-and what it left. A clash with work the ticket waited for still blocks straight away, since
-the dependency was your choice rather than the agents'.
+and what it left. A clash with work the ticket waited for buys the same one attempt: it is
+the same mechanical resolution, and a run that cannot make it **blocks** naming that branch
+rather than the base — which tells you more about a decomposition that was wrong than a
+button that always says the same thing.
 
 A pull request you have already answered is left alone. Pushing a merge to it would be a
 commit made for reasons nothing to do with your objection, and a branch that has moved past

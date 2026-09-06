@@ -652,17 +652,28 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           // from there: the whole of the merged-in work read as this ticket's own.
           if (conflict !== undefined && commit !== null) {
             // A dependency's merge is recorded the way `takeAwaitedWork` records one:
-            // its branch is named as work taken in, and the base is the commit just
-            // made rather than what the merge was against — that is another ticket's
-            // branch tip, and a base moved onto it hands every later diff their change
-            // as this one's.
+            // its branch is named as work taken in, and the base is not moved to what
+            // the merge was against — that is another ticket's branch tip, and a base
+            // moved onto it hands every later diff their change as this one's.
             const took = conflict.with === undefined ? [] : [conflict.with];
+            // The ticket as the store has it, not the one in hand: an offer-time settle
+            // is handed the object `merging.refresh` was holding, from before the
+            // `refreshed` it appended for whatever merged cleanly ahead of the clash.
+            // `carrying` read off that object forgets those branches, and the next
+            // refresh then moves the base onto a commit that has not got them.
+            const current = store.ticket(ticket.id);
             store.append(ticket.id, {
               type: 'refreshed',
-              base: took.length > 0 ? commit : conflict.base,
+              // Where the branch already stood, not this run's own commit: that commit
+              // has the whole of this ticket's work in it, so a base there measures the
+              // change as empty. The reducer holds the base while `carrying` names
+              // anything, but only once the branch has a commit — and a dependency that
+              // lands mid-run empties `carrying` — so what is written here has to be
+              // right on its own rather than right because it is discarded.
+              base: took.length > 0 ? (current.base ?? commit) : conflict.base,
               commit,
               took,
-              carrying: carriedWork(ticket, store.tickets(), took),
+              carrying: carriedWork(current, store.tickets(), took),
             });
           }
         } catch (error) {
