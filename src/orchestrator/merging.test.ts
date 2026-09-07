@@ -471,6 +471,11 @@ test('a clash with work the ticket waited for is still the manager’s', async (
     const t2 = h.store.ticket('t2');
     assert.equal(t2.status, 'blocked');
     assert.deepEqual(t2.conflicts, ['project/shared.py']);
+    assert.deepEqual(
+      t2.conflictedWith,
+      { ref: 'wb/t3', base: 'newbase' },
+      'the branch it waits for, not the base, which is what the panel says',
+    );
     assert.doesNotMatch(t2.question?.question ?? '', /resolution was tried/, 'because none was');
   } finally {
     await h.close();
@@ -678,6 +683,7 @@ test('a merge onto a base that will not merge names the files and merges nothing
     const ticket = h.store.ticket('t1');
     assert.equal(ticket.status, 'blocked');
     assert.deepEqual(ticket.conflicts, ['src/api/server.ts'], 'the panel can list them');
+    assert.deepEqual(ticket.conflictedWith, { ref: 'newbase', base: 'newbase' }, 'with the base');
     assert.equal(ticket.mergeRequested, false, 'and it does not keep trying');
   } finally {
     await h.close();

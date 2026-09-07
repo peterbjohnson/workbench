@@ -110,10 +110,10 @@ stage that starts on a conflict is given, then the standing checks, then a commi
 offer. That is every moment a branch meets the base with work finished on it: when the work
 is first offered, straight after verify, when somebody else's merge moves the base under an
 offer you have not answered, and when you accept it. The same clash found minutes apart, so
-the same answer. One attempt: a run that leaves any handed path conflicted, or that fails the checks,
-aborts the merge, leaves nothing committed and blocks as before, saying that a resolution
-was tried and what it left. The offer a landed resolution goes on to make may not settle
-again, which is where "one attempt" is actually enforced.
+the same answer. One attempt: a run that leaves any handed path conflicted, or that fails
+the checks, aborts the merge, leaves nothing committed and blocks as before, saying that a
+resolution was tried and what it left. The offer a landed resolution goes on to make may
+not settle again, which is where "one attempt" is actually enforced.
 
 The merge gate holds git and not agents. One merge runs at a time, the pass over the other
 offered branches included, so for as long as that pass waited on the runs it started, every

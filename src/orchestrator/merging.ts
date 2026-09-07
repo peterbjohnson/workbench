@@ -316,6 +316,10 @@ export function createMerging({
       // The same paths as data, so the panel can list them and offer the way out
       // rather than leaving them buried in a paragraph.
       conflicts: result.paths,
+      // And what they are a clash with, from the same pair the reason above is
+      // written from, so the panel's heading cannot say the base where the
+      // reason says a dependency's branch.
+      conflictedWith: { ref: result.with, base: result.base },
     });
   }
 
