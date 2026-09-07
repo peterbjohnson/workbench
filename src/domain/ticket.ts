@@ -144,6 +144,14 @@ export type Ticket = {
    */
   conflicts: string[];
   /**
+   * What that attempt was merging, and the base at the time: the two are the same
+   * commit when the clash was with the base itself, and otherwise the ref is the
+   * branch of work this ticket waits for. A fact about the same one attempt as
+   * `conflicts`, so it goes whenever they do. Null for a clash recorded before
+   * this was kept, where all anything knows is the prose in the event.
+   */
+  conflictedWith: { ref: string; base: string } | null;
+  /**
    * What this ticket's change is measured against: the commit the branch was cut
    * from, and afterwards the last base it merged in. Not a record of where it
    * started — that is in the events — but the point a diff of its own work is
@@ -226,6 +234,7 @@ function blank(id: string): Ticket {
     offered: false,
     mergeRequested: false,
     conflicts: [],
+    conflictedWith: null,
     base: null,
     carrying: [],
     commits: [],
@@ -316,6 +325,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         session: null,
         interrupted: false,
         conflicts: [],
+        conflictedWith: null,
       };
 
       // Unless an offer is standing, in which case there is no stage to put it back
@@ -378,6 +388,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // A clash with the base is a fact about the branch as it was. Work is being
         // done to it again, so the paths stand until something looks afresh.
         conflicts: [],
+        conflictedWith: null,
       };
 
     // Written while the run is still going, so it is here even when nothing ever
@@ -408,7 +419,14 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
       // does come back to the parked run, and it is no longer one waiting to be
       // picked up either way — the offered branch below does not go back to it,
       // but it does not leave the ticket where a stage will run, either.
-      const answered = { ...t, question: null, running: false, interrupted: false, conflicts: [] };
+      const answered = {
+        ...t,
+        question: null,
+        running: false,
+        interrupted: false,
+        conflicts: [],
+        conflictedWith: null,
+      };
 
       // An offer standing means the stages are over: what stopped was the wait for
       // a verdict, and there is no stage to put the ticket back into. t61 paid for
@@ -472,6 +490,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // The base went in, and it went in cleanly. Whatever the branch last
         // clashed with is settled by that.
         conflicts: [],
+        conflictedWith: null,
       };
     }
 
@@ -552,6 +571,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // decide, once they know what stopped it.
         mergeRequested: false,
         conflicts: e.conflicts ?? [],
+        conflictedWith: e.conflictedWith ?? null,
         question: {
           question: e.reason,
           reasoning: 'the workbench could not carry on by itself',
@@ -585,6 +605,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             offered: false,
             mergeRequested: false,
             conflicts: [],
+            conflictedWith: null,
             ...movedOn,
           }
         : {
@@ -593,6 +614,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             offered: false,
             mergeRequested: false,
             conflicts: [],
+            conflictedWith: null,
             rejection: e.reason ?? null,
             ...movedOn,
           };

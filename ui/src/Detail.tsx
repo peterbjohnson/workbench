@@ -18,6 +18,7 @@ import {
   type LogItem,
   type Run,
 } from '../../src/domain/board.ts';
+import { conflictBrief, conflictHeading } from '../../src/domain/conflicts.ts';
 import type { Event } from '../../src/domain/events.ts';
 import { heldBy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
@@ -157,25 +158,14 @@ export function Detail(props: {
           making where there is nothing else going on. */}
         {t.status === 'blocked' && t.conflicts.length > 0 && (
           <div className="box">
-            <h3>Conflicts with the base</h3>
+            <h3>{conflictHeading(t)}</h3>
             {t.conflicts.map((path) => (
               <div key={path} className="mono">
                 {path}
               </div>
             ))}
             <div className="row">
-              <button
-                type="button"
-                onClick={() =>
-                  void onAct(
-                    wb.changes(
-                      t.id,
-                      'The base has moved on and this branch no longer merges into it. ' +
-                        `Resolve the conflicts in:\n${t.conflicts.map((p) => `- ${p}`).join('\n')}`,
-                    ),
-                  )
-                }
-              >
+              <button type="button" onClick={() => void onAct(wb.changes(t.id, conflictBrief(t)))}>
                 Send back to resolve them
               </button>
             </div>
