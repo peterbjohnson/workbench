@@ -279,6 +279,23 @@ test('a stage handed a merge is told what clashed and that it must finish it', (
   assert.ok(brief.indexOf('A merge to finish first') < brief.indexOf('## Ticket'));
 });
 
+test('a merge against a branch this ticket waited for names the branch', () => {
+  // A sha of another ticket's tip says nothing anybody can act on. The branch says
+  // which ticket's work this has to sit beside, which is the whole of the question.
+  const brief = buildBrief({
+    ticket: ticketFrom([CREATED]),
+    agent: agents.implement,
+    worktree: '/tmp/wb/t1',
+    conflict: { base: 'abc1234def', paths: ['src/rules.ts'], with: 'wb/t37' },
+  });
+
+  assert.match(brief, /`wb\/t37` is work this ticket waited for/);
+  assert.doesNotMatch(brief, /The base moved on to/, 'because it is not the base that moved');
+  assert.doesNotMatch(brief, /abc1234d/, 'and the sha of one says nothing here');
+  assert.match(brief, /`git add`/, 'the rest of it is the same merge to finish');
+  assert.match(brief, /blocked and commits nothing/);
+});
+
 test('verify handed a merge is told the checks it is promised were not run', () => {
   // Its instructions say the workbench has already run them. Not for this stage —
   // a tree full of markers fails them for the markers — and a brief that leaves the

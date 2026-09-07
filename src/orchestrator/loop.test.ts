@@ -909,7 +909,7 @@ test('a refused credential stops the board, not just the ticket that found out',
 });
 
 test('a conflict at the start of a stage is handed to the stage, not to the manager', async () => {
-  const handed: { stage: Stage; paths: string[] }[] = [];
+  const handed: { stage: Stage; paths: string[]; with?: string }[] = [];
   const h = harness({
     refresh: (id) =>
       id === 't1' && handed.length === 0
@@ -926,7 +926,7 @@ test('a conflict at the start of a stage is handed to the stage, not to the mana
           }
         : { kind: 'up-to-date' },
     runStage: async ({ stage, conflict }) => {
-      if (conflict) handed.push({ stage, paths: conflict.paths });
+      if (conflict) handed.push({ stage, paths: conflict.paths, with: conflict.with });
       return ok(`${stage} done`);
     },
   });
@@ -936,7 +936,9 @@ test('a conflict at the start of a stage is handed to the stage, not to the mana
     h.store.append('t1', { type: 'plan_approved' });
     await h.orch.idle();
 
-    assert.deepEqual(handed, [{ stage: 'implement', paths: ['src/rules.ts'] }]);
+    // No branch named: what a stage start brings in is the base and nothing else, so
+    // the sha the brief gives is what the merge is against.
+    assert.deepEqual(handed, [{ stage: 'implement', paths: ['src/rules.ts'], with: undefined }]);
     const conflicted = during(h.store, 't1', 'implement').filter((e) => e.type === 'conflicted');
     assert.equal(conflicted.length, 1, 'recorded on the ticket, with what clashed');
     assert.deepEqual(conflicted[0]?.type === 'conflicted' ? conflicted[0].paths : [], [

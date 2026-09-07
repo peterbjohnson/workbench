@@ -114,9 +114,11 @@ export function createBranch(deps: Deps): Branch {
     // at all, so a conflict handed to one of them could only sit there unresolved.
     if (stage !== 'implement' && stage !== 'verify') return undefined;
 
-    // The base and nothing else: the work this ticket waited for is brought in by
-    // `takeAwaitedWork`, before the stage starts, and a dependency's conflict is not
-    // one to hand a stage — it belongs to the manager who chose the dependency.
+    // The base and nothing else: the work this ticket waited for came in at
+    // `takeAwaitedWork`, when the branch was cut, so at the start of a stage there is
+    // nothing of it left to take. A dependency offered since is brought in when the
+    // work is — see the conflicted branch of `refresh` in merging.ts, which is where a
+    // clash with one is handed to a run.
     const result = await deps.workspace.refresh(ticket.id, [], true);
     if (result.kind === 'up-to-date') return undefined;
 
