@@ -9,9 +9,9 @@ import type { Deps, RunResult, Verdict } from './loop.ts';
  * What a branch being brought up to its base may do about a clash with it, which
  * is the only thing that differs between the four moments one is brought up.
  *
- * - `no`: nothing. The manager is asked, and a merge kept for a run that is not
- *   going to happen is undone. The offer a settle makes once it has landed — which
- *   is where "one attempt" is actually enforced.
+ * - `no`: nothing. The manager is asked, and a merge found on disk is left exactly
+ *   where the run that stopped partway through left it. The offer a settle makes
+ *   once it has landed — which is where "one attempt" is actually enforced.
  * - `inline`: run implement over the merge and wait for it. The first offer of the
  *   work, which has nothing else to be getting on with.
  * - `detached`: run implement over the merge beside whatever asked for it. The pass
@@ -50,8 +50,11 @@ export function createMerging({
   /**
    * Runs implement over a merge left in the worktree of a ticket being offered, and
    * says how it went. One run: what it does not settle, the manager is asked about.
+   * `clashedWith` names the branch the merge is against when it is not the base —
+   * the run is told what it is resolving, and what it commits is recorded as work
+   * this ticket took in rather than as the base moving.
    */
-  settleOffered: (ticket: Ticket) => Promise<RunResult>;
+  settleOffered: (ticket: Ticket, clashedWith?: string) => Promise<RunResult>;
   /**
    * Runs `work` beside whatever asked for it, with the ticket held in flight for
    * the whole of it so no tick starts a stage of its own in the worktree it is
@@ -149,11 +152,11 @@ export function createMerging({
    * ticket back here has commits the pull request has never seen. It is the host
    * that reuses the pull request the branch already has.
    *
-   * @param settling what a clash with the base found here may do. `inline` for the
-   *   offer the board asks for: it is the same clash the pass over the offered
-   *   branches settles a moment later, and blocking for it spent a click that only
-   *   ever said resolve them. `no` for the offer a settle makes again once it has
-   *   landed — that is what makes it one attempt.
+   * @param settling what a clash found here may do. `inline` for the offer the
+   *   board asks for: it is the same clash the pass over the offered branches
+   *   settles a moment later, and blocking for it spent a click that only ever said
+   *   resolve them. `no` for the offer a settle makes again once it has landed —
+   *   that is what makes it one attempt.
    */
   async function doOpenPr(ticket: Ticket, settling: Settling = 'inline'): Promise<boolean> {
     // The workspace has to exist to be offered, even though the host finds it itself.
@@ -179,14 +182,14 @@ export function createMerging({
    *
    * A failure parks the ticket rather than starting anything: the work stands, and
    * what to do about a base that breaks it is a decision — ship it, put it right, or
-   * stop it — rather than a stage. A clash with the base is the one exception, and
-   * only where `settling` says a run may be given the merge: see the conflicted
-   * branch below. What a conflict does leave behind is whatever merged before it, so
-   * that is recorded first: the branch has moved, and a record that says otherwise is
-   * what measures a dependency's change as this ticket's.
+   * stop it — rather than a stage. A clash is the one exception, and only where
+   * `settling` says a run may be given the merge: see the conflicted branch below.
+   * What a conflict does leave behind is whatever merged before it, so that is
+   * recorded first: the branch has moved, and a record that says otherwise is what
+   * measures a dependency's change as this ticket's.
    *
-   * @param settling what a clash with the base may do here: nothing, a run waited
-   *   for, a run beside this one, or a run and then the merge. See `Settling`.
+   * @param settling what a clash may do here: nothing, a run waited for, a run
+   *   beside this one, or a run and then the merge. See `Settling`.
    * @returns whether the caller may carry on — offer the work, or merge it.
    */
   async function refresh(
@@ -223,19 +226,21 @@ export function createMerging({
       }
 
       if (result.kind === 'conflicted') {
-        // A clash with the base on a branch being offered is the agents' to settle:
-        // the merge is left where it is and an implement run is asked to finish it,
-        // exactly as the start of a stage already does. The manager's click did not
-        // say anything a run could not work out for itself.
+        // A clash on a branch being offered is the agents' to settle: the merge is
+        // left where it is and an implement run is asked to finish it, exactly as the
+        // start of a stage already does. The manager's click did not say anything a
+        // run could not work out for itself.
         //
-        // With the base, and nothing else: a clash with work this ticket waited for
-        // belongs to whoever chose the dependency. And only where the merge is still
-        // on disk — one that failed rather than conflicted has nothing to resolve.
-        if (settling === 'no' || !result.merging || result.with !== result.base) {
-          // A merge kept for a settle that was never going to happen — a
-          // dependency's clash — goes the same way one an attempt did not finish
-          // does: see the abandon in `settle`.
-          if (settling !== 'no' && result.merging) await deps.workspace.abandonMerge(ticket.id);
+        // Whatever it clashed with, the base or the work this ticket waited for. That
+        // used to stop at the base, on the grounds that a dependency's clash belongs to
+        // whoever chose the dependency — but the resolution is the same mechanical work
+        // either way, and the manager learns whether the decomposition was bad from
+        // what the attempt says about it rather than from a button that always says
+        // resolve them. Only where the merge is still on disk, though: one that failed
+        // rather than conflicted has nothing to resolve. And where no settle may run at
+        // all, a merge found on disk is left exactly where its run left it — there is
+        // no attempt here to undo half of.
+        if (settling === 'no' || !result.merging) {
           block(ticket, result);
           return false;
         }
@@ -324,8 +329,9 @@ export function createMerging({
   }
 
   /**
-   * The one attempt at a clash with the base: an implement run over the merge left
-   * on disk, and what follows it whichever way it goes. Its own function because
+   * The one attempt at a clash, with the base or with work this ticket waited for:
+   * an implement run over the merge left on disk, and what follows it whichever way
+   * it goes. Its own function because
    * *where* it runs differs — inside the offer that found the clash, or beside the
    * pass that did, which must not wait for it — and what it does does not.
    *
@@ -338,7 +344,12 @@ export function createMerging({
     result: Extract<Refreshed, { kind: 'conflicted' }>,
     settling: Settling,
   ): Promise<boolean> {
-    const attempt = await settleOffered(ticket);
+    // Told what it is resolving when that is not the base — a branch this ticket
+    // waited for, which is offered and so in no commit of the base yet.
+    const attempt = await settleOffered(
+      ticket,
+      result.with === result.base ? undefined : result.with,
+    );
 
     if (attempt.outcome === 'completed') {
       // Offered again, which runs the refresh and the checks against a branch that is

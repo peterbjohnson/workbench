@@ -27,8 +27,8 @@ export type Ticket = {
   /** True while a stage run is in flight. */
   running: boolean;
   /**
-   * Whether the run in flight is the workbench settling a clash with the base on a
-   * branch that is offered, rather than a stage the board asked for. The status is
+   * Whether the run in flight is the workbench settling a clash on a branch that is
+   * offered, rather than a stage the board asked for. The status is
    * `implementing` either way, so this is the only thing that can say which it is —
    * and a settle takes minutes, which is a long time for a board to say nothing.
    */

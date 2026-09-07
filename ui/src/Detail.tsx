@@ -92,8 +92,7 @@ export function Detail(props: {
           {/* A settle is an implement run on work that is already offered, so its
             status says `implementing` and the merge block above is not where it can
             be said: that block is only for a merge the manager has asked for. */}
-          {t.running &&
-            (t.settling ? ' · resolving a clash with the base before merging' : ' · running')}
+          {t.running && (t.settling ? ' · resolving a clash on its branch' : ' · running')}
           {/* Otherwise a ticket that never stops to be approved looks like one whose
             gate you missed. Said only when it is true; the gate is the default. */}
           {!t.requiresApproval && ' · builds its plan unapproved'}

@@ -67,9 +67,10 @@ export type StageRunner = (args: {
   /**
    * A merge the workbench started and could not finish, left in the worktree for
    * this stage to resolve before it does anything else. The stage may not end with
-   * any of these paths still conflicted.
+   * any of these paths still conflicted. `with` is the branch it is against when
+   * that is not the base — the offered work this ticket waited for.
    */
-  conflict?: { base: string; paths: string[] };
+  conflict?: { base: string; paths: string[]; with?: string };
   /**
    * The conversation to pick back up, when there is one: a question the manager
    * has now answered, or a run the workbench was stopped in the middle of. Still
@@ -469,19 +470,21 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
    * stage run is, and one thing besides: the standing checks are run against what it
    * leaves, before anything is committed.
    */
-  async function settleOffered(ticket: Ticket): Promise<RunResult> {
-    return holding(ticket.id, () => doStage(ticket, 'implement', { settling: true }));
+  async function settleOffered(ticket: Ticket, clashedWith?: string): Promise<RunResult> {
+    return holding(ticket.id, () => doStage(ticket, 'implement', { settling: true, clashedWith }));
   }
 
   /**
    * @param settling whether this run is settling a clash on an offered branch,
    *   rather than a stage the board asked for. See `settleOffered`.
+   * @param clashedWith the branch the merge waiting in the worktree is against, when
+   *   the caller knows it is not the base. Only a settle does.
    * @returns what the run reported, for the caller that has something to do with it.
    */
   async function doStage(
     ticket: Ticket,
     stage: Stage,
-    { settling = false }: { settling?: boolean } = {},
+    { settling = false, clashedWith }: { settling?: boolean; clashedWith?: string } = {},
   ): Promise<RunResult> {
     const { path: worktree, scratch } = await branch.prepare(ticket);
     const runId = randomUUID();
@@ -505,7 +508,13 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         settling: settling || undefined,
       });
 
-      const conflict = await branch.refreshForStage(ticket, stage, runId);
+      const found = await branch.refreshForStage(ticket, stage, runId);
+      // What the merge on disk is against, which the refresh cannot say: all it finds
+      // is a `MERGE_HEAD`, and for a settle that is a branch this ticket waited for
+      // rather than a base commit. Carried down from the caller that does know, because
+      // both the brief and what is recorded afterwards turn on it.
+      const conflict: { base: string; paths: string[]; with?: string } | undefined =
+        found !== undefined && clashedWith !== undefined ? { ...found, with: clashedWith } : found;
       // A merge that landed moved the base on the stored ticket, and everything
       // downstream — the brief's diff above all — is taken from the object rather than
       // the store. Without this the stage sees the base it was cut from, and the whole
@@ -664,11 +673,29 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           // the ticket keeps the base it was cut from, and every later diff is taken
           // from there: the whole of the merged-in work read as this ticket's own.
           if (conflict !== undefined && commit !== null) {
+            // A dependency's merge is recorded the way `takeAwaitedWork` records one:
+            // its branch is named as work taken in, and the base is not moved to what
+            // the merge was against — that is another ticket's branch tip, and a base
+            // moved onto it hands every later diff their change as this one's.
+            const took = conflict.with === undefined ? [] : [conflict.with];
+            // The ticket as the store has it, not the one in hand: an offer-time settle
+            // is handed the object `merging.refresh` was holding, from before the
+            // `refreshed` it appended for whatever merged cleanly ahead of the clash.
+            // `carrying` read off that object forgets those branches, and the next
+            // refresh then moves the base onto a commit that has not got them.
+            const current = store.ticket(ticket.id);
             store.append(ticket.id, {
               type: 'refreshed',
-              base: conflict.base,
+              // Where the branch already stood, not this run's own commit: that commit
+              // has the whole of this ticket's work in it, so a base there measures the
+              // change as empty. The reducer holds the base while `carrying` names
+              // anything, but only once the branch has a commit — and a dependency that
+              // lands mid-run empties `carrying` — so what is written here has to be
+              // right on its own rather than right because it is discarded.
+              base: took.length > 0 ? (current.base ?? commit) : conflict.base,
               commit,
-              carrying: carriedWork(ticket, store.tickets(), []),
+              took,
+              carrying: carriedWork(current, store.tickets(), took),
             });
           }
         } catch (error) {

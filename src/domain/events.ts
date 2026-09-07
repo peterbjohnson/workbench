@@ -165,8 +165,8 @@ export type EventBody =
       stage: Stage;
       runId: string;
       /**
-       * This run is the workbench settling a clash with the base on a branch that
-       * is already offered, rather than a stage the board asked for. The
+       * This run is the workbench settling a clash on a branch that is already
+       * offered, rather than a stage the board asked for. The
        * counterpart of the flag `stage_finished` carries, written here as well so
        * the ticket says what the run *is* while it is going: its status reads
        * `implementing` either way, and a run that takes minutes should not have to

@@ -43,7 +43,7 @@ export function Card(props: {
             has said: "running" alone says nothing about how far along a
             twenty-minute stage is. */}
         {t.settling
-          ? 'settling the base'
+          ? 'settling a clash'
           : t.step !== null && t.steps.length > 0
             ? `step ${t.step}/${t.steps.length}`
             : 'running'}
