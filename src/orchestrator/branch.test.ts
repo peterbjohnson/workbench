@@ -48,10 +48,12 @@ test('a branch standing on work it waited for keeps its base as the base moves o
   // pull request, by when the base had moved on again.
   const merges: string[] = [];
   const h = harness({
-    refresh: (id, keepConflict) => {
+    refresh: (id) => {
       // The stage-start refreshes are not what this is about: by then the branch has
-      // the base, which is what they go for.
-      if (keepConflict) return { kind: 'up-to-date' };
+      // the base, which is what they go for. They are the ones that happen while the
+      // ticket is running — `keepConflict` does not tell them apart on its own, now
+      // that offering the work keeps a clash for an implement run to settle too.
+      if (h.store.ticket(id).running) return { kind: 'up-to-date' };
       merges.push(id);
       return merges.length === 1
         ? { kind: 'merged', base: 'abc1234', commit: 'merge01', merged: ['wb/t1'] }
@@ -69,7 +71,7 @@ test('a branch standing on work it waited for keeps its base as the base moves o
     await h.orch.idle();
 
     assert.deepEqual(
-      h.refreshed.filter((r) => !r.keepConflict).map((r) => r.id),
+      h.refreshed.filter((r) => r.alsoMerge.length > 0).map((r) => r.id),
       ['t2', 't2'],
       'refreshed as it was cut, and again to be offered',
     );
