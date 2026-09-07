@@ -209,6 +209,13 @@ the same mechanical resolution, and a run that cannot make it **blocks** naming 
 rather than the base — which tells you more about a decomposition that was wrong than a
 button that always says the same thing.
 
+Accepting work that clashes with the base gets that same one attempt before it blocks, so a
+click that lands is a click. The pass over the other pull requests does not wait for the
+runs it sets off — it does the merges, hands each clash to a run beside it, and is done in
+seconds, so accepting five things in a row costs at most one resolution each rather than one
+for every other branch after every landing. Only one merge happens at a time, and a ticket
+whose turn has not come says on its card and in its panel which merge it is behind.
+
 A pull request you have already answered is left alone. Pushing a merge to it would be a
 commit made for reasons nothing to do with your objection, and a branch that has moved past
 a change request reads as one that has addressed it.

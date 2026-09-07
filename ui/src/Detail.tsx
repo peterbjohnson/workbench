@@ -89,7 +89,10 @@ export function Detail(props: {
         {/* Identification rather than status, so it sits under both. */}
         <div className="meta">
           <span className="mono">{t.id}</span> · {t.status.replace(/_/g, ' ')}
-          {t.running && ' · running'}
+          {/* A settle is an implement run on work that is already offered, so its
+            status says `implementing` and the merge block above is not where it can
+            be said: that block is only for a merge the manager has asked for. */}
+          {t.running && (t.settling ? ' · resolving a clash on its branch' : ' · running')}
           {/* Otherwise a ticket that never stops to be approved looks like one whose
             gate you missed. Said only when it is true; the gate is the default. */}
           {!t.requiresApproval && ' · builds its plan unapproved'}
@@ -647,7 +650,12 @@ function Actions({
         t.prUrl !== null &&
         (t.mergeRequested ? (
           <div className="row">
-            <span className="quiet">merging…</span>
+            {/* One merge runs at a time. "merging…" for a ticket that has not
+                started is the workbench keeping a wait to itself — five accepts in
+                thirteen seconds, and four tickets saying this for minutes. */}
+            <span className="quiet">
+              {t.queuedBehind !== null ? `queued behind ${t.queuedBehind}’s merge` : 'merging…'}
+            </span>
           </div>
         ) : (
           <div className="row">

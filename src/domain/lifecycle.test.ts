@@ -665,6 +665,79 @@ test('a run that settled a clash on an offered branch goes back to the wait', ()
   assert.equal(stuck.status, 'blocked');
 });
 
+test('a settling run says so while it is going, not only when it reports', () => {
+  // Its status is `implementing` either way and it takes minutes, so without this
+  // the board reads a settle as an ordinary stage for the whole of it.
+  const j = offeredTicket();
+  const going = j.add({ type: 'stage_started', stage: 'implement', runId: 'r-s', settling: true });
+  assert.equal(going.running, true);
+  assert.equal(going.settling, true);
+
+  const done = j.add({
+    type: 'stage_finished',
+    runId: 'r-s',
+    outcome: 'completed',
+    summary: 'took both sides',
+    settling: true,
+  });
+  assert.equal(done.settling, false, 'the run is over');
+
+  // A stage the board asked for is not one of these, whatever ran last.
+  const k = offeredTicket();
+  k.add({ type: 'stage_started', stage: 'implement', runId: 'r-s', settling: true });
+  const stage = k.add({ type: 'stage_started', stage: 'implement', runId: 'r-i' });
+  assert.equal(stage.settling, false);
+
+  // And an answer that ends the offer ends the settle over it: `running` goes there,
+  // so what says what the run was has to go with it.
+  const m = offeredTicket();
+  m.add({ type: 'stage_started', stage: 'implement', runId: 'r-s', settling: true });
+  const back = m.add({ type: 'changes_requested', changes: 'not like that' });
+  assert.equal(back.settling, false);
+  assert.equal(back.running, false);
+});
+
+test('a merge that has to wait says what it is behind, until it is doing something', () => {
+  // Queuing records nothing else: the request stands, and the tick after the gate
+  // frees is the one that carries it out.
+  const queued = (): Journal => {
+    const j = offeredTicket();
+    j.add({ type: 'merge_requested' });
+    j.add({ type: 'merge_queued', behind: 't38' });
+    return j;
+  };
+
+  const waiting = queued().ticket();
+  assert.equal(waiting.queuedBehind, 't38');
+  assert.equal(waiting.mergeRequested, true, 'nothing was refused');
+  assert.equal(waiting.status, 'awaiting_verdict');
+  assert.deepEqual(queued().next(), { kind: 'merge_pr' }, 'and it is still what happens next');
+
+  // Everything that means this ticket has visibly moved on. A stale "queued behind
+  // t38" is worse than none: it is the board explaining a wait that is over.
+  const j = queued();
+  j.add({ type: 'merge_queued', behind: 't39' });
+  assert.equal(j.ticket().queuedBehind, 't39', 'the holder can change while it waits');
+
+  assert.equal(
+    queued().add({ type: 'stage_started', stage: 'implement', runId: 'r' }).queuedBehind,
+    null,
+  );
+  assert.equal(
+    queued().add({ type: 'refreshed', base: 'newbase', commit: 'aaa1111' }).queuedBehind,
+    null,
+  );
+  assert.equal(queued().add({ type: 'blocked', reason: 'it conflicts' }).queuedBehind, null);
+  assert.equal(
+    queued().add({ type: 'changes_requested', changes: 'not like that' }).queuedBehind,
+    null,
+    'the offer it was queued to merge is over',
+  );
+  assert.equal(queued().add({ type: 'verdict', verdict: 'accepted' }).queuedBehind, null);
+  assert.equal(queued().add({ type: 'cancelled', reason: 'not now' }).queuedBehind, null);
+  assert.equal(queued().add({ type: 'gave_up', reason: 'too many rounds' }).queuedBehind, null);
+});
+
 test('an answer that lands while a clash is settled is what the ticket keeps', () => {
   // The offered branches are read once and then settled one at a time, an agent run
   // each. In those minutes the manager can answer the pull request — and every way

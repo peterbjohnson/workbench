@@ -26,6 +26,13 @@ export type Ticket = {
   stage: Stage | null;
   /** True while a stage run is in flight. */
   running: boolean;
+  /**
+   * Whether the run in flight is the workbench settling a clash on a branch that is
+   * offered, rather than a stage the board asked for. The status is
+   * `implementing` either way, so this is the only thing that can say which it is —
+   * and a settle takes minutes, which is a long time for a board to say nothing.
+   */
+  settling: boolean;
   /** wb/<id>. The worktree path is derived from this outside the domain. */
   branch: string;
   /** The ticket this one carries on from, and whose branch it started on. */
@@ -135,6 +142,13 @@ export type Ticket = {
    */
   mergeRequested: boolean;
   /**
+   * The ticket whose merge was holding the gate the last time this one's merge was
+   * due to start, or null when nothing is in its way. One merge runs at a time, so
+   * a queued one is not refused and nothing else about the ticket changes: without
+   * this it reads `merging…` for as long as the queue ahead of it takes.
+   */
+  queuedBehind: string | null;
+  /**
    * The files the base and this branch disagree about, as the last attempt to
    * bring the base in found them. Empty when there is no clash — which is the
    * ordinary state, and what anything that moves the ticket on puts it back to:
@@ -214,6 +228,7 @@ function blank(id: string): Ticket {
     status: 'backlog',
     stage: null,
     running: false,
+    settling: false,
     branch: `wb/${id}`,
     continues: null,
     waitsFor: [],
@@ -233,6 +248,7 @@ function blank(id: string): Ticket {
     prUrl: null,
     offered: false,
     mergeRequested: false,
+    queuedBehind: null,
     conflicts: [],
     conflictedWith: null,
     base: null,
@@ -258,6 +274,20 @@ function blank(id: string): Ticket {
  * offering a button that does nothing.
  */
 const movedOn = { session: null, interrupted: false };
+
+/**
+ * What the end of the road drops. Both endings are the same shape and neither is
+ * resumed, so nothing that describes work in flight may outlive them: a run that
+ * reports back afterwards is a late report, not a reason for the board to go on
+ * saying the ticket is settling a clash or waiting behind somebody's merge.
+ */
+const stoppedFor = {
+  running: false,
+  settling: false,
+  queuedBehind: null,
+  question: null,
+  interrupted: false,
+};
 
 /** Pure. No I/O, no clock. */
 export function applyEvent(t: Ticket, e: Event): Ticket {
@@ -367,6 +397,11 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         stage: e.stage,
         status: STATUS_FOR_STAGE[e.stage],
         running: true,
+        // What this run is, said while it is going: a settle reads as itself rather
+        // than as an implement stage the board asked for.
+        settling: e.settling ?? false,
+        // Whatever it was waiting behind, it is doing something now.
+        queuedBehind: null,
         question: null,
         answer: null,
         // Whatever stopped the last run, this one is going.
@@ -423,6 +458,8 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         ...t,
         question: null,
         running: false,
+        settling: false,
+        queuedBehind: null,
         interrupted: false,
         conflicts: [],
         conflictedWith: null,
@@ -487,6 +524,8 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         base: held ? t.base : e.base,
         carrying,
         commits: [...t.commits, e.commit],
+        // Whatever was in the way of its merge, this branch has moved since.
+        queuedBehind: null,
         // The base went in, and it went in cleanly. Whatever the branch last
         // clashed with is settled by that.
         conflicts: [],
@@ -548,6 +587,13 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         ...t,
         status: 'implementing',
         running: false,
+        // The answer ends the offer, so it ends everything the offer was waiting on
+        // with it: a settle over that branch, and a merge that was queued behind
+        // somebody else's. Without these the card goes on saying "queued behind t1"
+        // over a ticket the manager has already sent back, until some later stage
+        // starts and clears it — which at capacity is a long wait.
+        settling: false,
+        queuedBehind: null,
         offered: false,
         mergeRequested: false,
         changes: e.changes,
@@ -568,8 +614,10 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         status: 'blocked',
         running: false,
         // Whatever the manager asked for did not happen. Asking again is theirs to
-        // decide, once they know what stopped it.
+        // decide, once they know what stopped it — and it is not waiting for
+        // anything now that there is nothing left of it to wait for.
         mergeRequested: false,
+        queuedBehind: null,
         conflicts: e.conflicts ?? [],
         conflictedWith: e.conflictedWith ?? null,
         question: {
@@ -581,13 +629,19 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // Both are the end of the road. Nothing resumes them, so nothing is kept for a
     // resumed run; the reason is in the event log, which is where the board reads it.
     case 'cancelled':
-      return { ...t, status: 'cancelled', running: false, question: null, interrupted: false };
+      return { ...t, status: 'cancelled', ...stoppedFor };
 
     case 'gave_up':
-      return { ...t, status: 'gave_up', running: false, question: null, interrupted: false };
+      return { ...t, status: 'gave_up', ...stoppedFor };
 
     case 'merge_requested':
       return { ...t, mergeRequested: true };
+
+    // Nothing about the ticket changes but what it is able to say: the merge was
+    // not refused, so `mergeRequested` stands and the tick after the gate frees is
+    // the one that carries it out.
+    case 'merge_queued':
+      return { ...t, queuedBehind: e.behind };
 
     // A rejection ends the offer as well as the round: the reworked ticket is
     // offered again, on the same branch and so on the same pull request — which is
@@ -604,6 +658,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             status: 'done',
             offered: false,
             mergeRequested: false,
+            queuedBehind: null,
             conflicts: [],
             conflictedWith: null,
             ...movedOn,
@@ -613,6 +668,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
             status: 'planning',
             offered: false,
             mergeRequested: false,
+            queuedBehind: null,
             conflicts: [],
             conflictedWith: null,
             rejection: e.reason ?? null,
@@ -622,7 +678,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
 }
 
 function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): Ticket {
-  const stopped = { ...t, running: false };
+  const stopped = { ...t, running: false, settling: false };
 
   // A stopped ticket still hears back from the run it had in flight. It has already
   // ended; the late report must not resurrect it as blocked.

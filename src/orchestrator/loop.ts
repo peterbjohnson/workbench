@@ -258,6 +258,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     branch,
     busy: (id) => inFlight.has(id),
     settleOffered,
+    holding: (id, work) => void holding(id, work),
   });
 
   // Subscribed from the moment the orchestrator exists, not from start(), because a
@@ -336,7 +337,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       // Only running a stage needs the model service. Opening a pull request, reading
       // a verdict and giving up are the workbench's own work and carry on regardless.
       if (action.kind === 'run_stage' && !mayRunAgents) continue;
-      // Queued, not refused: nothing is appended and `mergeRequested` still stands,
+      // Queued, not refused: the wait is recorded and `mergeRequested` still stands,
       // so the tick after the gate frees is the one that merges it — in this process
       // or in the one that replaces it, since the request is a durable event and the
       // queue is only ever this tick declining to act on it.
@@ -425,39 +426,52 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   }
 
   /**
+   * Runs `work` with the ticket claimed in flight for the whole of it, as a tick's
+   * own work is. A tick that arrived in the middle would see a ticket with no run
+   * recorded yet — the `stage_started` is inside `doStage` — and start one of its
+   * own on the same worktree, and `idle` would return with an agent still going.
+   *
+   * Whatever held the ticket before goes back afterwards rather than the claim being
+   * dropped. At offer time this runs inside the `perform` that is opening the pull
+   * request, which claimed the ticket for the whole of it: deleting here would free
+   * it while the push is still going, and the next tick would find a ticket reading
+   * `implementing` with nothing running and start a real stage in the worktree being
+   * pushed from. Where nothing held it — a settle handed off by the pass over the
+   * offered branches, which belongs to no `perform` — the claim is dropped and a
+   * tick is asked for, because otherwise nothing looks for work when it ends.
+   */
+  async function holding<T>(ticketId: string, work: () => Promise<T>): Promise<T> {
+    const held = inFlight.get(ticketId);
+    // Claimed before the work starts, and with a promise of its own rather than the
+    // work's, because one of these nests inside another: the settle a detached one
+    // runs is itself held. A claim made after the work had begun would not be there
+    // for the inner call to read, so what the inner call gave back at the end was a
+    // promise that had already resolved — and the ticket stayed in flight for ever.
+    let done = () => {};
+    inFlight.set(
+      ticketId,
+      new Promise<void>((resolve) => {
+        done = resolve;
+      }),
+    );
+    try {
+      return await work();
+    } finally {
+      done();
+      if (held === undefined) inFlight.delete(ticketId);
+      else inFlight.set(ticketId, held);
+      void tick();
+    }
+  }
+
+  /**
    * The implement run that settles a clash found on a branch being offered — the
    * offer itself, or the pass over the offered branches after a merge. Everything a
    * stage run is, and one thing besides: the standing checks are run against what it
    * leaves, before anything is committed.
-   *
-   * Held in `inFlight` for the whole run, as a tick's own work is. A tick that
-   * arrived in the middle would see a ticket with no run recorded yet — the
-   * `stage_started` is inside `doStage` — and start one of its own on the same
-   * worktree, and `idle` would return with an agent still going.
-   *
-   * Whatever held the ticket before the run goes back afterwards rather than the
-   * claim being dropped. At offer time this runs inside the `perform` that is opening
-   * the pull request, which claimed the ticket for the whole of it: deleting here
-   * would free it while the push is still going, and the next tick would find a
-   * ticket reading `implementing` with nothing running and start a real stage in the
-   * worktree being pushed from.
    */
   async function settleOffered(ticket: Ticket, clashedWith?: string): Promise<RunResult> {
-    const run = doStage(ticket, 'implement', { settling: true, clashedWith });
-    const held = inFlight.get(ticket.id);
-    inFlight.set(
-      ticket.id,
-      run.then(
-        () => {},
-        () => {},
-      ),
-    );
-    try {
-      return await run;
-    } finally {
-      if (held === undefined) inFlight.delete(ticket.id);
-      else inFlight.set(ticket.id, held);
-    }
+    return holding(ticket.id, () => doStage(ticket, 'implement', { settling: true, clashedWith }));
   }
 
   /**
@@ -484,7 +498,15 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     aborts.set(ticket.id, abort);
 
     try {
-      store.append(ticket.id, { type: 'stage_started', stage, runId });
+      // Said as the run starts rather than only when it reports: the ticket reads
+      // `implementing` for the whole of a settle either way, and the board has no
+      // other way to tell one from a stage it asked for.
+      store.append(ticket.id, {
+        type: 'stage_started',
+        stage,
+        runId,
+        settling: settling || undefined,
+      });
 
       const found = await branch.refreshForStage(ticket, stage, runId);
       // What the merge on disk is against, which the refresh cannot say: all it finds
