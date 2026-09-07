@@ -305,6 +305,14 @@ export type EventBody =
        * panel can list them and offer the way out.
        */
       conflicts?: string[];
+      /**
+       * What the merge that found them was with, and the base at the time. The
+       * reason says which in prose, and prose is not something the panel can read:
+       * without this it can only call every clash one with the base, and half of
+       * them are with a branch this ticket waits for. Absent on logs written
+       * before it was recorded.
+       */
+      conflictedWith?: { ref: string; base: string };
     }
   /** The manager stopped it. */
   | { type: 'cancelled'; reason: string }
