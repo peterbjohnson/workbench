@@ -58,9 +58,10 @@ export function harness(
     /**
      * What bringing the base in does. An up-to-date branch is the default.
      * `keepConflict` says the caller has a stage that can finish the merge: the
-     * refresh at the start of one, or the pass over the offered branches after a
-     * merge, which runs implement to settle what it finds. The rest hand a clash to
-     * the manager and want the branch left as it was.
+     * refresh at the start of one, or a branch being brought up to the base it must
+     * land on — offering the work, and the pass over the offered branches after a
+     * merge — both of which run implement to settle what they find. The rest hand a
+     * clash to the manager and want the branch left as it was.
      */
     refresh?: (ticketId: string, keepConflict: boolean) => Refreshed;
     /**

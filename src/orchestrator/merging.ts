@@ -26,8 +26,8 @@ export function createMerging({
   /** Whether this ticket's work is already in flight in this process. */
   busy: (ticketId: string) => boolean;
   /**
-   * Runs implement over a merge left in an offered ticket's worktree, and says how
-   * it went. One run: what it does not settle, the manager is asked about.
+   * Runs implement over a merge left in the worktree of a ticket being offered, and
+   * says how it went. One run: what it does not settle, the manager is asked about.
    */
   settleOffered: (ticket: Ticket) => Promise<RunResult>;
 }): Merging {
@@ -106,13 +106,22 @@ export function createMerging({
    * when the ticket already has a URL: what the host does first is push, and a
    * ticket back here has commits the pull request has never seen. It is the host
    * that reuses the pull request the branch already has.
+   *
+   * @param settle whether a clash with the base found here may be given to an
+   *   implement run. Yes for the offer the board asks for: it is the same clash the
+   *   pass over the offered branches settles a moment later, and blocking for it
+   *   spent a click that only ever said resolve them. No for the offer a settle
+   *   makes again once it has landed — that is what makes it one attempt.
    */
-  async function doOpenPr(ticket: Ticket): Promise<void> {
+  async function doOpenPr(
+    ticket: Ticket,
+    { settle = true }: { settle?: boolean } = {},
+  ): Promise<void> {
     // The workspace has to exist to be offered, even though the host finds it itself.
     const { path: worktree } = await branch.prepare(ticket);
     // Offered against the code that exists, not the code that did when the branch
     // was cut. A ticket that cannot be brought up to date is not offered at all.
-    if (!(await refresh(ticket, worktree))) return;
+    if (!(await refresh(ticket, worktree, settle))) return;
     const url = await deps.host.openPr(ticket);
     store.append(ticket.id, { type: 'pr_opened', url });
   }
@@ -137,7 +146,11 @@ export function createMerging({
    * what measures a dependency's change as this ticket's.
    *
    * @param settle whether a clash with the base may be handed to an implement run
-   *   rather than to the manager. Only the pass over the offered branches says yes.
+   *   rather than to the manager. Wherever a branch is brought up to a base it has
+   *   to land on and there is a run to be bought: offering the work, and the pass
+   *   over the offered branches after somebody else's merge. Not merging, which is a
+   *   moment the manager is already at the keyboard for, and not the offer a settle
+   *   makes once it has landed — one attempt, said where it cannot be got round.
    */
   async function refresh(ticket: Ticket, worktree: string, settle = false): Promise<boolean> {
     const result = await deps.workspace.refresh(
@@ -169,7 +182,7 @@ export function createMerging({
       }
 
       if (result.kind === 'conflicted') {
-        // A clash with the base on a branch that is offered is the agents' to settle:
+        // A clash with the base on a branch being offered is the agents' to settle:
         // the merge is left where it is and an implement run is asked to finish it,
         // exactly as the start of a stage already does. The manager's click did not
         // say anything a run could not work out for itself.
@@ -183,21 +196,39 @@ export function createMerging({
             : undefined;
 
         if (attempt?.outcome === 'completed') {
-          // Offered again, which pushes the resolution to the pull request already
-          // standing and runs the refresh and the checks against a branch that is now
-          // up to date. From the store: the settling run moved the base and made a
-          // commit, and the ticket in hand still says otherwise.
-          //
-          // Only while the offer is still standing and still unanswered — the same
-          // thing `refreshOffered` asks before it starts any of this. The window used
-          // to be a git merge and is now a whole agent run, and in that time the
-          // manager can ask for changes and a poll can find the pull request merged.
-          // Pushing then would append `pr_opened` over their answer: the objection
-          // silently undone, or a pull request reopened on work already merged. The
-          // resolution stays on the branch either way, for whatever runs next.
+          // Offered again, which runs the refresh and the checks against a branch that
+          // is now up to date. From the store: the settling run moved the base and made
+          // a commit, and the ticket in hand still says otherwise. Never with `settle`
+          // on, whichever way this goes: one attempt is the rule, and refusing it here
+          // is what stops a settle being able to ask for another.
           const settled = store.ticket(ticket.id);
+
+          if (!ticket.offered) {
+            // The first offer of the work, straight after verify. There is no pull
+            // request yet, so there is no verdict to read and nothing the manager can
+            // have answered — asking the host would be a question about an offer that
+            // does not exist. What the minutes of a settle can still bring is the
+            // ticket being stopped, or offered by something else; the resolution then
+            // stays on the branch, for whatever runs next.
+            //
+            // The ticket reads `implementing` in here: a settling run sets no status,
+            // so the `stage_started` it made stands until the next event. That event is
+            // the `pr_opened` below or the `blocked` further down, appended in this same
+            // call, with the ticket held in flight throughout — see `settleOffered`.
+            if (!ended(settled) && !settled.offered) await doOpenPr(settled, { settle: false });
+            return false;
+          }
+
+          // An offer that was already standing, so the resolution is pushed to the pull
+          // request the manager is reading — but only while it is still standing and
+          // still unanswered, the same thing `refreshOffered` asks before it starts any
+          // of this. The window used to be a git merge and is now a whole agent run, and
+          // in that time the manager can ask for changes and a poll can find the pull
+          // request merged. Pushing then would append `pr_opened` over their answer: the
+          // objection silently undone, or a pull request reopened on work already
+          // merged. The resolution stays on the branch either way.
           const still = settled.offered && !ended(settled) ? await verdictOf(settled) : null;
-          if (still?.kind === 'pending') await doOpenPr(settled);
+          if (still?.kind === 'pending') await doOpenPr(settled, { settle: false });
           return false;
         }
 
@@ -205,10 +236,14 @@ export function createMerging({
         // manager is asked about the work as it was offered. Also for a merge kept for
         // a settle that was never going to happen — a dependency's clash.
         //
-        // Only where this pass is what left the merge there. Everywhere else — opening
-        // the offer, merging it — a merge found on disk belongs to a stage that stopped
-        // partway through resolving one, and undoing it is exactly the loss `refresh`
-        // in worktree.ts hands that merge back rather than tidying it away for.
+        // A merge this pass did not start goes with it, and that is taken rather than
+        // guarded against: `refresh` in worktree.ts hands back one an earlier run stopped
+        // partway through, and wherever a settle may run that merge is given to it, so an
+        // attempt that does not land undoes both runs' half of the resolution. What the
+        // alternative keeps is a branch carrying two unfinished merges, for the manager to
+        // answer about and the next commit to pick up, which is the loss `abandonMerge`
+        // exists to prevent. Where no settle may run — merging the offer — a merge found
+        // on disk is still left exactly where its run left it.
         if (settle && result.merging) await deps.workspace.abandonMerge(ticket.id);
 
         store.append(ticket.id, {
