@@ -522,7 +522,9 @@ test('the stage told to fix something is told exactly what, and no other stage i
   const brief = buildBrief({ ticket, agent: agents.implement, worktree: '/tmp/wb/t1' });
   assert.match(brief, /Changes to make/);
   assert.match(brief, /the backoff is unbounded/);
-  assert.match(brief, /revision of work that has already been reviewed/);
+  // Not "already reviewed": a failing standing check is a change list too, and it
+  // arrives without anybody having read the work. What is true of both is the plan.
+  assert.match(brief, /revision of work already done to an approved plan/);
 
   // The reviewer must judge the diff, not read its own last words back as though
   // they were instructions.

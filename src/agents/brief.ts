@@ -315,7 +315,7 @@ function changesFor(agent: AgentDef, ticket: Ticket): string | undefined {
 
   return [
     'The approach is right; these are wrong. Address each one, and change nothing',
-    'else — this is a revision of work that has already been reviewed, not a',
+    'else — this is a revision of work already done to an approved plan, not a',
     'rewrite of it.',
     '',
     ticket.changes,

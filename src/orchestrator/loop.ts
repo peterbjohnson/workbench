@@ -502,13 +502,15 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         settling: settling || undefined,
       });
 
-      const found = await branch.refreshForStage(ticket, stage, runId);
+      const refreshed = await branch.refreshForStage(ticket, stage, runId);
       // What the merge on disk is against, which the refresh cannot say: all it finds
       // is a `MERGE_HEAD`, and for a settle that is a branch this ticket waited for
       // rather than a base commit. Carried down from the caller that does know, because
       // both the brief and what is recorded afterwards turn on it.
       const conflict: { base: string; paths: string[]; with?: string } | undefined =
-        found !== undefined && clashedWith !== undefined ? { ...found, with: clashedWith } : found;
+        refreshed.conflict !== undefined && clashedWith !== undefined
+          ? { ...refreshed.conflict, with: clashedWith }
+          : refreshed.conflict;
       // A merge that landed moved the base on the stored ticket, and everything
       // downstream — the brief's diff above all — is taken from the object rather than
       // the store. Without this the stage sees the base it was cut from, and the whole
@@ -699,12 +701,19 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         if (why !== undefined) result = { ...result, changes: why };
       }
 
-      // The checks the merge kept this run from starting with, asked now that it is
-      // resolved and committed. Nothing else will ask: the next action is `open_pr`,
-      // whose refresh finds a branch already up to date and runs them only when
-      // something merged — so the change most likely to break the suite would be the
-      // one offered without it ever being run.
-      if (stage === 'verify' && conflict !== undefined && result.outcome === 'completed') {
+      // A base that came in at the start of verify, asked about now that the stage is
+      // over and it is committed — whether it arrived as a conflict this run resolved
+      // or as a merge that went in silently. Either way the results in the brief are
+      // from the implement run, taken before this code was on the branch. Nothing else
+      // will ask: the next action is `open_pr`, whose refresh finds a branch already
+      // up to date — up to date because of this very merge — and runs the checks only
+      // when something merges there. So the change most likely to break the suite
+      // would be the one offered without it ever being run.
+      if (
+        stage === 'verify' &&
+        (conflict !== undefined || refreshed.merged) &&
+        result.outcome === 'completed'
+      ) {
         const why = await checksAfterRun(ticket.id, runId, worktree);
         // Back to planning: the work has been through implement, review and verify
         // already, and a suite the merge broke is not a detail for one more round of

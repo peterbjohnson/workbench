@@ -1109,6 +1109,58 @@ test('a merge verify was handed is checked once verify has resolved it', async (
   }
 });
 
+test('a base that merged in at the start of verify is checked before the work is offered', async () => {
+  // The quiet one: no conflict, nothing for a stage to resolve, the base simply goes
+  // in and verify runs on code the suite has not been run against — the results in its
+  // brief are the implement run's, from before the merge. And nothing downstream asks
+  // either, because this merge is exactly what makes `open_pr` find a branch already
+  // up to date and run nothing.
+  let refreshes = 0;
+  let asked = 0;
+  const order: string[] = [];
+  const h = harness({
+    refresh: () =>
+      ++refreshes === 2
+        ? { kind: 'merged', base: 'newbase', commit: 'merge01', merged: ['newbase'] }
+        : { kind: 'up-to-date' },
+    checks: () => {
+      order.push('checks');
+      return asked++ === 0
+        ? [{ command: 'yarn test', ok: true, output: '' }]
+        : [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }];
+    },
+    runStage: async ({ stage }) => {
+      order.push(stage);
+      return ok(`${stage} done`);
+    },
+  });
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(
+      order.slice(0, 6),
+      ['plan', 'implement', 'checks', 'review', 'verify', 'checks'],
+      'the base that came in silently is asked about once the stage is over',
+    );
+    assert.equal(
+      during(h.store, 't1', 'verify').filter((e) => e.type === 'checks_run').length,
+      1,
+      'and what they said is on the ticket',
+    );
+    assert.match(
+      h.store.ticket('t1').rejection ?? '',
+      /1 failing/,
+      'a suite the new base broke sends the work back, with the failure itself',
+    );
+    assert.deepEqual(h.prsOpened, [], 'rather than to a pull request nobody ran it against');
+  } finally {
+    await h.close();
+  }
+});
+
 test('the base a resolved merge brought in is recorded when the stage commits it', async () => {
   // Until the commit there is nothing on the branch to move the base to, and after
   // it there had better be: the diff every later stage reads is taken from the

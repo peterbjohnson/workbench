@@ -1348,8 +1348,16 @@ test('a standing branch that reverts the base it is brought up to is parked too'
 
 test('work the new base breaks is not offered either', async () => {
   let asked = 0;
+  // Only the refresh at the offer, which is the one this is about: the base moved
+  // while verify ran, so this is the first time the two are in a tree together. A
+  // base that came in earlier, at the start of a stage, is checked at the end of that
+  // stage instead — see loop.test.ts — and would never reach this door.
+  let refreshes = 0;
   const h = harness({
-    refresh: () => ({ kind: 'merged', base: 'newbase', commit: 'merge01', merged: ['newbase'] }),
+    refresh: () =>
+      ++refreshes === 3
+        ? { kind: 'merged', base: 'newbase', commit: 'merge01', merged: ['newbase'] }
+        : { kind: 'up-to-date' },
     // Passing for the verify stage, failing once the base has been merged in: the
     // clash a merge resolves silently is the one worth finding.
     checks: () => [
