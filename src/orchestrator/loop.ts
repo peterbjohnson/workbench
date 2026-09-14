@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
-import { carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
+import { carriedWork, heldBy, nextAction, waitingOutLimit, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
 import { readStep } from '../run/protocol.ts';
@@ -43,6 +43,11 @@ export type RunResult = {
    * survives the workbench being killed under it.
    */
   sessionId?: string;
+  /**
+   * When the model service said this run may carry on, for a run that stopped on a
+   * session limit. Set only by that one ending; see `readSessionLimit`.
+   */
+  limitedUntil?: string;
   /** What the run cost, as the model service reported it. */
   costUsd?: number;
 };
@@ -177,6 +182,11 @@ export type Deps = {
   credentials: () => Promise<Credentials>;
   /** Says something to whoever is watching. The CLI prints it; tests collect it. */
   announce: (message: string) => void;
+  /**
+   * The clock a session limit is measured against, in milliseconds. The real one
+   * unless a test wants to stand on the far side of a reset without waiting for it.
+   */
+  now?: () => number;
 };
 
 export type Orchestrator = {
@@ -242,6 +252,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   let listening = false;
   /** So the credential state is announced when it changes, not on every tick. */
   let wasOk = true;
+  /** The same, for a session limit: said when it takes hold and when it lifts. */
+  let wasLimited = false;
   /**
    * Set when the model service refuses the credential we have. Sticky on purpose:
    * checking that a credential is *present* cannot tell you it is *accepted*, and
@@ -294,6 +306,46 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   }
 
   /**
+   * How long the board is paused by the model service's session limit, or undefined
+   * when it is not. Whatever has come out the far side of one is carried on here,
+   * which is all the resuming there is: `stage_continued` is the very event the
+   * board's own button appends, and the stage picks up its conversation.
+   *
+   * Worked out from the tickets rather than remembered, because the reset time is on
+   * the ticket that hit it — so a workbench restarted inside a limit waits out the
+   * rest of it instead of buying a stage to be told the same thing again.
+   *
+   * Said once when it takes hold and once when it lifts, like `canRunAgents`.
+   */
+  function sessionLimit(tickets: readonly Ticket[]): number | undefined {
+    const now = deps.now?.() ?? Date.now();
+    let until: number | undefined;
+
+    for (const ticket of tickets) {
+      if (ticket.limitedUntil === null) continue;
+      if (waitingOutLimit(ticket, now)) {
+        until = Math.max(until ?? 0, Date.parse(ticket.limitedUntil));
+      } else {
+        store.append(ticket.id, { type: 'stage_continued' });
+      }
+    }
+
+    if ((until !== undefined) !== wasLimited) {
+      wasLimited = until !== undefined;
+      deps.announce(
+        until === undefined
+          ? 'the session limit has lifted — carrying on'
+          : `⚠️  agent work is paused: the model service's session limit is in force. ` +
+              `The stage that hit it carries on at ${new Date(until).toLocaleTimeString()}, ` +
+              'and nothing else starts until then.\n\n' +
+              'The rest of the workbench still works — write tickets, approve, cancel.',
+      );
+    }
+
+    return until;
+  }
+
+  /**
    * @param poll whether to ask the code host for verdicts. Only the timer does:
    *   a pull request has no event to wait for, and polling on every appended
    *   event would mean asking GitHub continuously and never settling.
@@ -316,6 +368,9 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     const tickets = store.tickets();
     const policy = store.policy();
     const mayRunAgents = await canRunAgents();
+    // A limit is on the account, not on the ticket that found it, so it pauses the
+    // whole board: every other ticket would spend a stage discovering the same thing.
+    const limited = sessionLimit(tickets) !== undefined;
 
     // A ticket occupies one slot whether the store already shows it running or it
     // is only just starting. Counting both would charge it twice and jam the limit.
@@ -335,8 +390,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       if (action.kind === 'wait') continue;
       if (action.kind === 'poll_verdict' && !poll) continue;
       // Only running a stage needs the model service. Opening a pull request, reading
-      // a verdict and giving up are the workbench's own work and carry on regardless.
-      if (action.kind === 'run_stage' && !mayRunAgents) continue;
+      // a verdict and giving up are the workbench's own work and carry on regardless
+      // — of being logged out, and of a session limit, which is the same kind of thing:
+      // no capacity rather than anything wrong.
+      if (action.kind === 'run_stage' && (!mayRunAgents || limited)) continue;
       // Queued, not refused: the wait is recorded and `mergeRequested` still stands,
       // so the tick after the gate frees is the one that merges it — in this process
       // or in the one that replaces it, since the request is a durable event and the
@@ -760,6 +817,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         completionCriteria: result.completionCriteria,
         later: result.later,
         sessionId: result.sessionId,
+        limitedUntil: result.limitedUntil,
         // Which the report is routed on, rather than on the ticket still being
         // offered: it may well not be by now. See `settling` in events.ts.
         settling: settling || undefined,

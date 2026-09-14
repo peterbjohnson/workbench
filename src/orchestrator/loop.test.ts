@@ -618,6 +618,63 @@ test('interrupting a running stage parks it to be carried on, not to be paid for
   }
 });
 
+test('a session limit holds the whole board, and lifts by itself', async () => {
+  // Thirteen of twenty-three failed runs ended here, and every one of them was
+  // restarted by hand after the reset. The limit is on the account, so the ticket
+  // that found it is not special: nothing anywhere starts until it lifts.
+  const resets = '2026-09-14T21:30:00.000Z';
+  let now = Date.parse('2026-09-14T20:00:00Z');
+  const resumedWith: (string | undefined)[] = [];
+
+  const h = harness({
+    now: () => now,
+    runStage: async ({ resume, stage }) => {
+      resumedWith.push(resume);
+      return resumedWith.length === 1
+        ? {
+            outcome: 'interrupted',
+            summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
+            sessionId: 'sess-abc',
+            limitedUntil: resets,
+          }
+        : ok(`${stage} done`);
+    },
+  });
+
+  try {
+    create(h.store, 't1');
+    await h.orch.idle();
+
+    const parked = h.store.ticket('t1');
+    assert.equal(parked.status, 'blocked');
+    assert.equal(parked.interrupted, true, 'parked as stopped rather than as broken');
+    assert.equal(parked.session, 'sess-abc', 'holding the run to carry on');
+    assert.equal(parked.limitedUntil, resets, 'and the time it carries on at');
+
+    create(h.store, 't2');
+    await h.orch.idle();
+    assert.equal(resumedWith.length, 1, 'nothing else is bought while the limit stands');
+    assert.equal(h.store.ticket('t2').status, 'queued');
+    assert.ok(
+      h.announced.some((m) => /session limit/.test(m)),
+      'and the wait is said out loud, once',
+    );
+
+    now = Date.parse('2026-09-14T21:30:01Z');
+    await h.orch.idle();
+
+    assert.ok(
+      resumedWith.includes('sess-abc'),
+      'the parked stage carries itself on, mid-conversation',
+    );
+    assert.equal(h.store.ticket('t1').status, 'plan_gate', 'without anyone pressing anything');
+    assert.equal(h.store.ticket('t1').limitedUntil, null, 'and the board is not waiting any more');
+    assert.equal(h.store.ticket('t2').status, 'plan_gate');
+  } finally {
+    await h.close();
+  }
+});
+
 test('stopping while the standing checks run abandons the stage rather than buying it', async () => {
   // A stage is under way from `stage_started`, not from the moment the agent is
   // asked. STOP pressed while the suite runs used to find nothing to abort, tell the

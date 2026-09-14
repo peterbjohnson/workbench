@@ -74,6 +74,11 @@ export function harness(
      * ordinary ticket touches its own files and no others.
      */
     removedFromBase?: (ticketId: string, from?: string) => string[];
+    /**
+     * The clock a session limit is measured against. The real one by default; a test
+     * about waiting one out moves it rather than waiting.
+     */
+    now?: () => number;
   } = {},
 ): Harness {
   const store = opts.store ?? openStore(':memory:');
@@ -149,6 +154,7 @@ export function harness(
     checks: async () => (typeof opts.checks === 'function' ? opts.checks() : (opts.checks ?? [])),
     credentials: async () => opts.credentials?.() ?? { ok: true, how: 'a test' },
     announce: (message) => announced.push(message),
+    now: opts.now,
   });
 
   return {

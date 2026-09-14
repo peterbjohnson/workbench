@@ -216,6 +216,16 @@ gaps are worth knowing before you rely on it:
   cost, so stopping because credits are running dry still leaves an honest account of
   what was spent getting there.
 
+**A session limit is an interruption, not a failure.** *You've hit your session limit ·
+resets 10:30pm* is the service saying come back later, and saying when — so the run is
+parked exactly as an interrupted one is, conversation kept and nothing committed, with that
+instant recorded on the ticket. The tick that finds it has passed appends the same
+`stage_continued` the button does, which is why nobody has to be awake for it. It pauses
+every ticket rather than only the one that found it, because the limit is on the account:
+any other stage started before the reset buys the same message. And it turns on reading the
+time: without one it fails as it always did, because a wait with no end would stop the board
+for good.
+
 Recommended as later tickets, and deliberately not done here:
 
 1. Record a successful resume as plainly as a failed one is, and show it on the ticket —

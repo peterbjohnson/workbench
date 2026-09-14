@@ -243,6 +243,13 @@ export type EventBody =
        */
       sessionId?: string;
       /**
+       * The instant the model service says work can resume, set only by a run that
+       * stopped on a session limit. What makes that ending an interruption with a
+       * time on it rather than a failure: the ticket parks with its conversation and
+       * carries on by itself when this passes.
+       */
+      limitedUntil?: string;
+      /**
        * This run was the workbench settling a clash on a branch that was offered,
        * rather than a stage the board asked for. What routes the report: there is no
        * next stage to send it to, so it goes back to the wait it interrupted.

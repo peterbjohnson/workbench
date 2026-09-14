@@ -114,6 +114,16 @@ export type Ticket = {
    * can see is one nobody restarts.
    */
   interrupted: boolean;
+  /**
+   * When the run parked here may carry on, for one stopped by the model service's
+   * session limit. Null for every other parked run, and for every ticket that is
+   * not parked at all.
+   *
+   * A time rather than a flag, because it is what the service actually said, and
+   * because everything that reads it needs the moment and not the fact: the board
+   * starts nothing until it passes, and then carries this ticket on by itself.
+   */
+  limitedUntil: string | null;
   /** The manager's reply, carried into the resumed run and cleared once it starts. */
   answer: string | null;
   /**
@@ -244,6 +254,7 @@ function blank(id: string): Ticket {
     question: null,
     session: null,
     interrupted: false,
+    limitedUntil: null,
     answer: null,
     prUrl: null,
     offered: false,
@@ -271,9 +282,10 @@ function blank(id: string): Ticket {
  * them delivered into the review's conversation instead, as a note that the
  * workbench had stopped. A kept `interrupted` puts a ticket in the pick-up modal
  * that `stage_continued` then declines to move, so the box comes back every load
- * offering a button that does nothing.
+ * offering a button that does nothing. A kept `limitedUntil` is worse still: it is
+ * what holds the whole board, so a stale one pauses every ticket there is.
  */
-const movedOn = { session: null, interrupted: false };
+const movedOn = { session: null, interrupted: false, limitedUntil: null };
 
 /**
  * What the end of the road drops. Both endings are the same shape and neither is
@@ -287,6 +299,7 @@ const stoppedFor = {
   queuedBehind: null,
   question: null,
   interrupted: false,
+  limitedUntil: null,
 };
 
 /** Pure. No I/O, no clock. */
@@ -354,6 +367,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         answer: null,
         session: null,
         interrupted: false,
+        limitedUntil: null,
         conflicts: [],
         conflictedWith: null,
       };
@@ -386,7 +400,13 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     // top, which is what a restart would have done anyway.
     case 'stage_continued': {
       if (t.status !== 'blocked' || !t.interrupted) return t;
-      const carrying = { ...t, question: null, answer: null, interrupted: false };
+      const carrying = {
+        ...t,
+        question: null,
+        answer: null,
+        interrupted: false,
+        limitedUntil: null,
+      };
       if (t.offered) return { ...carrying, status: 'awaiting_verdict' };
       return t.stage === null ? t : { ...carrying, status: STATUS_FOR_STAGE[t.stage] };
     }
@@ -406,6 +426,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         answer: null,
         // Whatever stopped the last run, this one is going.
         interrupted: false,
+        limitedUntil: null,
         // A plan is what starts a trip round the loop, so it is what counts one.
         cycles: e.stage === 'plan' ? t.cycles + 1 : t.cycles,
         // A new plan re-judges the size of the work from nothing. Carrying the last
@@ -708,8 +729,16 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
   // Nor is being stopped a crash. It parks in the same place — the manager decides
   // what happens to it and nothing happens on its own — but it says which of the
   // two it was, because one of them has a run underneath it worth carrying on.
+  // A session limit is one of these: the service said come back later, and said
+  // when. Nothing else about the parking differs — what the time changes is that
+  // nobody has to do the coming back.
   if (e.outcome === 'interrupted') {
-    return { ...stopped, status: 'blocked', interrupted: true };
+    return {
+      ...stopped,
+      status: 'blocked',
+      interrupted: true,
+      limitedUntil: e.limitedUntil ?? null,
+    };
   }
 
   // An offer standing means the stages are over, so there is no next one to route
