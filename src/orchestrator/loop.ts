@@ -537,6 +537,25 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         return { outcome: 'interrupted', summary: 'stopped by the manager' };
       }
 
+      // What the checks said, read back from the record rather than run again: the
+      // implement run that made this change observed it, and the two stages that judge
+      // the change are told rather than asked to find out. Only those two — plan and
+      // implement have nothing yet to have been checked.
+      //
+      // Nothing at all, though, where this run's own refresh merged a base in: those
+      // results are about a tree that has moved since, and the brief offers them as
+      // output observed of what the stage is looking at. Verify would quote a suite that
+      // passed against the old tree as its evidence the change is safe, and the block
+      // after the commit would then find that same suite failing. A conflicted merge
+      // says as much in the brief's own words; a clean one is silent, so what it
+      // invalidated is withheld and the stage is told nothing was run.
+      const checks =
+        stage !== 'review' && stage !== 'verify'
+          ? undefined
+          : refreshed.merged
+            ? []
+            : lastChecks(store.eventsFor(ticket.id));
+
       let commit: string | null = null;
       let result: RunResult;
       try {
@@ -546,14 +565,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           runId,
           worktree,
           scratch,
-          // What the checks said, read back from the record rather than run again: the
-          // implement run that made this change observed it, and the two stages that
-          // judge the change are told rather than asked to find out. Only those two —
-          // plan and implement have nothing yet to have been checked.
-          checks:
-            stage === 'review' || stage === 'verify'
-              ? lastChecks(store.eventsFor(ticket.id))
-              : undefined,
+          checks,
           conflict,
           // Whatever conversation the ticket is holding. It is holding one only if it
           // stopped with something to come back to — a question it asked, or a

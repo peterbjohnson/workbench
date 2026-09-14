@@ -1118,6 +1118,7 @@ test('a base that merged in at the start of verify is checked before the work is
   let refreshes = 0;
   let asked = 0;
   const order: string[] = [];
+  const seen = new Map<Stage, unknown>();
   const h = harness({
     refresh: () =>
       ++refreshes === 2
@@ -1129,8 +1130,9 @@ test('a base that merged in at the start of verify is checked before the work is
         ? [{ command: 'yarn test', ok: true, output: '' }]
         : [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }];
     },
-    runStage: async ({ stage }) => {
+    runStage: async ({ stage, checks }) => {
       order.push(stage);
+      seen.set(stage, checks);
       return ok(`${stage} done`);
     },
   });
@@ -1149,6 +1151,11 @@ test('a base that merged in at the start of verify is checked before the work is
       during(h.store, 't1', 'verify').filter((e) => e.type === 'checks_run').length,
       1,
       'and what they said is on the ticket',
+    );
+    assert.deepEqual(
+      seen.get('verify'),
+      [],
+      'and the implement run’s results are not offered as output of a tree that has moved',
     );
     assert.match(
       h.store.ticket('t1').rejection ?? '',
