@@ -70,6 +70,28 @@ Those caps apply to agents, not to you. Two agents repeating an objection is evi
 manager repeating one is just the manager, and cutting you off would be the workbench
 overruling the person it works for.
 
+## The checks run when implement finishes
+
+The workbench runs the project's standing checks itself, in the ticket's worktree, the
+moment an implement run completes — before review is asked to read anything. Whether the
+tests pass is the most important fact about a change, and observing it here makes it a
+fact rather than an agent's claim about one.
+
+A failure is a request for changes rather than a rejection: the output goes back to
+implement as the change list, and the round counts as one of the two a plan is allowed. A
+suite that will not pass however many times it is addressed does buy a new plan in the
+end, by the same rule every other objection is held to.
+
+They used to run at the start of verify, which meant a broken test was found only after a
+review had been paid for, and cost a whole new plan every time. What is left after the
+agents are done runs after a merge — a settled clash, and a base that moved under an offer
+— because a merge is the only other thing that changes what is on the branch.
+
+Review and verify are told what ran and what it said, so neither spends turns finding out
+again. A project with no checks configured is a project where nothing was run, and the
+brief says exactly that: the alternative is a stage assuming a suite passed somewhere
+behind it.
+
 ## You can always ship
 
 Any ticket with commits can be offered as a pull request, whatever the agents made of it.

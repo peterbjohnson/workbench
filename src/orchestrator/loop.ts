@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
-import type { Ticket } from '../domain/ticket.ts';
+import { lastChecks, type Ticket } from '../domain/ticket.ts';
 import { carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
@@ -60,8 +60,10 @@ export type StageRunner = (args: {
   /** Where working-out goes. Writable, and not part of what gets committed. */
   scratch: string;
   /**
-   * The standing checks, already run and already passed. Given to verify so it does
-   * not spend turns running them, and knows what was covered without an agent.
+   * The standing checks as the workbench last ran them, which for review and verify
+   * is at the end of the implement run that produced this change. Given to both so
+   * they do not spend turns running them, and know what was covered without an agent.
+   * Empty means nothing was run, which is a fact worth having too.
    */
   checks?: CheckRun[];
   /**
@@ -390,39 +392,31 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   }
 
   /**
-   * The standing checks, run by the workbench at the start of verify.
+   * The standing checks, run against what a run left in the worktree and recorded
+   * against that run.
    *
    * Running them here rather than asking an agent to changes what a pass *is*: an
    * observed fact in the ticket's record instead of a report from something with an
-   * opinion. It also makes failure the cheap path — the run that discovers a broken
-   * test now costs nothing at all, where it used to cost a whole verify stage.
+   * opinion. What the caller does with a failure differs — that is the caller's
+   * business — but the output itself is the reason every time, because a summary of a
+   * test failure is worse than the failure.
    *
-   * @returns the results to hand the agent, or null when a check failed and the
-   *   ticket has already been sent back.
+   * @returns what failed, or undefined when nothing did, including when the project
+   *   has no checks configured at all.
    */
-  async function standingChecks(
-    ticket: Ticket,
+  async function checksAfterRun(
+    ticketId: string,
     runId: string,
     worktree: string,
-  ): Promise<CheckRun[] | null> {
+  ): Promise<string | undefined> {
     const results = await deps.checks(worktree);
-    if (results.length === 0) return results;
+    if (results.length === 0) return undefined;
 
-    store.append(ticket.id, { type: 'checks_run', runId, results });
+    store.append(ticketId, { type: 'checks_run', runId, results });
 
     const failed = results.filter((r) => !r.ok);
-    if (failed.length === 0) return results;
-
-    // Back to planning through the path a rejection already takes. The output is the
-    // reason, because a summary of a test failure is worse than the failure.
-    store.append(ticket.id, {
-      type: 'stage_finished',
-      runId,
-      outcome: 'completed',
-      summary: `${failed.length} of ${results.length} standing check(s) failed`,
-      rejected: failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n'),
-    });
-    return null;
+    if (failed.length === 0) return undefined;
+    return failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n');
   }
 
   /**
@@ -490,10 +484,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     const runId = randomUUID();
 
     // Interruptible from the moment it is running, not from the moment the agent
-    // starts. Everything between the two — the refresh, the standing checks — is
-    // this run happening, and a STOP pressed during it used to find nothing to
-    // abort, report that nothing was abandoned, and then let the stage go on and
-    // buy the whole agent run it was pressed to prevent.
+    // starts. The refresh that comes between the two is this run happening, and a STOP
+    // pressed during it used to find nothing to abort, report that nothing was
+    // abandoned, and then let the stage go on and buy the whole agent run it was
+    // pressed to prevent.
     const abort = new AbortController();
     aborts.set(ticket.id, abort);
 
@@ -523,27 +517,6 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       // clears the answer and the session this run is about to carry in.
       ticket = { ...ticket, base: store.ticket(ticket.id).base };
 
-      let checks: CheckRun[] | undefined;
-      // Not while a merge is waiting: the checks would be run against a tree full of
-      // conflict markers, fail for that and nothing else, and send the ticket back to
-      // planning before the agent had so much as looked at it. Resolving the merge is
-      // the first thing this run does, and they are asked at the far end of it, once
-      // there is a tree worth asking about.
-      if (stage === 'verify' && conflict === undefined) {
-        const passed = await standingChecks(ticket, runId, worktree);
-        if (passed === null) {
-          // Rejected, and no agent was asked. The stage is over, so it is no longer
-          // anyone's to stop: a name left in either of these belongs to a run that has
-          // ended, and would be answered by whatever ran next under the same id.
-          aborts.delete(ticket.id);
-          broken.delete(ticket.id);
-          // What was recorded, said back to a caller that reads it. Only a settling
-          // run does, and one of those is always implement, so nothing reads this.
-          return { outcome: 'completed', summary: 'sent back by the standing checks' };
-        }
-        checks = passed;
-      }
-
       // Stopped before the agent was ever asked. Recorded as `interrupted` — the same
       // as a run stopped mid-flight — rather than started and immediately abandoned,
       // which is the difference between a STOP that costs nothing and one that costs a
@@ -571,7 +544,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           runId,
           worktree,
           scratch,
-          checks,
+          // What the checks said, read back from the record rather than run again: the
+          // implement run that made this change observed it, and the two stages that
+          // judge the change are told rather than asked to find out. Only those two —
+          // plan and implement have nothing yet to have been checked.
+          checks:
+            stage === 'review' || stage === 'verify'
+              ? lastChecks(store.eventsFor(ticket.id))
+              : undefined,
           conflict,
           // Whatever conversation the ticket is holding. It is holding one only if it
           // stopped with something to come back to — a question it asked, or a
@@ -647,16 +627,11 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       // the checks are run here — before the commit, so a failure leaves the merge
       // uncommitted and the branch can be put back exactly as it stood.
       if (settling && result.outcome === 'completed') {
-        const results = await deps.checks(worktree);
-        if (results.length > 0) store.append(ticket.id, { type: 'checks_run', runId, results });
-
-        const failed = results.filter((r) => !r.ok);
-        if (failed.length > 0) {
+        const why = await checksAfterRun(ticket.id, runId, worktree);
+        if (why !== undefined) {
           result = {
             outcome: 'blocked',
-            summary:
-              `${failed.length} standing check(s) fail against the resolution:\n\n` +
-              failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n'),
+            summary: `the standing checks fail against the resolution:\n\n${why}`,
             costUsd: result.costUsd,
           };
         }
@@ -708,21 +683,34 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         }
       }
 
+      // What implement left, checked before anybody is asked to read it. A failure is
+      // an objection this round has earned rather than a fault in the plan, so it goes
+      // back the way review's objections go back: `changes` on this run's own report,
+      // which `afterStage` routes to another implement round and counts as a revision.
+      // The alternative is what this used to do — discover the same failure at the
+      // start of verify, after a review has been bought, and buy a whole new plan for
+      // it. A run that settled a merge is checked here too: two sides that only break
+      // the suite once they sit together is exactly what a suite is for.
+      //
+      // After the commit, so the round that answers it starts from the work that
+      // failed and can see it in its own diff.
+      if (!settling && stage === 'implement' && result.outcome === 'completed') {
+        const why = await checksAfterRun(ticket.id, runId, worktree);
+        if (why !== undefined) result = { ...result, changes: why };
+      }
+
       // The checks the merge kept this run from starting with, asked now that it is
       // resolved and committed. Nothing else will ask: the next action is `open_pr`,
       // whose refresh finds a branch already up to date and runs them only when
       // something merged — so the change most likely to break the suite would be the
       // one offered without it ever being run.
       if (stage === 'verify' && conflict !== undefined && result.outcome === 'completed') {
-        const results = await deps.checks(worktree);
-        if (results.length > 0) store.append(ticket.id, { type: 'checks_run', runId, results });
-
-        const failed = results.filter((r) => !r.ok);
-        if (failed.length > 0) {
-          const why = failed.map((f) => `\`${f.command}\` failed:\n${f.output}`).join('\n\n');
-          // Back to planning, the way a failure found before the run already goes. What
-          // the run itself objected to is kept alongside: both are reasons it is going
-          // back, and the next plan has to answer both.
+        const why = await checksAfterRun(ticket.id, runId, worktree);
+        // Back to planning: the work has been through implement, review and verify
+        // already, and a suite the merge broke is not a detail for one more round of
+        // implement to touch up. What the run itself objected to is kept alongside —
+        // both are reasons it is going back, and the next plan has to answer both.
+        if (why !== undefined) {
           result = { ...result, rejected: result.rejected ? `${result.rejected}\n\n${why}` : why };
         }
       }

@@ -260,6 +260,23 @@ test('verify is told which checks must pass', () => {
 
   assert.match(brief, /Checks already run[\s\S]*`yarn test`[\s\S]*`yarn typecheck`/);
   assert.match(brief, /131 passing/, 'and what they said, so it need not run them again');
+  assert.match(brief, /after the implement run that produced/, 'and when they were run');
+});
+
+test('a stage told no checks were run is told that, rather than left to assume', () => {
+  // The claim is in `agents/verify.md`: the workbench has run the suite for you. On a
+  // project with none configured that is false, and a missing section reads exactly
+  // like the one thing nobody wants — a suite that passed somewhere out of sight.
+  const brief = buildBrief({
+    ticket: ticketFrom([CREATED]),
+    agent: agents.verify,
+    worktree: '/tmp/wb/t1',
+    checks: [],
+  });
+
+  assert.match(brief, /## Checks already run/, 'the section is there');
+  assert.match(brief, /No standing checks were run for this change/);
+  assert.match(brief, /do not assume a suite has passed/);
 });
 
 test('a stage handed a merge is told what clashed and that it must finish it', () => {
@@ -296,20 +313,22 @@ test('a merge against a branch this ticket waited for names the branch', () => {
   assert.match(brief, /blocked and commits nothing/);
 });
 
-test('verify handed a merge is told the checks it is promised were not run', () => {
-  // Its instructions say the workbench has already run them. Not for this stage —
-  // a tree full of markers fails them for the markers — and a brief that leaves the
-  // claim standing sends it looking for output nothing ever produced.
+test('verify handed a merge is told its checks were run before that merge', () => {
+  // They were run when implement finished, and this merge came afterwards. Nothing
+  // has asked the two sides sitting together — a tree full of markers fails for the
+  // markers — so a section left to speak for itself would have the stage trusting
+  // output about a tree it is not looking at.
   const brief = buildBrief({
     ticket: ticketFrom([CREATED]),
     agent: agents.verify,
     worktree: '/tmp/wb/t1',
+    checks: [{ command: 'yarn test', ok: true, output: '131 passing' }],
     conflict: { base: 'abc1234def', paths: ['src/rules.ts'] },
   });
 
-  assert.doesNotMatch(brief, /## Checks already run/, 'because they were not run');
-  assert.match(brief, /standing checks have already been run\. Not for this stage/);
-  assert.match(brief, /workbench runs them once this stage is over/, 'and who does ask them');
+  assert.match(brief, /## Checks already run/, 'what implement left was checked');
+  assert.match(brief, /was run before this merge/, 'but not what is in front of this stage');
+  assert.match(brief, /runs them again\s+once this stage is over/, 'and who does ask them');
 });
 
 test('a stage with no merge waiting is told nothing about one', () => {
@@ -339,11 +358,10 @@ test('empty sections are left out entirely', () => {
     agent: agents.plan,
     worktree: '/tmp/wb/t1',
     diff: '   ',
-    checks: [],
   });
 
   assert.doesNotMatch(brief, /The change so far/);
-  assert.doesNotMatch(brief, /Checks that must pass/);
+  assert.doesNotMatch(brief, /Checks already run/, 'and a stage given none is told nothing');
 });
 
 test('every stage is told what the project is, rather than going to find out', () => {

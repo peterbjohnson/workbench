@@ -179,10 +179,11 @@ test('every stage ran, in order, and each one recorded its tool use', async () =
 // lifecycle.test.ts as pure transitions and in loop.test.ts as a running loop.
 // Repeating them here against a real repository would only re-run git.
 
-test('a real failing check, on a real worktree, sends the ticket back for nothing', async () => {
+test('a real failing check, on a real worktree, sends the work back for nothing', async () => {
   // The whole chain for real: a command actually runs in the actual worktree, its
-  // actual exit code decides, and the ticket loops back — with no agent consulted
-  // about it, so the path that finds a broken test is now the cheapest one.
+  // actual exit code decides, and the work goes straight back to the stage that wrote
+  // it — no review and no verify bought, so the path that finds a broken test is the
+  // cheapest one there is.
   const r = await rig(['echo "2 tests failed" >&2; exit 1']);
   try {
     queued(r.store, 't1', 'a thing');
@@ -190,13 +191,23 @@ test('a real failing check, on a real worktree, sends the ticket back for nothin
     r.store.append('t1', { type: 'plan_approved' });
     await r.orch.idle();
 
+    const stages = r.store
+      .eventsFor('t1')
+      .filter((e) => e.type === 'stage_started')
+      .map((e) => e.stage);
+    assert.deepEqual(
+      stages,
+      ['plan', 'implement', 'implement', 'implement', 'plan'],
+      'the rounds a plan is allowed, and then a new plan — with nobody asked to read it',
+    );
+
     const t = r.store.ticket('t1');
-    assert.equal(t.status, 'plan_gate', 'back round to planning');
+    assert.equal(t.status, 'plan_gate', 'back round to planning once the rounds ran out');
     assert.match(t.rejection ?? '', /2 tests failed/, 'carrying what actually broke');
     assert.deepEqual(r.prs, [], 'and nothing was offered as a pull request');
 
     const ran = r.store.eventsFor('t1').filter((e) => e.type === 'checks_run');
-    assert.equal(ran.length, 1, 'recorded, not narrated');
+    assert.equal(ran.length, 3, 'recorded every round, not narrated');
   } finally {
     await r.close();
   }

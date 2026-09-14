@@ -1,4 +1,4 @@
-import type { Event, Scale, Stage } from './events.ts';
+import type { CheckRun, Event, Scale, Stage } from './events.ts';
 
 export type Status =
   /** An idea, and nothing more. The workbench never touches a ticket here. */
@@ -776,6 +776,30 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
  */
 export function ended(t: Ticket): boolean {
   return t.status === 'done' || t.status === 'cancelled' || t.status === 'gave_up';
+}
+
+/**
+ * What the standing checks last said. Read by the stages that are told about them
+ * rather than running them — review and verify both get the results of the implement
+ * run that produced the change in front of them.
+ *
+ * Not a field on `Ticket`: every ticket is shipped on every poll of the board, and a
+ * check's output is up to 4 kB of it. This is asked for once, by the run that needs
+ * it, from events that are being read anyway.
+ *
+ * Nothing survives the start of a plan or an implement run. Those two are what
+ * change the tree the checks were run against, so results from before one say
+ * nothing about the code a later stage is looking at — and a run that is still going
+ * has not produced any of its own yet.
+ */
+export function lastChecks(events: Event[]): CheckRun[] {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e === undefined) continue;
+    if (e.type === 'checks_run') return e.results;
+    if (e.type === 'stage_started' && (e.stage === 'plan' || e.stage === 'implement')) return [];
+  }
+  return [];
 }
 
 export function deriveTicket(events: Event[]): Ticket {

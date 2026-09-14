@@ -197,7 +197,10 @@ export type EventBody =
       allowed: boolean;
       reason?: string;
     }
-  /** The standing checks, as the workbench ran them at the start of the verify stage. */
+  /**
+   * The standing checks, as the workbench ran them itself: at the end of a completed
+   * implement run, and again after a clash on an offered branch has been settled.
+   */
   | { type: 'checks_run'; runId: string; results: CheckRun[] }
   | { type: 'question_asked'; runId: string; question: string; reasoning: string }
   | { type: 'question_answered'; answer: string }

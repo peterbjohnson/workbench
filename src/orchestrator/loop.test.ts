@@ -171,14 +171,20 @@ test('a stage with no conversation to resume simply starts again', async () => {
   }
 });
 
-test('a failing standing check sends the ticket back without asking an agent anything', async () => {
-  // The whole point. Verify was 42% of t4's cost, much of it running commands and
-  // reading their output. Now the run that discovers a broken test costs nothing.
+test('the checks run between implement and review, not after a review is bought', async () => {
+  // Where in the cycle they go is the whole of this. Run at the start of verify, a
+  // broken test was found only after a review had been paid for; run here, the round
+  // that broke it is the round that hears about it.
+  const order: string[] = [];
   const h = harness({
-    checks: [
-      { command: 'yarn test', ok: false, output: '3 tests failed\n  at retry.ts:14' },
-      { command: 'yarn typecheck', ok: true, output: '' },
-    ],
+    checks: () => {
+      order.push('checks');
+      return [{ command: 'yarn test', ok: true, output: '131 passing' }];
+    },
+    runStage: async ({ stage }) => {
+      order.push(stage);
+      return ok(`${stage} done`);
+    },
   });
 
   try {
@@ -187,17 +193,76 @@ test('a failing standing check sends the ticket back without asking an agent any
     h.store.append('t1', { type: 'plan_approved' });
     await h.orch.idle();
 
-    assert.ok(!h.ran.includes('verify'), 'no agent was asked: the checks had answered');
+    assert.deepEqual(order, ['plan', 'implement', 'checks', 'review', 'verify']);
+  } finally {
+    await h.close();
+  }
+});
+
+test('a failing standing check is another round of implement, not a new plan', async () => {
+  // It used to be a rejection: a new plan, the gate, and a whole cycle — after a
+  // review had already been read. It is an objection like any other now, back to the
+  // stage that wrote the code, carrying the output it broke on.
+  let asked = 0;
+  const h = harness({
+    checks: () =>
+      asked++ === 0
+        ? [
+            { command: 'yarn test', ok: false, output: '3 tests failed\n  at retry.ts:14' },
+            { command: 'yarn typecheck', ok: true, output: '' },
+          ]
+        : [{ command: 'yarn test', ok: true, output: '131 passing' }],
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
     assert.deepEqual(
       h.ran,
-      ['plan', 'implement', 'review', 'plan'],
-      'and it went straight back round to planning',
+      ['plan', 'implement', 'implement', 'review', 'verify'],
+      'nobody was asked to read work that does not pass the suite',
+    );
+
+    const sentBack = h.store
+      .eventsFor('t1')
+      .find((e) => e.type === 'stage_finished' && e.changes !== undefined);
+    const changes = sentBack?.type === 'stage_finished' ? (sentBack.changes ?? '') : '';
+    assert.match(changes, /yarn test/, 'the next round is told which check');
+    assert.match(changes, /3 tests failed[\s\S]*retry\.ts:14/, 'and what it said');
+    assert.equal(
+      sentBack?.type === 'stage_finished' ? sentBack.rejected : 'missing',
+      undefined,
+      'a broken test is not a verdict on the approach',
     );
 
     const t = h.store.ticket('t1');
+    assert.equal(t.revisions, 1, 'and it costs a revision, like any other round of comments');
+    assert.equal(t.rejection, null);
+  } finally {
+    await h.close();
+  }
+});
+
+test('checks that keep failing run out of rounds and buy a new plan', async () => {
+  // The cap that holds every other objection holds this one: something that survives
+  // being addressed twice is evidence about the approach, not about the execution.
+  const h = harness({ checks: [{ command: 'yarn test', ok: false, output: '1 failing' }] });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['plan', 'implement', 'implement', 'implement', 'plan']);
+
+    const t = h.store.ticket('t1');
     assert.equal(t.status, 'plan_gate', 're-planned and stopped at the gate');
-    assert.match(t.rejection ?? '', /yarn test/, 'the next plan is told which check');
-    assert.match(t.rejection ?? '', /3 tests failed[\s\S]*retry\.ts:14/, 'and what it said');
+    assert.match(t.rejection ?? '', /after 2 attempts to address it/);
+    assert.match(t.rejection ?? '', /1 failing/, 'and the next plan is told what broke');
   } finally {
     await h.close();
   }
@@ -215,22 +280,27 @@ test('what the checks said is on the record, not just in an agent summary', asyn
     await h.orch.idle();
 
     const ran = h.store.eventsFor('t1').filter((e) => e.type === 'checks_run');
-    assert.equal(ran.length, 1, 'once, at the start of verify');
+    assert.equal(ran.length, 1, 'once, for the change that was made');
     assert.deepEqual(ran[0]?.type === 'checks_run' ? ran[0].results : [], [
       { command: 'yarn test', ok: true, output: '131 passing' },
     ]);
+    assert.equal(
+      during(h.store, 't1', 'implement').filter((e) => e.type === 'checks_run').length,
+      1,
+      'recorded under the run whose work it was',
+    );
     assert.equal(h.store.ticket('t1').status, 'awaiting_verdict', 'and it carried on');
   } finally {
     await h.close();
   }
 });
 
-test('the passing checks are handed to verify so it does not run them again', async () => {
-  const seen: unknown[] = [];
+test('the passing checks are handed to review and verify so neither runs them again', async () => {
+  const seen = new Map<Stage, unknown>();
   const h = harness({
     checks: [{ command: 'yarn test', ok: true, output: '131 passing' }],
     runStage: async ({ stage, checks }) => {
-      if (stage === 'verify') seen.push(checks);
+      seen.set(stage, checks);
       return ok(`${stage} done`);
     },
   });
@@ -241,14 +311,23 @@ test('the passing checks are handed to verify so it does not run them again', as
     h.store.append('t1', { type: 'plan_approved' });
     await h.orch.idle();
 
-    assert.deepEqual(seen, [[{ command: 'yarn test', ok: true, output: '131 passing' }]]);
+    const passed = [{ command: 'yarn test', ok: true, output: '131 passing' }];
+    assert.deepEqual(seen.get('review'), passed, 'read back from the record, not run again');
+    assert.deepEqual(seen.get('verify'), passed);
+    assert.equal(seen.get('implement'), undefined, 'the run that makes the change has none yet');
   } finally {
     await h.close();
   }
 });
 
-test('with no checks configured nothing is run and nothing is recorded', async () => {
-  const h = harness();
+test('with no checks configured the stages are told that, rather than left to assume', async () => {
+  const seen = new Map<Stage, unknown>();
+  const h = harness({
+    runStage: async ({ stage, checks }) => {
+      seen.set(stage, checks);
+      return ok(`${stage} done`);
+    },
+  });
   try {
     create(h.store);
     await h.orch.idle();
@@ -256,7 +335,9 @@ test('with no checks configured nothing is run and nothing is recorded', async (
     await h.orch.idle();
 
     assert.equal(h.store.eventsFor('t1').filter((e) => e.type === 'checks_run').length, 0);
-    assert.deepEqual(h.ran, ['plan', 'implement', 'review', 'verify'], 'verify still runs');
+    assert.deepEqual(h.ran, ['plan', 'implement', 'review', 'verify'], 'every stage still runs');
+    assert.deepEqual(seen.get('review'), [], 'and both are told nothing was run');
+    assert.deepEqual(seen.get('verify'), []);
   } finally {
     await h.close();
   }
@@ -618,10 +699,11 @@ test('interrupting a running stage parks it to be carried on, not to be paid for
   }
 });
 
-test('stopping while the standing checks run abandons the stage rather than buying it', async () => {
-  // A stage is under way from `stage_started`, not from the moment the agent is
-  // asked. STOP pressed while the suite runs used to find nothing to abort, tell the
-  // manager nothing had been abandoned, and then buy the verify run anyway.
+test('stopping while the standing checks run finds nothing left to abandon', async () => {
+  // They run after the agent has answered and after the run has given up its claim on
+  // being stoppable, so there is nothing in flight for STOP to reach. What is left is
+  // the workbench's own bookkeeping, and the round that has been paid for stands
+  // rather than being thrown away at the end of it.
   let interrupted: string[] | undefined;
   let h: Harness;
 
@@ -641,22 +723,22 @@ test('stopping while the standing checks run abandons the stage rather than buyi
     h.store.append('t1', { type: 'plan_approved' });
     await h.orch.idle();
 
-    assert.deepEqual(interrupted, ['t1'], 'the second press says what it abandoned');
-    assert.ok(!h.ran.includes('verify'), 'and no agent was asked for after it');
+    assert.deepEqual(interrupted, [], 'the agent is already done: there is nothing to stop');
+    assert.deepEqual(h.ran, ['plan', 'implement'], 'and a stopped board asks for nothing more');
 
     const t = h.store.ticket('t1');
     assert.equal(t.running, false, 'the slot is free');
-    assert.equal(t.interrupted, true, 'and the board offers to carry the stage on');
+    assert.equal(t.interrupted, false, 'nothing was abandoned, so nothing is offered to resume');
+    assert.equal(t.status, 'reviewing', 'and the round that was bought is kept');
   } finally {
     await h.close();
   }
 });
 
-test('a stage that dies before the agent leaves nothing to stop', async () => {
-  // The window between `stage_started` and the agent belongs to the run, so the run
-  // is stoppable through it — and a run that dies in there has to give the name back
-  // as surely as one that finishes. Left behind, STOP reports abandoning a run that
-  // was already over.
+test('a stage that dies while its work is being checked leaves nothing to stop', async () => {
+  // The whole run belongs to the run, the checks at the end of it as much as the
+  // agent, and a run that dies in there has to give the name back as surely as one
+  // that finishes. Left behind, STOP reports abandoning a run that was already over.
   const h = harness({
     checks: () => {
       throw new Error('the suite could not be run');
@@ -958,12 +1040,13 @@ test('a conflict at the start of a stage is handed to the stage, not to the mana
   }
 });
 
-test('the checks a merge kept from running at the start of verify are run at the end', async () => {
-  // Before the run they would be asked of a tree full of conflict markers, fail for
-  // that alone, and send the ticket back to planning without the agent ever seeing
-  // the merge. After it, they are the only thing that will ask: `open_pr` refreshes
-  // a branch that is by then up to date and runs nothing.
+test('a merge verify was handed is checked once verify has resolved it', async () => {
+  // The results in its brief are from the implement run, and this merge came after
+  // them. Nothing else will ask: `open_pr` refreshes a branch that is by then up to
+  // date and runs nothing, so the change most likely to break the suite would be the
+  // one offered without it ever being run against what it merged.
   let refreshes = 0;
+  let asked = 0;
   const order: string[] = [];
   const h = harness({
     refresh: () =>
@@ -980,9 +1063,13 @@ test('the checks a merge kept from running at the start of verify are run at the
             merging: true,
           }
         : { kind: 'up-to-date' },
+    // Passing for the work implement left, failing once the merge is on top of it:
+    // the clash a resolution makes silently is the one worth finding.
     checks: () => {
       order.push('checks');
-      return [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }];
+      return asked++ === 0
+        ? [{ command: 'yarn test', ok: true, output: '' }]
+        : [{ command: 'yarn test', ok: false, output: 'rules.test.ts: 1 failing' }];
     },
     runStage: async ({ stage }) => {
       order.push(stage);
@@ -996,8 +1083,8 @@ test('the checks a merge kept from running at the start of verify are run at the
     await h.orch.idle();
 
     assert.deepEqual(
-      order.slice(0, 5),
-      ['plan', 'implement', 'review', 'verify', 'checks'],
+      order.slice(0, 6),
+      ['plan', 'implement', 'checks', 'review', 'verify', 'checks'],
       'asked of the tree the stage resolved, not the one it was given',
     );
     assert.equal(
@@ -1012,7 +1099,7 @@ test('the checks a merge kept from running at the start of verify are run at the
       'a suite the merge broke sends the work back, with the failure itself',
     );
     assert.deepEqual(
-      order.slice(5),
+      order.slice(6),
       ['plan'],
       'to a new plan rather than to a pull request nobody ran the suite against',
     );
