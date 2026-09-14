@@ -6,36 +6,40 @@
  * the number that matters is turns rather than bytes. This prints both, per stage,
  * from the two records that already exist:
  *
- * - `data/workbench.db` — every tool call the guard saw, including the refused ones.
- *   Authoritative for *which* tools a stage reaches for, and the only place a refusal
- *   is written down.
+ * - the board's event log — every tool call the guard saw, including the refused ones,
+ *   and what each stage cost. Authoritative for *which* tools a stage reaches for, and
+ *   the only place a refusal is written down.
  * - `~/.claude/projects/**\/*.jsonl` — the SDK's own transcripts. The only place that
  *   knows about turns and token usage, which the event log does not record.
  *
- * Nothing joins those two by id: `sessionId` is kept only when a run is resumable
- * (`runStage.ts`), so 12 of 233 runs have one. A transcript is matched to its stage
- * by the opening line of its brief instead, which is `agents/<stage>.md`'s first line
- * and is distinct per stage.
+ * A transcript is joined to its run by session id, which the event log records for
+ * every run since `session_started` was written for all of them. Older runs have none,
+ * so those fall back to the ticket, the opening line of the brief — `agents/<stage>.md`'s
+ * first line, distinct per stage — and the nearest start time.
  *
  * Read-only. Run it before a change and after, and compare.
  *
- *   node scripts/toolmix.mjs
+ *   node scripts/toolmix.mjs                          the board this directory is in
+ *   node scripts/toolmix.mjs ../mimi ../family_tree   several boards, each on its own
+ *   node scripts/toolmix.mjs --since t45              one board, cut in two at a ticket
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
-const WORKBENCH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DB = path.join(WORKBENCH, 'data', 'workbench.db');
 const TRANSCRIPTS = path.join(os.homedir(), '.claude', 'projects');
+const STAGES = ['plan', 'implement', 'review', 'verify'];
+
+/** What `src/config.ts` calls these, and where it puts them when a board does not say. */
+const CONFIG_FILE = 'workbench.config.json';
+const HOME_DIR = '.workbench';
 
 /**
- * How a transcript says which stage it is. These are the opening words of each
- * `agents/<stage>.md`, and the brief puts the instructions first — so the first user
- * message names the stage. Editing an agent file's first line breaks this join, which
- * is why an unmatched transcript is counted and reported rather than dropped quietly.
+ * How a transcript says which stage it is, when no session id says so. These are the
+ * opening words of each `agents/<stage>.md`, and the brief puts the instructions first.
+ * Editing an agent file's first line breaks this fallback, which is why an unmatched
+ * transcript is counted and reported rather than dropped quietly.
  */
 const OPENINGS = [
   ['plan', 'You are the planning stage'],
@@ -44,6 +48,9 @@ const OPENINGS = [
   ['verify', 'You are the verification stage'],
 ];
 
+/** How far a transcript's first record may be from its run's start and still be it. */
+const FALLBACK_WINDOW_MS = 10 * 60_000;
+
 /**
  * What a token costs relative to a fresh input token. Cache reads are a tenth, so a
  * headline "context re-sent" figure counted raw overstates the bill roughly tenfold —
@@ -51,53 +58,110 @@ const OPENINGS = [
  */
 const PRICE = { input: 1, cacheRead: 0.1, cacheWrite: 1.25 };
 
-/**
- * Where to cut the corpus in two, as a ticket number: `--since t45`.
- *
- * Without this the report is one average over every run there has ever been, and a
- * change to the tools cannot be seen in it — two new runs against two hundred old ones
- * move the mean by nothing. The whole strategy is measure, change, measure again, so
- * the report has to be able to answer "did that help".
- */
-const since = sinceFromArgv();
+const args = parseArgv(process.argv.slice(2));
 
-function sinceFromArgv() {
-  const at = process.argv.indexOf('--since');
-  if (at === -1) return null;
-  const given = process.argv[at + 1] ?? '';
-  const n = Number.parseInt(given.replace(/^t/, ''), 10);
-  if (!Number.isInteger(n)) {
-    console.error(`--since wants a ticket, like --since t45 (got "${given}")`);
-    process.exit(1);
+function parseArgv(argv) {
+  const dirs = [];
+  let since = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--since') {
+      dirs.push(argv[i]);
+      continue;
+    }
+    const given = argv[++i] ?? '';
+    since = Number.parseInt(given.replace(/^t/, ''), 10);
+    if (!Number.isInteger(since)) fail(`--since wants a ticket, like --since t45 (got "${given}")`);
   }
-  return n;
+  // Ticket numbers are per board: t45 on one is nothing to do with t45 on another.
+  if (since !== null && dirs.length > 1) fail('--since cuts one board; name one, or none');
+  return { dirs: dirs.length > 0 ? dirs : [process.cwd()], since };
 }
 
-/** Which side of the cut a ticket falls, or 'all' when no cut was asked for. */
-function side(ticketId) {
-  if (since === null) return 'all';
-  const n = Number.parseInt(String(ticketId).replace(/^t/, ''), 10);
-  if (!Number.isInteger(n)) return 'before';
-  return n >= since ? 'since' : 'before';
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+/**
+ * Where a board lives, from a directory in or above it — the same walk `wb` makes, so
+ * this reads the board that `wb list` run from the same place would talk to.
+ */
+function findHome(from) {
+  let dir = path.resolve(from);
+  for (;;) {
+    if (fs.existsSync(path.join(dir, CONFIG_FILE))) return dir;
+    if (fs.existsSync(path.join(dir, HOME_DIR, CONFIG_FILE))) return path.join(dir, HOME_DIR);
+    const up = path.dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+}
+
+/** The event log and the worktree root, resolved against the home as `loadConfig` does. */
+function boardAt(home) {
+  const config = JSON.parse(fs.readFileSync(path.join(home, CONFIG_FILE), 'utf8'));
+  return {
+    home,
+    repoRoot: path.resolve(home, config.repoRoot ?? '..'),
+    name: path.basename(path.resolve(home, config.repoRoot ?? '..')),
+    db: path.resolve(home, config.dbPath ?? 'data/workbench.db'),
+    worktreeRoot: path.resolve(home, config.worktreeRoot ?? '.worktrees'),
+  };
 }
 
 function main() {
-  const fromEvents = toolMixByStage();
-  const fromTranscripts = turnsByStage();
+  for (const dir of args.dirs) {
+    const home = findHome(dir);
+    if (home === null) {
+      console.error(`no workbench in or above ${path.resolve(dir)}`);
+      process.exitCode = 1;
+      continue;
+    }
+    const board = boardAt(home);
+    if (!fs.existsSync(board.db)) {
+      console.error(`no event log at ${board.db}`);
+      process.exitCode = 1;
+      continue;
+    }
+    report(board);
+  }
 
-  const sides = since === null ? ['all'] : ['before', 'since'];
+  console.log(
+    `\n  (cache reads at ${PRICE.cacheRead}x — the raw figure is the one that flatters a change)`,
+  );
+  if (args.since === null) console.log('  Compare two periods with: --since t45');
+  console.log();
+}
+
+function report(board) {
+  const runs = runsFrom(board.db);
+  const join = joinTranscripts(board, runs);
+  const sides = args.since === null ? ['all'] : ['before', 'since'];
 
   for (const which of sides) {
     const label =
-      which === 'all' ? 'EVERY RUN' : which === 'before' ? `BEFORE t${since}` : `t${since} ONWARDS`;
+      which === 'all'
+        ? 'EVERY RUN'
+        : which === 'before'
+          ? `BEFORE t${args.since}`
+          : `t${args.since} ONWARDS`;
+    const mine = [...runs.values()].filter((r) => side(r.ticket) === which);
 
-    console.log(`\n${'='.repeat(72)}\n${label}\n${'='.repeat(72)}`);
+    console.log(`\n${'='.repeat(78)}\n${board.name} — ${label}\n${board.db}\n${'='.repeat(78)}`);
 
     console.log('\nTOOL MIX — from the event log (every call the guard saw)\n');
-    for (const stage of ['plan', 'implement', 'review', 'verify']) {
-      const mix = fromEvents.get(`${which}|${stage}`);
-      if (!mix) continue;
+    for (const stage of STAGES) {
+      const mix = new Map();
+      for (const r of mine.filter((r) => r.stage === stage)) {
+        for (const [tool, seen] of r.tools) {
+          const into = mix.get(tool) ?? { calls: 0, refused: 0 };
+          into.calls += seen.calls;
+          into.refused += seen.refused;
+          mix.set(tool, into);
+        }
+      }
       const total = [...mix.values()].reduce((a, b) => a + b.calls, 0);
+      if (total === 0) continue;
       console.log(`  ${stage}  (${total} calls)`);
       for (const [tool, { calls, refused }] of [...mix].sort((a, b) => b[1].calls - a[1].calls)) {
         const share = `${Math.round((100 * calls) / total)}%`.padStart(4);
@@ -108,140 +172,173 @@ function main() {
     }
 
     console.log('TURNS AND CONTEXT — from the SDK transcripts\n');
-    console.log('  stage        runs  turns  calls  calls/run  calls/turn  solo%   median ctx');
-    for (const [stage, s] of fromTranscripts.rows(which)) {
+    console.log(
+      '  stage        runs  $/run  turns  calls  calls/run  calls/turn  solo%  median ctx  p90 ctx',
+    );
+    const all = blank();
+    for (const stage of STAGES) {
+      // Runs with turns, so a board whose early transcripts are gone is not averaged
+      // over runs this report cannot see into.
+      const s = { ...blank(), joined: 0 };
+      for (const r of mine.filter((r) => r.stage === stage)) {
+        s.runs += 1;
+        s.cost += r.costUsd;
+        if (r.turns.length > 0) s.joined += 1;
+        for (const turn of r.turns) add(s, turn);
+      }
+      if (s.runs === 0) continue;
+      all.cost += s.cost;
+      all.runs += s.runs;
+      for (const key of ['turns', 'calls', 'toolTurns', 'soloTurns', 'billed']) all[key] += s[key];
+      all.ctx.push(...s.ctx);
       console.log(
         '  ' +
           stage.padEnd(12) +
           String(s.runs).padStart(4) +
+          (s.cost / s.runs).toFixed(2).padStart(7) +
           String(s.turns).padStart(7) +
           String(s.calls).padStart(7) +
-          (s.calls / Math.max(s.runs, 1)).toFixed(1).padStart(11) +
+          (s.calls / Math.max(s.joined, 1)).toFixed(1).padStart(11) +
           (s.calls / Math.max(s.toolTurns, 1)).toFixed(2).padStart(12) +
           `${Math.round((100 * s.soloTurns) / Math.max(s.toolTurns, 1))}%`.padStart(7) +
-          k(median(s.ctx)).padStart(13),
+          k(pct(s.ctx, 0.5)).padStart(12) +
+          k(pct(s.ctx, 0.9)).padStart(9),
       );
     }
 
-    const all = fromTranscripts.all(which);
     const raw = all.ctx.reduce((a, b) => a + b, 0);
-    console.log(`\n  context re-sent, raw      ${k(raw)} tokens over ${all.ctx.length} turns`);
+    const models = new Map();
+    for (const r of mine) for (const [m, n] of r.models) models.set(m, (models.get(m) ?? 0) + n);
+    const unjoined = mine.filter((r) => r.turns.length === 0).length;
+
+    console.log(`\n  spent                     $${all.cost.toFixed(2)} over ${all.runs} runs`);
+    console.log(`  context re-sent, raw      ${k(raw)} tokens over ${all.ctx.length} turns`);
     console.log(`  context re-sent, billed   ${k(all.billed)} input-token equivalents`);
+    console.log(
+      `  models, by turns          ${[...models].map(([m, n]) => `${m} ${n}`).join(', ') || 'none'}`,
+    );
+    if (unjoined > 0) {
+      console.log(
+        `  ${unjoined} of ${mine.length} runs have no transcript — their turns are not counted above`,
+      );
+    }
   }
 
-  console.log(
-    `\n  (cache reads at ${PRICE.cacheRead}x — the raw figure is the one that flatters a change)`,
-  );
-  if (since === null) {
-    console.log('  Compare two periods with: node scripts/toolmix.mjs --since t45');
+  if (join.unmatched > 0) {
+    console.log(`\n  ${join.unmatched} transcript(s) matched no run — the join may be stale`);
   }
-  if (fromTranscripts.unmatched > 0) {
-    console.log(
-      `  ${fromTranscripts.unmatched} transcript(s) matched no stage opening — join may be stale`,
-    );
-  }
-  console.log();
 }
 
-/** Per stage, how often each tool was asked for and how often it was refused. */
-function toolMixByStage() {
-  if (!fs.existsSync(DB)) {
-    console.error(`no event log at ${DB}`);
-    return new Map();
-  }
-  const db = new DatabaseSync(DB, { readOnly: true });
-  const rows = db.prepare('select ticket_id, body from events order by id').all();
+/** Which side of the cut a ticket falls, or 'all' when no cut was asked for. */
+function side(ticketId) {
+  if (args.since === null) return 'all';
+  const n = Number.parseInt(String(ticketId).replace(/^t/, ''), 10);
+  if (!Number.isInteger(n)) return 'before';
+  return n >= args.since ? 'since' : 'before';
+}
 
-  const stageOf = new Map();
-  const mix = new Map();
+/** Every stage run the log knows, with its tool calls, its cost and its session ids. */
+function runsFrom(dbPath) {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const rows = db.prepare('select ticket_id, at, body from events order by id').all();
+  const runs = new Map();
 
   for (const row of rows) {
     const e = JSON.parse(row.body);
-    if (e.type === 'stage_started') stageOf.set(e.runId, e.stage);
-    if (e.type !== 'tool_requested') continue;
+    if (e.type === 'stage_started') {
+      runs.set(e.runId, {
+        ticket: row.ticket_id,
+        stage: e.stage,
+        startedAt: Date.parse(row.at),
+        tools: new Map(),
+        sessions: new Set(),
+        costUsd: 0,
+        turns: [],
+        models: new Map(),
+      });
+      continue;
+    }
+    const run = runs.get(e.runId);
+    if (run === undefined) continue;
 
-    const stage = stageOf.get(e.runId);
-    if (stage === undefined) continue;
-
-    const key = `${side(row.ticket_id)}|${stage}`;
-    if (!mix.has(key)) mix.set(key, new Map());
-    const tools = mix.get(key);
-    const seen = tools.get(e.tool) ?? { calls: 0, refused: 0 };
-    seen.calls += 1;
-    if (e.allowed === false) seen.refused += 1;
-    tools.set(e.tool, seen);
+    if (e.type === 'tool_requested') {
+      const seen = run.tools.get(e.tool) ?? { calls: 0, refused: 0 };
+      seen.calls += 1;
+      if (e.allowed === false) seen.refused += 1;
+      run.tools.set(e.tool, seen);
+    }
+    if (typeof e.sessionId === 'string') run.sessions.add(e.sessionId);
+    if (e.type === 'stage_finished') run.costUsd = e.costUsd ?? 0;
   }
-  return mix;
+  return runs;
 }
 
 /**
- * Per stage, the turns those calls were spread over and the context each one carried.
- * A turn with two tool calls costs one round trip; a turn with one costs the same, and
- * that difference is the whole reason this script exists.
+ * Attach every transcript under the board's worktrees to the run that wrote it. A run
+ * that asked a question and was resumed can own more than one; each adds its turns.
+ *
+ * Session ids first, for every file, and only then the fallback — so a guess can never
+ * take a run that a later file would have claimed outright. A worktree also holds
+ * sessions that are not stages at all (chat, name checks); those open on no stage's
+ * brief and are passed over rather than counted as a failed join.
  */
-function turnsByStage() {
-  const blank = () => ({
-    runs: 0,
-    turns: 0,
-    calls: 0,
-    toolTurns: 0,
-    soloTurns: 0,
-    ctx: [],
-    billed: 0,
-  });
-  /** Keyed `<side>|<stage>`, plus `<side>|` for that side's total. */
-  const buckets = new Map();
-  const bucket = (key) => {
-    if (!buckets.has(key)) buckets.set(key, blank());
-    return buckets.get(key);
-  };
-  let unmatched = 0;
+function joinTranscripts(board, runs) {
+  const bySession = new Map();
+  for (const run of runs.values()) for (const s of run.sessions) bySession.set(s, run);
 
-  for (const { file, ticketId } of transcripts()) {
-    const lines = fs
-      .readFileSync(file, 'utf8')
-      .split('\n')
-      .filter((l) => l !== '');
-    const records = lines.flatMap((l) => {
+  const attach = (run, records) => {
+    for (const turn of turnsIn(records)) {
+      run.turns.push(turn);
+      run.models.set(turn.model, (run.models.get(turn.model) ?? 0) + 1);
+    }
+  };
+
+  const unclaimed = [];
+  for (const { file, ticket } of transcriptsOf(board)) {
+    const records = readRecords(file);
+    const run = bySession.get(path.basename(file, '.jsonl'));
+    if (run === undefined) unclaimed.push({ ticket, records });
+    else attach(run, records);
+  }
+
+  let unmatched = 0;
+  for (const { ticket, records } of unclaimed) {
+    const stage = stageOfTranscript(records);
+    if (stage === null) continue;
+    const run = nearestRun(runs, ticket, stage, records);
+    if (run === undefined) unmatched += 1;
+    else attach(run, records);
+  }
+  return { unmatched };
+}
+
+/** The fallback join: same ticket, same stage, the closest start that has no turns yet. */
+function nearestRun(runs, ticket, stage, records) {
+  const first = Date.parse(records.find((r) => r.timestamp)?.timestamp ?? '');
+  if (Number.isNaN(first)) return undefined;
+
+  let best;
+  let distance = FALLBACK_WINDOW_MS;
+  for (const run of runs.values()) {
+    if (run.ticket !== ticket || run.stage !== stage || run.turns.length > 0) continue;
+    const d = Math.abs(run.startedAt - first);
+    if (d < distance) [best, distance] = [run, d];
+  }
+  return best;
+}
+
+function readRecords(file) {
+  return fs
+    .readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((l) => l !== '')
+    .flatMap((l) => {
       try {
         return [JSON.parse(l)];
       } catch {
         return []; // a half-written last line while a run is live
       }
     });
-
-    const stage = stageOfTranscript(records);
-    if (stage === null) {
-      unmatched += 1;
-      continue;
-    }
-
-    const which = side(ticketId);
-    const s = bucket(`${which}|${stage}`);
-    const total = bucket(`${which}|`);
-    s.runs += 1;
-    total.runs += 1;
-
-    for (const turn of turnsIn(records)) {
-      for (const into of [s, total]) {
-        into.turns += 1;
-        into.calls += turn.calls;
-        into.ctx.push(turn.ctx);
-        into.billed += turn.billed;
-        if (turn.calls > 0) into.toolTurns += 1;
-        if (turn.calls === 1) into.soloTurns += 1;
-      }
-    }
-  }
-
-  return {
-    rows: (which) =>
-      ['plan', 'implement', 'review', 'verify']
-        .map((stage) => [stage, buckets.get(`${which}|${stage}`)])
-        .filter(([, s]) => s !== undefined && s.runs > 0),
-    all: (which) => buckets.get(`${which}|`) ?? blank(),
-    unmatched,
-  };
 }
 
 /**
@@ -266,6 +363,7 @@ function turnsIn(records) {
     if (!byRequest.has(id)) {
       byRequest.set(id, {
         calls: 0,
+        model: r.message.model ?? 'unknown',
         ctx:
           (usage.input_tokens ?? 0) +
           (usage.cache_read_input_tokens ?? 0) +
@@ -300,24 +398,44 @@ function stageOfTranscript(records) {
 }
 
 /**
- * Every session file the workbench's own worktrees produced, with the ticket it
- * belongs to — which is in the directory name, since the SDK keys its transcripts by
- * the working directory and that is the ticket's worktree.
+ * Every session file this board's worktrees produced, with the ticket it belongs to.
+ * The SDK keys its transcripts by working directory, written with every character that
+ * is not a letter or digit as '-', and a stage's working directory is its ticket's
+ * worktree — so the directory name is the worktree root, then the ticket.
+ *
+ * `<repo>/workbench/.worktrees` too: where a board kept its worktrees before boards
+ * moved into `.workbench/`, and where a long-running board's early tickets still are.
  */
-function transcripts() {
+function transcriptsOf(board) {
   if (!fs.existsSync(TRANSCRIPTS)) return [];
+  const roots = [board.worktreeRoot, path.join(board.repoRoot, 'workbench', '.worktrees')];
+  const prefixes = [...new Set(roots.map((r) => r.replace(/[^A-Za-z0-9]/g, '-') + '-'))];
+
   return fs.readdirSync(TRANSCRIPTS).flatMap((d) => {
-    const ticket = /workbench--worktrees-(t\d+)$/.exec(d);
+    const prefix = prefixes.find((p) => d.startsWith(p));
+    if (prefix === undefined) return [];
+    const ticket = /^(t\d+)$/.exec(d.slice(prefix.length));
     if (ticket === null) return [];
     const dir = path.join(TRANSCRIPTS, d);
     return fs
       .readdirSync(dir)
       .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => ({ file: path.join(dir, f), ticketId: ticket[1] }));
+      .map((f) => ({ file: path.join(dir, f), ticket: ticket[1] }));
   });
 }
 
-const median = (xs) => pct(xs, 0.5);
+function blank() {
+  return { runs: 0, cost: 0, turns: 0, calls: 0, toolTurns: 0, soloTurns: 0, ctx: [], billed: 0 };
+}
+
+function add(into, turn) {
+  into.turns += 1;
+  into.calls += turn.calls;
+  into.ctx.push(turn.ctx);
+  into.billed += turn.billed;
+  if (turn.calls > 0) into.toolTurns += 1;
+  if (turn.calls === 1) into.soloTurns += 1;
+}
 
 function pct(xs, p) {
   if (xs.length === 0) return 0;
