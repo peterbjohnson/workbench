@@ -12,6 +12,23 @@ test('a reset later today is read in the zone it was said in', () => {
   assert.equal(at?.toISOString(), '2026-09-14T21:30:00.000Z');
 });
 
+test('the reset minute is now, not this time tomorrow', () => {
+  // 21:30 UTC is 22:30 in London: the minute the message names. This is the ordinary
+  // case — the message is read the moment the run dies on it — and it must not park
+  // the board for 24 hours.
+  const now = new Date('2026-09-14T21:30:12Z');
+
+  assert.ok(readSessionLimit(MESSAGE, now)!.getTime() <= now.getTime());
+});
+
+test('a couple of minutes behind is still now', () => {
+  // The same message read again at 22:32 in London, by a tick or a restart. Two minutes
+  // late is late, not a day early.
+  const now = new Date('2026-09-14T21:32:00Z');
+
+  assert.ok(readSessionLimit(MESSAGE, now)!.getTime() <= now.getTime());
+});
+
 test('a reset that has already gone today is tomorrow', () => {
   // 23:00 in London, half an hour past the time the message names.
   const at = readSessionLimit(MESSAGE, new Date('2026-09-14T22:00:00Z'));

@@ -21,6 +21,15 @@ const RESETS = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
 const ZONE = /\(([A-Za-z]+\/[A-Za-z0-9_+\-/]+)\)/;
 
 /**
+ * How far behind the stated time still counts as it, in minutes. The message is read
+ * when the run dies, which is a moment or two after the service decided it — and a
+ * message re-read at 22:32 saying "resets 10:30pm" means come back now, not in 23
+ * hours and 58 minutes. Small, because further behind than this and the reset really
+ * has gone by: an overnight run that finds a stale message must wait for the next one.
+ */
+const GRACE = 2;
+
+/**
  * When the service says this run may carry on, or undefined when the text is not
  * a session limit or does not say. Undefined is the old behaviour — the run fails
  * — so anything unreadable costs nothing new.
@@ -44,10 +53,13 @@ export function readSessionLimit(text: string, now: Date): Date | undefined {
   // The difference between two wall clocks in the same zone is real time, whatever
   // zone this machine is in — so the waiting is done in milliseconds and no date
   // arithmetic happens anywhere we are not standing. Already gone today means
-  // tomorrow, the zero case included: a reset this very minute has passed too.
-  const ahead = (hour * 60 + minute - here + 1440) % 1440 || 1440;
+  // tomorrow — except within the grace, where it means now: reading "resets 10:30pm"
+  // at 22:30 is the ordinary case, and turning it into a day would hold the whole
+  // board for one.
+  const ahead = (hour * 60 + minute - here + 1440) % 1440;
+  const wait = ahead === 0 || ahead >= 1440 - GRACE ? 0 : ahead;
   return new Date(
-    now.getTime() + ahead * 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds()),
+    now.getTime() + wait * 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds()),
   );
 }
 

@@ -16,8 +16,10 @@ type Doable = Exclude<Action, { kind: 'wait' }>;
 /**
  * What a stage run reports back. The orchestrator turns this into events.
  *
- * A runner never reports `interrupted`; the orchestrator writes it over whatever
- * the run said, for a run it stopped underneath. See `interrupt`.
+ * A runner reports `interrupted` for one ending only: the model service's session
+ * limit, which comes with the time it lifts and so is waited out rather than failed.
+ * Otherwise it is the orchestrator that writes it, over whatever the run said, for a
+ * run it stopped underneath. See `readSessionLimit` and `interrupt`.
  */
 export type RunResult = {
   outcome: RunOutcome;

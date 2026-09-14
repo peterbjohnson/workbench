@@ -655,13 +655,16 @@ test('a session limit holds the whole board, and lifts by itself', async () => {
     await h.orch.idle();
     assert.equal(resumedWith.length, 1, 'nothing else is bought while the limit stands');
     assert.equal(h.store.ticket('t2').status, 'queued');
-    assert.ok(
-      h.announced.some((m) => /session limit/.test(m)),
-      'and the wait is said out loud, once',
-    );
+    // Counted, not merely found: saying it is the point, and saying it on every tick
+    // is what `wasLimited` is for.
+    const said = (what: RegExp) => h.announced.filter((m) => what.test(m)).length;
+    assert.equal(said(/session limit is in force/), 1, 'and the wait is said out loud, once');
 
     now = Date.parse('2026-09-14T21:30:01Z');
     await h.orch.idle();
+
+    assert.equal(said(/session limit has lifted/), 1, 'and the lift, once');
+    assert.equal(said(/session limit is in force/), 1, 'without saying the wait again');
 
     assert.ok(
       resumedWith.includes('sess-abc'),
