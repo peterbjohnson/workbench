@@ -675,6 +675,56 @@ test('a session limit holds the whole board, and lifts by itself', async () => {
   }
 });
 
+test('a limit left on a ticket that has moved on is over, not carried on for ever', async () => {
+  // `stage_continued` is refused for anything but a ticket parked mid-stage, and a
+  // refused append still wakes this loop and still leaves the time set — so trying
+  // it on a ticket that has gone elsewhere is a tick that appends, wakes itself and
+  // appends again, without end.
+  let now = Date.parse('2026-09-14T20:00:00Z');
+  const h = harness({
+    now: () => now,
+    runStage: async ({ stage }) =>
+      stage === 'plan' && h.store.ticket('t1').limitedUntil === null
+        ? {
+            outcome: 'interrupted',
+            summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
+            sessionId: 'sess-abc',
+            limitedUntil: '2026-09-14T21:30:00.000Z',
+          }
+        : ok(`${stage} done`),
+  });
+
+  try {
+    create(h.store, 't1');
+    await h.orch.idle();
+    assert.equal(h.store.ticket('t1').limitedUntil, '2026-09-14T21:30:00.000Z');
+
+    // The run that was given up on reports back after all, and takes the ticket on
+    // to the gate. The time it parked with is still on it, and is now nobody's.
+    h.store.append('t1', {
+      type: 'stage_finished',
+      runId: 'r1',
+      outcome: 'completed',
+      summary: 'planned after all',
+    });
+    assert.equal(h.store.ticket('t1').status, 'plan_gate');
+
+    now = Date.parse('2026-09-14T21:30:01Z');
+    create(h.store, 't2');
+    // Settles: under the endless append it never would, and `idle` says so.
+    await h.orch.idle();
+
+    assert.equal(
+      h.store.eventsFor('t1').filter((e) => e.type === 'stage_continued').length,
+      0,
+      'nothing is carried on that cannot be',
+    );
+    assert.equal(h.store.ticket('t1').status, 'plan_gate', 'and the ticket is left where it is');
+  } finally {
+    await h.close();
+  }
+});
+
 test('stopping while the standing checks run abandons the stage rather than buying it', async () => {
   // A stage is under way from `stage_started`, not from the moment the agent is
   // asked. STOP pressed while the suite runs used to find nothing to abort, tell the

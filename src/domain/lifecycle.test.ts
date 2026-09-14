@@ -390,6 +390,13 @@ test('a limit-parked ticket that moves any other way stops waiting', () => {
   assert.equal(limited().add({ type: 'stage_restarted' }).limitedUntil, null);
   assert.equal(limited().add({ type: 'plan_rejected', reason: 'wrong shape' }).limitedUntil, null);
 
+  // Answering is the same move with the conversation kept, so it leaves the same
+  // way: the ticket is back in its stage and nothing about it is waiting any more.
+  const answered = limited().add({ type: 'question_answered', answer: 'the one in etc/' });
+  assert.equal(answered.status, 'planning');
+  assert.equal(answered.interrupted, false);
+  assert.equal(answered.limitedUntil, null, 'a board paused over a ticket that has moved on');
+
   const j = limited();
   j.add({ type: 'stage_continued' });
   const running = j.add({ type: 'stage_started', stage: 'plan', runId: 'r2' });

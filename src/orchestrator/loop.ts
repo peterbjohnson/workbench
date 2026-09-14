@@ -325,9 +325,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       if (ticket.limitedUntil === null) continue;
       if (waitingOutLimit(ticket, now)) {
         until = Math.max(until ?? 0, Date.parse(ticket.limitedUntil));
-      } else {
+      } else if (ticket.status === 'blocked' && ticket.interrupted) {
         store.append(ticket.id, { type: 'stage_continued' });
       }
+      // Anything else with a passed time has already been moved on by hand — answered,
+      // restarted, cancelled — and the reducer would refuse `stage_continued` for it
+      // (`ticket.ts:402`). Refused, the append still wakes this loop through the store
+      // and still leaves `limitedUntil` set, so it would be tried again on every tick
+      // for ever. A limit nobody is waiting out is simply over.
     }
 
     if ((until !== undefined) !== wasLimited) {

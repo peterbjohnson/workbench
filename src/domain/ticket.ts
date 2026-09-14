@@ -482,6 +482,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         settling: false,
         queuedBehind: null,
         interrupted: false,
+        limitedUntil: null,
         conflicts: [],
         conflictedWith: null,
       };
