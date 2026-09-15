@@ -819,9 +819,11 @@ export function lastChecks(events: Event[]): CheckRun[] {
  * is the end of it. Otherwise a ticket sent back round by verify arrives at review
  * again carrying a list an earlier review already accepted as done, measured from a
  * commit that same review had read: both halves of "you asked for these, and this is
- * what has happened since you looked" would be false. An `interrupted` finish is not
- * a verdict, though — `reconcile` writes one for a run nobody is left to answer, and
- * a live list has to survive the workbench stopping.
+ * what has happened since you looked" would be false. Only a review that reached a
+ * verdict has settled its list, though: `blocked` is a question to the manager,
+ * `failed` is a crash or a budget ceiling or the manager stopping the run, and
+ * `interrupted` is the finish `reconcile` writes for a run nobody is left to answer.
+ * None of those said anything about the list, so a live list has to survive them all.
  *
  * Nothing survives the start of a plan: a new plan is a new approach, and the last
  * one's objections are about code that no longer exists. `revisions` resets there
@@ -839,7 +841,7 @@ export function lastReviewChanges(events: Event[]): { changes: string; at: strin
       stage = e.stage;
       if (e.stage === 'plan') found = null;
     } else if (e.type === 'stage_finished') {
-      if (stage === 'review' && e.outcome !== 'interrupted') {
+      if (stage === 'review' && e.outcome === 'completed') {
         found = e.changes === undefined ? null : { changes: e.changes, at: head };
       }
       if (e.commit !== undefined) head = e.commit;

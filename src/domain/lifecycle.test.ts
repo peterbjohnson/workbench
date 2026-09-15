@@ -1488,9 +1488,37 @@ test('the round a later review is given is the last one review itself asked for'
     changes: '- the branch is still untested',
   });
 
+  // Asking the manager a question is not answering either: the run ended without a
+  // verdict, and the round it was given is still the round to check.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r10' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r10',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+  });
+  assert.deepEqual(lastReviewChanges(j.events), {
+    changes: '- the branch is still untested',
+    at: 'ddd444',
+  });
+
+  // Nor is falling over: a crash, a budget ceiling or the manager stopping the run all
+  // end it with nothing said about the list.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r11' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r11',
+    outcome: 'failed',
+    summary: 'the run hit its ceiling',
+  });
+  assert.deepEqual(lastReviewChanges(j.events), {
+    changes: '- the branch is still untested',
+    at: 'ddd444',
+  });
+
   // Being stopped is not answering: the finish `reconcile` writes for a run nobody is
   // left to answer carries no verdict, and leaves a live list alone.
-  j.add({ type: 'stage_started', stage: 'review', runId: 'r10' });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r12' });
   j.add({
     type: 'stage_finished',
     runId: 'interrupted',
@@ -1503,7 +1531,7 @@ test('the round a later review is given is the last one review itself asked for'
   });
 
   // And a new plan is a new approach: the objections are about code that is gone.
-  j.add({ type: 'stage_started', stage: 'plan', runId: 'r11' });
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r13' });
   assert.equal(lastReviewChanges(j.events), null);
 });
 
