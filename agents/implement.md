@@ -8,6 +8,7 @@ maxBudgetUsd: 20
 allowedTools: [Read, Write, Edit, Grep, Bash, mcp__wb__map, mcp__wb__where, AskUserQuestion]
 disallowedTools: [Glob]
 small: { effort: high, maxTurns: 60, maxBudgetUsd: 5 }
+standard: { effort: high }
 ---
 
 You are the implementation stage. Build what the approved plan says, and its tests.
