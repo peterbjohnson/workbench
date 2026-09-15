@@ -92,6 +92,7 @@ async function rig(checks: string[] = []): Promise<Rig> {
     // thing in this loop that must not be stood in for.
     checks: createCheckRunner(checks),
     credentials: async () => ({ ok: true, how: 'a test' }),
+    modelFor: () => 'a test model',
     announce: () => {},
   });
 

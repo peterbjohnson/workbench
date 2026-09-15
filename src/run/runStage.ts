@@ -21,6 +21,7 @@ import { fileMap } from '../code/report.ts';
 import { wbServer } from '../tools/server.ts';
 import type { RunResult, StageRunner } from '../orchestrator/loop.ts';
 import { guard } from './guard.ts';
+import { readSessionLimit } from './limits.ts';
 
 export type StageRunnerDeps = {
   /**
@@ -62,6 +63,8 @@ export type StageRunnerDeps = {
    * that answers without a network; there is no other reason to set it.
    */
   query?: typeof query;
+  /** The clock a session limit's reset time is worked out against. The real one unless a test says. */
+  now?: () => Date;
 };
 
 /**
@@ -325,6 +328,26 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
       }
       if (signal.aborted) {
         return ended({ outcome: 'failed', summary: 'the manager stopped this run', costUsd });
+      }
+      // The service saying come back later, rather than anything going wrong with the
+      // work. Parked the way an interruption parks — conversation kept — so the stage
+      // carries on at the reset instead of being bought again from the top. Not
+      // `crashed`, and that is the whole of it: a crashed result on the resume path
+      // above starts the stage afresh, which is the cost this exists to avoid.
+      const limitedUntil = readSessionLimit(threw ?? '', deps.now?.() ?? new Date());
+      if (limitedUntil !== undefined) {
+        return ended({
+          outcome: 'interrupted',
+          summary: threw ?? '',
+          sessionId,
+          limitedUntil: limitedUntil.toISOString(),
+          // The message names no model, so the limit is attributed to the one this run
+          // was using. If it really is on the whole account, the first stage on another
+          // model gets the same message and parks itself: one run to find that out, and
+          // the board keeps working in the meantime rather than stopping on a guess.
+          limitedModel: agent.model,
+          costUsd,
+        });
       }
       // A throw is reported, not rethrown: the ticket's record needs what the run
       // spent as much as any other ending needs it, and more, because the runs that

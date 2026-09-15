@@ -82,6 +82,7 @@ export async function startWorkbench(
             continued: (ticketId) =>
               whatHappenedTo(store.ticket(ticketId), store.eventsFor(ticketId)),
           }),
+      modelFor: (stage) => agents()[stage].model,
       // Fake agents need no credentials: nothing they do leaves this machine.
       credentials: fake ? async () => ({ ok: true, how: 'fake agents' }) : cachedCredentials(),
     },

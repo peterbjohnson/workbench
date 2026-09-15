@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import type { Event, EventBody } from './events.ts';
 import { needsYou } from './board.ts';
 import { deriveTicket, lastChecks, lastReviewChanges, type Ticket } from './ticket.ts';
-import { DEFAULT_POLICY, nextAction, type Action } from './rules.ts';
+import { DEFAULT_POLICY, nextAction, waitingOutLimit, type Action } from './rules.ts';
 
 /** Accumulates events for one ticket and re-derives it, the way the store will. */
 class Journal {
@@ -342,6 +342,69 @@ test('a stage stopped before it had a conversation can still be continued', () =
 
   assert.equal(j.add({ type: 'stage_continued' }).status, 'planning');
   assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'plan' }, 'so it runs from the top');
+});
+
+/** When the model service said the parked run may carry on. */
+const RESETS_AT = '2026-08-03T21:30:00.000Z';
+
+/** Stopped by the model service's session limit, holding the time it gave. */
+function limited(): Journal {
+  const j = newTicket();
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r1' });
+  j.add({ type: 'session_started', runId: 'r1', sessionId: 'sess-abc' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'interrupted',
+    summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
+    sessionId: 'sess-abc',
+    limitedUntil: RESETS_AT,
+    limitedModel: 'the thinking model',
+  });
+  return j;
+}
+
+test('a session limit parks the stage with the time it carries on at', () => {
+  const j = limited();
+  const parked = j.ticket();
+
+  assert.equal(parked.status, 'blocked', 'it parks, like anything else stopped mid-stage');
+  assert.equal(parked.interrupted, true, 'stopped, not broken');
+  assert.equal(parked.session, 'sess-abc', 'and the run is there to be carried on');
+  assert.equal(parked.limitedUntil, RESETS_AT);
+  assert.equal(parked.limitedModel, 'the thinking model', 'and whose capacity ran out');
+  assert.equal(waitingOutLimit(parked, Date.parse('2026-08-03T21:00:00Z')), true);
+  assert.equal(
+    waitingOutLimit(parked, Date.parse('2026-08-03T22:00:00Z')),
+    false,
+    'and it lifts on its own, with nobody pressing anything',
+  );
+
+  const carrying = j.add({ type: 'stage_continued' });
+  assert.equal(carrying.status, 'planning', 'back into the stage it stopped in');
+  assert.equal(carrying.session, 'sess-abc', 'carrying what it had already thought');
+  assert.equal(carrying.limitedUntil, null, 'and nothing is waiting on the limit any more');
+  assert.equal(carrying.limitedModel, null, 'so the model it was on is held no longer');
+});
+
+test('a limit-parked ticket that moves any other way stops waiting', () => {
+  // The time holds every stage on that model, so one left on a ticket that has gone
+  // somewhere else is work paused against a wait that is over.
+  assert.equal(limited().add({ type: 'stage_restarted' }).limitedUntil, null);
+  assert.equal(limited().add({ type: 'stage_restarted' }).limitedModel, null);
+  assert.equal(limited().add({ type: 'plan_rejected', reason: 'wrong shape' }).limitedUntil, null);
+
+  // Answering is the same move with the conversation kept, so it leaves the same
+  // way: the ticket is back in its stage and nothing about it is waiting any more.
+  const answered = limited().add({ type: 'question_answered', answer: 'the one in etc/' });
+  assert.equal(answered.status, 'planning');
+  assert.equal(answered.interrupted, false);
+  assert.equal(answered.limitedUntil, null, 'a board paused over a ticket that has moved on');
+
+  const j = limited();
+  j.add({ type: 'stage_continued' });
+  const running = j.add({ type: 'stage_started', stage: 'plan', runId: 'r2' });
+  assert.equal(running.limitedUntil, null, 'a stage that is going is not one waiting');
 });
 
 /** Blocked mid-review, holding that review's conversation, with work committed. */
