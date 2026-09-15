@@ -700,6 +700,15 @@ test('a small ticket runs under smaller ceilings, and only the ceilings change',
   );
 });
 
+test('a standard ticket builds at high effort, and only a large one at xhigh', () => {
+  // Implement is 40–44% of spend and put out 20–30k tokens a run at `xhigh`. A
+  // standard ticket now runs at `high`; `large` keeps the top-level ceiling. The
+  // failure this catches is a silent revert of that line to `xhigh`, which would
+  // undo the saving without anything else looking different.
+  assert.equal(forScale(agents.implement, 'standard').effort, 'high');
+  assert.equal(forScale(agents.implement, 'large').effort, 'xhigh');
+});
+
 test('a per-scale block is validated as strictly as the rest of the frontmatter', () => {
   const cases: [string, RegExp][] = [
     ['small: { effort: enormous }', /small\.effort must be one of/],
