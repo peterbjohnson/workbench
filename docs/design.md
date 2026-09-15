@@ -224,7 +224,11 @@ instant recorded on the ticket. The tick that finds it has passed appends the sa
 every ticket rather than only the one that found it, because the limit is on the account:
 any other stage started before the reset buys the same message. And it turns on reading the
 time: without one it fails as it always did, because a wait with no end would stop the board
-for good.
+for good. The stated time is rounded down to the minute, so a message read within a couple of
+minutes of it names a comeback at the far edge of that grace rather than the moment of
+reading: an instant already gone would be resumed on the tick that parked it, refused again
+because the window has not really ended, and re-parked — a loop at API speed, with a plan
+counting each pass as a cycle.
 
 Recommended as later tickets, and deliberately not done here:
 

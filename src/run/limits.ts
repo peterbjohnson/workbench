@@ -26,6 +26,14 @@ const ZONE = /\(([A-Za-z]+\/[A-Za-z0-9_+\-/]+)\)/;
  * message re-read at 22:32 saying "resets 10:30pm" means come back now, not in 23
  * hours and 58 minutes. Small, because further behind than this and the reset really
  * has gone by: an overnight run that finds a stale message must wait for the next one.
+ *
+ * A read inside the grace comes back at the *end* of it — the stated minute plus
+ * `GRACE + 1` — and never at the moment of reading. Two things follow, and both matter.
+ * The instant is always strictly in the future, so a ticket is never parked until a
+ * time already gone and carried on again on the tick that parked it. And every read of
+ * the same message within the grace names the same instant, so a service still refusing
+ * when the run resumes there reads the message outside the grace and rolls to the next
+ * day: one retry, not a loop running at whatever speed the API answers.
  */
 const GRACE = 2;
 
@@ -53,14 +61,16 @@ export function readSessionLimit(text: string, now: Date): Date | undefined {
   // The difference between two wall clocks in the same zone is real time, whatever
   // zone this machine is in — so the waiting is done in milliseconds and no date
   // arithmetic happens anywhere we are not standing. Already gone today means
-  // tomorrow — except within the grace, where it means now: reading "resets 10:30pm"
-  // at 22:30 is the ordinary case, and turning it into a day would hold the whole
-  // board for one.
+  // tomorrow — except within the grace, where it means the end of the grace: reading
+  // "resets 10:30pm" at 22:30 is the ordinary case, and turning it into a day would
+  // hold the whole board for one.
   const ahead = (hour * 60 + minute - here + 1440) % 1440;
-  const wait = ahead === 0 || ahead >= 1440 - GRACE ? 0 : ahead;
-  return new Date(
-    now.getTime() + wait * 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds()),
-  );
+  const inGrace = ahead === 0 || ahead >= 1440 - GRACE;
+  const behind = ahead === 0 ? 0 : 1440 - ahead;
+  const startOfMinute = now.getTime() - (now.getSeconds() * 1000 + now.getMilliseconds());
+  return inGrace
+    ? new Date(startOfMinute - behind * 60_000 + (GRACE + 1) * 60_000)
+    : new Date(startOfMinute + ahead * 60_000);
 }
 
 /** What the clock reads in `zone`, in minutes — the machine's own when none was named. */
