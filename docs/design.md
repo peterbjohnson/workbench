@@ -315,3 +315,16 @@ lists every file in the worktree, worked out from the source before the run star
 
 `scripts/toolmix.mjs` prints what the stages actually did, from the event log and the SDK
 transcripts. Run it before and after changing any of this.
+
+Implement is the stage that carries the most: 40–44% of spend, a median context per turn
+of 60–74k tokens against the 8 August baseline of 54.1k in `docs/archive/NOTES.md`, and a
+p90 of 143–153k against 111.3k. (Those figures are quoted from t54 and NOTES.md, not
+re-measured here — the board is outside the worktree a stage runs in, so implement cannot
+measure itself.) The first lever tried against it is effort: a standard ticket now builds
+at `high`, small already did, and only `large` keeps the top-level `xhigh`. To see whether
+it paid, run `node scripts/toolmix.mjs --since t54` from the board directory and read the
+implement row's `$/run`. Compare Opus boards with Opus boards — `family_tree` is a Fable
+5.1 experiment, and `--since` takes one board at a time anyway. Two levers were left for
+later so this one has an attributable number: steering implement towards `mcp__wb__map`
+and aimed reads instead of whole-file re-reads, and a fresh session per plan STEP carrying
+the diff rather than one conversation growing to 150k.
