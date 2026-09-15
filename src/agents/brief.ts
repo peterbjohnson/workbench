@@ -45,8 +45,12 @@ export type BriefInput = {
   diff?: string;
   /**
    * The standing checks the workbench has already run, and their output. Given to
-   * verify, which therefore never runs them itself — it only ever sees this when
-   * they all passed, because a failure sends the ticket back before any agent runs.
+   * review and verify, from the implement run that produced the change in front of
+   * them: a failure would have sent that run back for another round, so what reaches
+   * a stage here has passed. Empty means there is no observed output about the tree
+   * this stage is looking at — nothing configured, or results withheld because the
+   * stage's own refresh merged a base in (see `loop.ts`) — which the brief says rather
+   * than leaving an agent to assume a suite it cannot see.
    */
   checks?: readonly CheckRun[];
   /**
@@ -220,18 +224,18 @@ function mergeToFinish({ conflict, agent }: BriefInput): string | undefined {
     'still unmerged, or still holding conflict markers, is blocked and commits nothing.',
   ];
 
-  // Verify is told, every time, that the workbench has already run the standing
-  // checks. It has not for this one — they cannot be asked of a tree full of
-  // markers — and a brief that leaves that claim standing sends the stage looking
-  // for output that was never produced.
+  // The checks in the brief were run against what implement left, and this merge came
+  // afterwards. Nothing has been asked of the two sides sitting together — they cannot
+  // be asked of a tree full of markers — so a brief that left the section to speak for
+  // itself would have this stage trusting output about a tree it is not looking at.
   if (agent.stage === 'verify') {
     lines.push(
       '',
-      'Your instructions say the standing checks have already been run. Not for this stage:',
-      'they cannot be asked of a tree that is mid-merge, so there is no `Checks already run`',
-      'section below. The workbench runs them once this stage is over, and a failure then',
-      'sends the ticket back whatever verdict you gave — so run them yourself, once the',
-      'merge is resolved, if you want to know what they are going to say.',
+      'Whatever the `Checks already run` section reports was run before this merge, so it',
+      'says nothing about the two sides sitting together. The workbench runs them again',
+      'once this stage is over, and a failure then sends the ticket back whatever verdict',
+      'you gave — so run them yourself, once the merge is resolved, if you want to know',
+      'what they are going to say.',
     );
   }
 
@@ -313,7 +317,7 @@ function changesFor(agent: AgentDef, ticket: Ticket): string | undefined {
 
   return [
     'The approach is right; these are wrong. Address each one, and change nothing',
-    'else — this is a revision of work that has already been reviewed, not a',
+    'else — this is a revision of work already done to an approved plan, not a',
     'rewrite of it.',
     '',
     ticket.changes,
@@ -402,16 +406,27 @@ function fenced(text: string | undefined, lang: string): string | undefined {
 }
 
 /**
- * What the workbench already ran, and what it said. Verify is told this so it does
- * not spend turns re-running commands whose result is already a matter of record —
- * and so it knows what *was* covered, which is what tells it what was not.
+ * What the workbench already ran, and what it said. Review and verify are told this
+ * so they do not spend turns re-running commands whose result is already a matter of
+ * record — and so they know what *was* covered, which is what says what was not.
  */
 function checksRun(checks: readonly CheckRun[] | undefined): string | undefined {
-  if (checks === undefined || checks.length === 0) return undefined;
+  if (checks === undefined) return undefined;
+
+  // Said rather than left out. A stage that is given no section at all fills the gap
+  // with what its instructions told it to expect — that the suite has been run and
+  // passed — and goes looking for output nobody produced.
+  if (checks.length === 0) {
+    return [
+      '**Nothing has been run against the tree in front of you.** There is no observed',
+      'output about this change: do not assume a suite has passed.',
+    ].join('\n');
+  }
 
   const lines = [
-    'These were run for you, in this worktree, before you started. You do not need',
-    'to run them again, and re-running them to confirm is a wasted turn.',
+    'These were run for you, in this worktree, after the implement run that produced',
+    'this change. You do not need to run them again, and re-running them to confirm is',
+    'a wasted turn.',
     '',
   ];
 

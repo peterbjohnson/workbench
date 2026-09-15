@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { Event, EventBody } from './events.ts';
 import { needsYou } from './board.ts';
-import { deriveTicket, type Ticket } from './ticket.ts';
+import { deriveTicket, lastChecks, type Ticket } from './ticket.ts';
 import { DEFAULT_POLICY, nextAction, waitingOutLimit, type Action } from './rules.ts';
 
 /** Accumulates events for one ticket and re-derives it, the way the store will. */
@@ -1426,6 +1426,35 @@ test('the gate can be taken off, and put back, any time before the plan is finis
   j.add({ type: 'plan_rejected', reason: 'wrong problem' });
   j.add({ type: 'ticket_edited', requiresApproval: true });
   assert.equal(runStage(j, 'plan', { summary: 'another plan' }).status, 'plan_gate');
+});
+
+test('the checks a stage is told about are the ones run since the work was last written', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  // Nothing has run them yet, and a plan is not a tree worth asking about.
+  assert.deepEqual(lastChecks(j.events), []);
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  const passed = [{ command: 'npm test', ok: true, output: '131 passing' }];
+  j.add({ type: 'checks_run', runId: 'r1', results: passed });
+  j.add({ type: 'stage_finished', runId: 'r1', outcome: 'completed', summary: 'wrote it' });
+
+  // Review and verify both read them off the implement run that produced the change:
+  // starting a stage of their own changes nothing about the tree.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r2' });
+  assert.deepEqual(lastChecks(j.events), passed);
+
+  // A later run of them wins, whichever run it belonged to.
+  const settled = [{ command: 'npm test', ok: false, output: '1 failing' }];
+  j.add({ type: 'checks_run', runId: 'r2', results: settled });
+  assert.deepEqual(lastChecks(j.events), settled);
+
+  // And an implement run that has begun invalidates all of it: what it is editing is
+  // the code they were run against.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r3' });
+  assert.deepEqual(lastChecks(j.events), [], 'nothing has been checked about this round yet');
 });
 
 test('an estimate is the last one guessed, and moves the ticket nowhere', () => {
