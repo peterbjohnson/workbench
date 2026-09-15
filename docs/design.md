@@ -216,6 +216,25 @@ gaps are worth knowing before you rely on it:
   cost, so stopping because credits are running dry still leaves an honest account of
   what was spent getting there.
 
+**A session limit is an interruption, not a failure.** *You've hit your session limit ·
+resets 10:30pm* is the service saying come back later, and saying when — so the run is
+parked exactly as an interrupted one is, conversation kept and nothing committed, with that
+instant recorded on the ticket. The tick that finds it has passed appends the same
+`stage_continued` the button does, which is why nobody has to be awake for it. It pauses
+every stage that uses the limited model rather than only the ticket that found it: those
+runs would buy the same message, and the stages no longer share a model — plan is on one,
+the three that write code on another — so holding the board would stop work nothing had
+refused. The message names no model, so the limit is attributed to the one the run was
+using. If it is really on the whole account, the first stage on the other model gets the
+same message and parks itself: one run to find that out, against a board that would
+otherwise stand still for hours. And it turns on reading the
+time: without one it fails as it always did, because a wait with no end would stop the board
+for good. The stated time is rounded down to the minute, so a message read within a couple of
+minutes of it names a comeback at the far edge of that grace rather than the moment of
+reading: an instant already gone would be resumed on the tick that parked it, refused again
+because the window has not really ended, and re-parked — a loop at API speed, with a plan
+counting each pass as a cycle.
+
 Recommended as later tickets, and deliberately not done here:
 
 1. Record a successful resume as plainly as a failed one is, and show it on the ticket —

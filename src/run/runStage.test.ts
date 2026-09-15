@@ -113,7 +113,7 @@ function aTicket(over: Partial<Ticket> = {}): Ticket {
  */
 async function runStage(
   scripts: Script[],
-  opts: { resume?: string; ticket?: Ticket } = {},
+  opts: { resume?: string; ticket?: Ticket; now?: Date } = {},
 ): Promise<{ result: RunResult; calls: Options[]; prompts: string[]; said: EventBody[] }> {
   const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-run-'));
   const model = service(scripts);
@@ -129,6 +129,7 @@ async function runStage(
       diff: async () => '',
       continued: () => '',
       query: model.query,
+      now: () => opts.now ?? new Date(),
     })({
       ticket: opts.ticket ?? aTicket(),
       stage: 'implement',
@@ -240,6 +241,50 @@ test('a picked-up run whose conversation is gone still runs the stage, from the 
   assert.equal(calls[1]?.resume, undefined, 'as a fresh conversation');
   assert.match(prompts[1] ?? '', /## Ticket/, 'briefed in full, because it knows nothing');
   assert.equal(result.outcome, 'completed');
+});
+
+/** What the service throws when the account has spent its window. */
+const LIMIT = "You've hit your session limit · resets 10:30pm (Europe/London)";
+/** 20:00 UTC is 21:00 in London in September, so the reset is ninety minutes off. */
+const BEFORE_THE_RESET = new Date('2026-09-14T20:00:00Z');
+
+test('a run that hits the session limit is parked rather than failed', async () => {
+  const { result } = await runStage([{ costs: [0.8], throws: LIMIT }], { now: BEFORE_THE_RESET });
+
+  assert.equal(
+    result.outcome,
+    'interrupted',
+    'the service said come back later, not that this broke',
+  );
+  assert.equal(result.limitedUntil, '2026-09-14T21:30:00.000Z', 'and said when');
+  assert.equal(
+    result.limitedModel,
+    'a-model',
+    'attributed to the model this run was on, since the message names none',
+  );
+  assert.equal(result.sessionId, 'session-1', 'the conversation is kept, to come back to');
+  assert.equal(result.costUsd, 0.8);
+});
+
+test('a session limit on a resumed run does not buy the stage a second time', async () => {
+  // The whole point of not calling it a crash: a crashed resume starts the stage
+  // again from the top, which is the cost this exists to avoid.
+  const { result, calls } = await runStage([{ throws: LIMIT }], {
+    resume: 'sess-abc',
+    now: BEFORE_THE_RESET,
+  });
+
+  assert.equal(calls.length, 1, 'it did not run the stage again');
+  assert.equal(result.outcome, 'interrupted');
+  assert.equal(result.limitedUntil, '2026-09-14T21:30:00.000Z');
+});
+
+test('a session limit that does not say when still fails', async () => {
+  // Nothing to wait for. Waiting anyway would hold the whole board for ever.
+  const { result } = await runStage([{ throws: "You've hit your session limit" }]);
+
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.limitedUntil, undefined);
 });
 
 test('a resumed run that failed without throwing is that stage answer', async () => {
