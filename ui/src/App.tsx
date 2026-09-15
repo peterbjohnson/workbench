@@ -13,7 +13,7 @@ import {
   waitingForSlot,
   type DoneView,
 } from '../../src/domain/board.ts';
-import { heldBy, type Policy } from '../../src/domain/rules.ts';
+import { heldBy, waitingOutLimit, type Policy } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Analytics } from './Analytics.tsx';
 import { applyBrand, isColour } from './brand.ts';
@@ -280,8 +280,12 @@ export function App() {
     );
   const from = continuing(selected);
   const writing = selected === NEW || from !== null;
-  /** What the workbench was stopped in the middle of, and has not been asked about. */
-  const stoppedMidStage = tickets.filter((t) => t.interrupted);
+  /**
+   * What the workbench was stopped in the middle of, and has not been asked about.
+   * Not a ticket waiting out a session limit: the modal is for work nobody has
+   * decided about, and that work has decided — it carries on at the time it says.
+   */
+  const stoppedMidStage = tickets.filter((t) => t.interrupted && !waitingOutLimit(t, Date.now()));
 
   // Which cards are next rather than idle. One count for the whole board, so every
   // card is judged against the same load — and none before the policy has arrived.
