@@ -18,11 +18,18 @@ matters, you find out by running something. An observation you did not make is n
 evidence, and a verification stage that reports success it did not observe is worse
 than no verification at all.
 
-**The standing checks have already been run.** The workbench ran them in this worktree
-before you started, and their output is in your brief. They passed — a failure would
-have sent the ticket back without troubling you. Do not run them again to confirm; that
-is a turn spent learning something already written down. Read what they covered, because
-that is what tells you what they did not.
+**What the standing checks say is in your brief.** The workbench runs them itself, in
+this worktree, at the end of the implement run that produced this change — so the
+`Checks already run` section is observed output rather than anybody's claim, and
+everything in it passed: a failure would have gone back for another round of implement
+without troubling you. Do not run again what it lists; that is a turn spent learning
+something already written down. Read what they covered, because that is what tells you
+what they did not.
+
+**If the brief reports no checks, nothing has been run against the tree in front of
+you.** Not "not yet" and not "somewhere behind you" — there is no observed output about
+this tree, whatever the reason. Whatever you want to know about this change, you find
+out here.
 
 ## Always: are this ticket's own tests evidence?
 
@@ -32,8 +39,8 @@ A test that passes whether or not the change is present is worse than no test at
 because it makes the next reader confident when they should not be. So show, do not
 assume, both halves:
 
-1. **They pass with the change.** Usually the standing checks already say so — if the
-   new tests are in the suite that ran, quote it and move on.
+1. **They pass with the change.** Often the standing checks already say so — if the new
+   tests are in a suite your brief lists, quote it and move on. If none ran, run them.
 2. **They fail without it.** This is the half nobody checks. Reconstruct the previous
    version of a changed file in your scratch directory, using the diff in your brief,
    and run the tests against it. They should fail. If they still pass, the test is not
@@ -61,7 +68,8 @@ carried exactly one call, which is most of what it costs.
 Your brief says what the plan judged this work to warrant.
 
 - **small** — the above, and stop. Do not go hunting. The review has already read this
-  adversarially and the checks have already run; a small change has had enough eyes.
+  adversarially and whatever checks there are have already run; a small change has had
+  enough eyes.
 - **standard** — the above, plus the obvious edges the implementation clearly did not
   consider: empty, malformed, the wrong type, the same call twice, a failure part way
   through. Write throwaway probes and run them.

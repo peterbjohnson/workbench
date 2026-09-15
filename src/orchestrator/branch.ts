@@ -8,12 +8,12 @@ import type { Deps } from './loop.ts';
 export type Branch = {
   /** Makes the workspace, recording where the branch was cut from the first time. */
   prepare: (ticket: Ticket) => Promise<{ path: string; scratch: string }>;
-  /** Brings the base in before a stage runs. Returns the merge the stage must finish. */
+  /** Brings the base in before a stage runs. Says what it did; see `refreshForStage`. */
   refreshForStage: (
     ticket: Ticket,
     stage: Stage,
     runId: string,
-  ) => Promise<{ base: string; paths: string[] } | undefined>;
+  ) => Promise<{ merged: boolean; conflict?: { base: string; paths: string[] } }>;
   /** The branches of the offered work this ticket waited for. See `awaitedWork`. */
   awaitedBranches: (ticket: Ticket) => string[];
 };
@@ -103,16 +103,21 @@ export function createBranch(deps: Deps): Branch {
    * answer and only records the commit it made. A conflict is left on disk and
    * handed to the run, which cannot finish until it is resolved.
    *
-   * @returns the merge the stage is being asked to finish, if there is one.
+   * Both are said out loud rather than only the conflict, because a clean merge is
+   * still code nothing has run the suite against: the caller checks what the stage
+   * leaves once it is over, and it can only know to when it is told a merge landed.
+   *
+   * @returns whether a merge landed, and the merge the stage is being asked to
+   *   finish, if there is one.
    */
   async function refreshForStage(
     ticket: Ticket,
     stage: Stage,
     runId: string,
-  ): Promise<{ base: string; paths: string[] } | undefined> {
+  ): Promise<{ merged: boolean; conflict?: { base: string; paths: string[] } }> {
     // Only the stages that can write. Plan and review are granted no editing tools
     // at all, so a conflict handed to one of them could only sit there unresolved.
-    if (stage !== 'implement' && stage !== 'verify') return undefined;
+    if (stage !== 'implement' && stage !== 'verify') return { merged: false };
 
     // The base and nothing else: the work this ticket waited for came in at
     // `takeAwaitedWork`, when the branch was cut, so at the start of a stage there is
@@ -120,7 +125,7 @@ export function createBranch(deps: Deps): Branch {
     // work is — see the conflicted branch of `refresh` in merging.ts, which is where a
     // clash with one is handed to a run.
     const result = await deps.workspace.refresh(ticket.id, [], true);
-    if (result.kind === 'up-to-date') return undefined;
+    if (result.kind === 'up-to-date') return { merged: false };
 
     if (result.kind === 'merged') {
       store.append(ticket.id, {
@@ -132,7 +137,7 @@ export function createBranch(deps: Deps): Branch {
         // is what lets the base move onto a commit that has not got it.
         carrying: carriedWork(ticket, store.tickets(), []),
       });
-      return undefined;
+      return { merged: true };
     }
 
     // Nothing left on disk to finish: the merge failed rather than conflicted — an
@@ -141,10 +146,12 @@ export function createBranch(deps: Deps): Branch {
     // find it again. Asked of the merge rather than of the paths, because a run that
     // stopped after staging its resolution leaves one with no unmerged paths at all,
     // and that merge still has to be finished and recorded by whoever takes it on.
-    if (!result.merging) return undefined;
+    if (!result.merging) return { merged: false };
 
     store.append(ticket.id, { type: 'conflicted', runId, base: result.base, paths: result.paths });
-    return { base: result.base, paths: result.paths };
+    // Not `merged`: the only ref asked for was the base, and it is the one that would
+    // not go in. What is on the branch is what was already on it.
+    return { merged: false, conflict: { base: result.base, paths: result.paths } };
   }
 
   /** The branches of the offered work this ticket waited for. See `awaitedWork`. */

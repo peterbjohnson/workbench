@@ -105,11 +105,11 @@ page on the board, which says of each whether changing it waits for a restart.
 ```
 
 **`checks` are the standing suite, and the workbench runs them itself** — in the ticket's
-worktree, at the start of verify, not by the verify agent. A pass is then something
-observed and written into the record rather than something an agent reports. If any check
-fails the ticket goes straight back to planning with the failure output as the reason and
-**no agent is called at all**, so discovering a broken test is the cheapest thing the
-workbench does rather than the most expensive.
+worktree, the moment an implement run finishes, not by an agent. A pass is then something
+observed and written into the record rather than something an agent reports, and review and
+verify are handed what ran instead of running it again. If any check fails the output goes
+back to implement as the change list, counted as a revision like any other objection, so a
+broken test is found before a review has been bought rather than after one.
 
 With none set, verify's `APPROVED` only ever means "I could not break it", and `wb serve`
 says so loudly at startup. A check must write nothing: it runs inside the worktree it is
