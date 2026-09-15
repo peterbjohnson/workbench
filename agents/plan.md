@@ -1,6 +1,6 @@
 ---
 stage: plan
-model: claude-opus-5
+model: claude-fable-5-1
 effort: high
 permissionMode: dontAsk
 maxTurns: 40
