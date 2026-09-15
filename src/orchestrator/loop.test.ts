@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { reconcile } from './loop.ts';
-import { create, during, harness, ok, waitFor, type Harness } from './harness.ts';
+import { create, during, harness, MODELS, ok, waitFor, type Harness } from './harness.ts';
 import { openStore } from '../store/store.ts';
 import type { Stage } from '../domain/events.ts';
 import { DEFAULT_POLICY } from '../domain/rules.ts';
@@ -618,10 +618,10 @@ test('interrupting a running stage parks it to be carried on, not to be paid for
   }
 });
 
-test('a session limit holds the whole board, and lifts by itself', async () => {
+test('a session limit holds every stage on that model, and lifts by itself', async () => {
   // Thirteen of twenty-three failed runs ended here, and every one of them was
-  // restarted by hand after the reset. The limit is on the account, so the ticket
-  // that found it is not special: nothing anywhere starts until it lifts.
+  // restarted by hand after the reset. Another ticket's plan runs on the same model,
+  // so it would only spend a stage being told the same thing: it waits too.
   const resets = '2026-09-14T21:30:00.000Z';
   let now = Date.parse('2026-09-14T20:00:00Z');
   const resumedWith: (string | undefined)[] = [];
@@ -636,6 +636,7 @@ test('a session limit holds the whole board, and lifts by itself', async () => {
             summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
             sessionId: 'sess-abc',
             limitedUntil: resets,
+            limitedModel: MODELS.plan,
           }
         : ok(`${stage} done`);
     },
@@ -650,6 +651,7 @@ test('a session limit holds the whole board, and lifts by itself', async () => {
     assert.equal(parked.interrupted, true, 'parked as stopped rather than as broken');
     assert.equal(parked.session, 'sess-abc', 'holding the run to carry on');
     assert.equal(parked.limitedUntil, resets, 'and the time it carries on at');
+    assert.equal(parked.limitedModel, MODELS.plan, 'and the model whose capacity ran out');
 
     create(h.store, 't2');
     await h.orch.idle();
@@ -663,7 +665,7 @@ test('a session limit holds the whole board, and lifts by itself', async () => {
     now = Date.parse('2026-09-14T21:30:01Z');
     await h.orch.idle();
 
-    assert.equal(said(/session limit has lifted/), 1, 'and the lift, once');
+    assert.equal(said(/session limit on .+ has lifted/), 1, 'and the lift, once');
     assert.equal(said(/session limit is in force/), 1, 'without saying the wait again');
 
     assert.ok(
@@ -673,6 +675,109 @@ test('a session limit holds the whole board, and lifts by itself', async () => {
     assert.equal(h.store.ticket('t1').status, 'plan_gate', 'without anyone pressing anything');
     assert.equal(h.store.ticket('t1').limitedUntil, null, 'and the board is not waiting any more');
     assert.equal(h.store.ticket('t2').status, 'plan_gate');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a limit on one model does not hold the stages that run on another', async () => {
+  // The stages stopped sharing a model: plan is on one, the three that write code on
+  // another. A plan that ran out of capacity says nothing about the coding model, so
+  // an approved ticket goes on being built while it waits. If the limit really is on
+  // the whole account, the implement run gets the same message and parks itself —
+  // one run to find that out, against a board that would otherwise stand still.
+  const now = Date.parse('2026-09-14T20:00:00Z');
+
+  const h = harness({
+    now: () => now,
+    runStage: async ({ stage }) =>
+      stage === 'plan'
+        ? {
+            outcome: 'interrupted',
+            summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
+            sessionId: 'sess-abc',
+            limitedUntil: '2026-09-14T21:30:00.000Z',
+            limitedModel: MODELS.plan,
+          }
+        : ok(`${stage} done`),
+  });
+
+  try {
+    // t2 is past its gate before the limit lands, so what it needs next is implement.
+    create(h.store, 't2');
+    h.store.append('t2', {
+      type: 'stage_finished',
+      runId: 'r0',
+      outcome: 'completed',
+      summary: 'planned',
+    });
+    h.store.append('t2', { type: 'plan_approved' });
+
+    create(h.store, 't1');
+    await h.orch.idle();
+
+    assert.equal(h.store.ticket('t1').limitedUntil, '2026-09-14T21:30:00.000Z', 'the plan waits');
+    assert.equal(
+      h.store.ticket('t2').status,
+      'awaiting_verdict',
+      'while the work on the other model was built, reviewed, verified and offered',
+    );
+    assert.deepEqual(h.ran, ['plan', 'implement', 'review', 'verify']);
+  } finally {
+    await h.close();
+  }
+});
+
+test('two models limited at once each hold their own stages, to their own time', async () => {
+  // Several tickets can be parked at the same moment on different models, and the
+  // resets are whatever each model's window says. Neither is a reason to hold the
+  // other, and neither waits for the other's time.
+  const planResets = '2026-09-14T21:30:00.000Z';
+  const codeResets = '2026-09-14T22:30:00.000Z';
+  let now = Date.parse('2026-09-14T20:00:00Z');
+  const limited = new Set<Stage>(['plan', 'implement']);
+
+  const h = harness({
+    now: () => now,
+    runStage: async ({ stage }) =>
+      limited.delete(stage)
+        ? {
+            outcome: 'interrupted',
+            summary: "You've hit your session limit · resets (Europe/London)",
+            sessionId: `sess-${stage}`,
+            limitedUntil: stage === 'plan' ? planResets : codeResets,
+            limitedModel: MODELS[stage],
+          }
+        : ok(`${stage} done`),
+  });
+
+  try {
+    create(h.store, 't2');
+    h.store.append('t2', {
+      type: 'stage_finished',
+      runId: 'r0',
+      outcome: 'completed',
+      summary: 'planned',
+    });
+    h.store.append('t2', { type: 'plan_approved' });
+
+    create(h.store, 't1');
+    await h.orch.idle();
+
+    assert.equal(h.store.ticket('t1').limitedUntil, planResets, 'the plan waits for its reset');
+    assert.equal(h.store.ticket('t2').limitedUntil, codeResets, 'the implement for a later one');
+
+    // Half past ten: the thinking model is back and the coding model is not.
+    now = Date.parse('2026-09-14T21:30:01Z');
+    await h.orch.idle();
+
+    assert.equal(h.store.ticket('t1').status, 'plan_gate', 'so the plan carried itself on');
+    assert.equal(h.store.ticket('t2').limitedUntil, codeResets, 'and the implement still waits');
+
+    now = Date.parse('2026-09-14T22:30:01Z');
+    await h.orch.idle();
+
+    assert.equal(h.store.ticket('t2').status, 'awaiting_verdict', 'each at its own time');
   } finally {
     await h.close();
   }
@@ -693,6 +798,7 @@ test('a limit left on a ticket that has moved on is over, not carried on for eve
             summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
             sessionId: 'sess-abc',
             limitedUntil: '2026-09-14T21:30:00.000Z',
+            limitedModel: MODELS.plan,
           }
         : ok(`${stage} done`),
   });

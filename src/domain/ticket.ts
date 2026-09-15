@@ -124,6 +124,15 @@ export type Ticket = {
    * starts nothing until it passes, and then carries this ticket on by itself.
    */
   limitedUntil: string | null;
+  /**
+   * The model the run parked by that limit was using. Null whenever `limitedUntil`
+   * is, and for a limit recorded before this was.
+   *
+   * The stages no longer share a model, so the limit has to name one: a plan held on
+   * one model is no reason for an implement on another to sit still. See
+   * `sessionLimits` in the orchestrator, which is the only thing that reads it.
+   */
+  limitedModel: string | null;
   /** The manager's reply, carried into the resumed run and cleared once it starts. */
   answer: string | null;
   /**
@@ -255,6 +264,7 @@ function blank(id: string): Ticket {
     session: null,
     interrupted: false,
     limitedUntil: null,
+    limitedModel: null,
     answer: null,
     prUrl: null,
     offered: false,
@@ -283,9 +293,10 @@ function blank(id: string): Ticket {
  * workbench had stopped. A kept `interrupted` puts a ticket in the pick-up modal
  * that `stage_continued` then declines to move, so the box comes back every load
  * offering a button that does nothing. A kept `limitedUntil` is worse still: it is
- * what holds the whole board, so a stale one pauses every ticket there is.
+ * what holds every stage on that model, so a stale one pauses work nothing is
+ * stopping.
  */
-const movedOn = { session: null, interrupted: false, limitedUntil: null };
+const movedOn = { session: null, interrupted: false, limitedUntil: null, limitedModel: null };
 
 /**
  * What the end of the road drops. Both endings are the same shape and neither is
@@ -300,6 +311,7 @@ const stoppedFor = {
   question: null,
   interrupted: false,
   limitedUntil: null,
+  limitedModel: null,
 };
 
 /** Pure. No I/O, no clock. */
@@ -368,6 +380,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         session: null,
         interrupted: false,
         limitedUntil: null,
+        limitedModel: null,
         conflicts: [],
         conflictedWith: null,
       };
@@ -406,6 +419,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         answer: null,
         interrupted: false,
         limitedUntil: null,
+        limitedModel: null,
       };
       if (t.offered) return { ...carrying, status: 'awaiting_verdict' };
       return t.stage === null ? t : { ...carrying, status: STATUS_FOR_STAGE[t.stage] };
@@ -427,6 +441,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // Whatever stopped the last run, this one is going.
         interrupted: false,
         limitedUntil: null,
+        limitedModel: null,
         // A plan is what starts a trip round the loop, so it is what counts one.
         cycles: e.stage === 'plan' ? t.cycles + 1 : t.cycles,
         // A new plan re-judges the size of the work from nothing. Carrying the last
@@ -483,6 +498,7 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         queuedBehind: null,
         interrupted: false,
         limitedUntil: null,
+        limitedModel: null,
         conflicts: [],
         conflictedWith: null,
       };
@@ -739,6 +755,7 @@ function afterStage(t: Ticket, e: Extract<Event, { type: 'stage_finished' }>): T
       status: 'blocked',
       interrupted: true,
       limitedUntil: e.limitedUntil ?? null,
+      limitedModel: e.limitedModel ?? null,
     };
   }
 

@@ -257,6 +257,11 @@ test('a run that hits the session limit is parked rather than failed', async () 
     'the service said come back later, not that this broke',
   );
   assert.equal(result.limitedUntil, '2026-09-14T21:30:00.000Z', 'and said when');
+  assert.equal(
+    result.limitedModel,
+    'a-model',
+    'attributed to the model this run was on, since the message names none',
+  );
   assert.equal(result.sessionId, 'session-1', 'the conversation is kept, to come back to');
   assert.equal(result.costUsd, 0.8);
 });

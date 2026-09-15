@@ -147,9 +147,11 @@ line, and **Start this stage again** is there when carrying on is the wrong answ
 *You've hit your session limit · resets 10:30pm*, the model service is saying come back
 later rather than that anything went wrong. The ticket parks holding its conversation, its
 card says **carries on at 10:30 pm** instead of asking for you, and at that time it picks
-the stage up where it stopped. Nothing else on the board starts in the meantime: the limit
-is on the account, so every other ticket would only spend a stage finding out the same
-thing. Those tickets are not in the box that asks you about stopped stages — there is
+the stage up where it stopped. Nothing else that runs on the same model starts in the
+meantime — those stages would only spend a run finding out the same thing — but anything on
+another model carries on, so a plan waiting out a limit does not stop work being built.
+Several tickets can be waiting at once, on different models, and each carries on at its own
+time. Those tickets are not in the box that asks you about stopped stages — there is
 nothing to decide — but both buttons are still on the panel if you want it sooner, or
 differently. A limit message that does not say when it resets fails like any other crash.
 

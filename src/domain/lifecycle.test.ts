@@ -359,6 +359,7 @@ function limited(): Journal {
     summary: "You've hit your session limit · resets 10:30pm (Europe/London)",
     sessionId: 'sess-abc',
     limitedUntil: RESETS_AT,
+    limitedModel: 'the thinking model',
   });
   return j;
 }
@@ -371,6 +372,7 @@ test('a session limit parks the stage with the time it carries on at', () => {
   assert.equal(parked.interrupted, true, 'stopped, not broken');
   assert.equal(parked.session, 'sess-abc', 'and the run is there to be carried on');
   assert.equal(parked.limitedUntil, RESETS_AT);
+  assert.equal(parked.limitedModel, 'the thinking model', 'and whose capacity ran out');
   assert.equal(waitingOutLimit(parked, Date.parse('2026-08-03T21:00:00Z')), true);
   assert.equal(
     waitingOutLimit(parked, Date.parse('2026-08-03T22:00:00Z')),
@@ -382,12 +384,14 @@ test('a session limit parks the stage with the time it carries on at', () => {
   assert.equal(carrying.status, 'planning', 'back into the stage it stopped in');
   assert.equal(carrying.session, 'sess-abc', 'carrying what it had already thought');
   assert.equal(carrying.limitedUntil, null, 'and nothing is waiting on the limit any more');
+  assert.equal(carrying.limitedModel, null, 'so the model it was on is held no longer');
 });
 
 test('a limit-parked ticket that moves any other way stops waiting', () => {
-  // The time holds the whole board, so one left on a ticket that has gone somewhere
-  // else is every other ticket paused against a wait that is over.
+  // The time holds every stage on that model, so one left on a ticket that has gone
+  // somewhere else is work paused against a wait that is over.
   assert.equal(limited().add({ type: 'stage_restarted' }).limitedUntil, null);
+  assert.equal(limited().add({ type: 'stage_restarted' }).limitedModel, null);
   assert.equal(limited().add({ type: 'plan_rejected', reason: 'wrong shape' }).limitedUntil, null);
 
   // Answering is the same move with the conversation kept, so it leaves the same

@@ -251,6 +251,12 @@ export type EventBody =
        */
       limitedUntil?: string;
       /**
+       * The model that run was using, set alongside `limitedUntil`. The message names
+       * no model, so this is who the limit is attributed to — and it is what decides
+       * which other stages have to wait and which carry on regardless.
+       */
+      limitedModel?: string;
+      /**
        * This run was the workbench settling a clash on a branch that was offered,
        * rather than a stage the board asked for. What routes the report: there is no
        * next stage to send it to, so it goes back to the wait it interrupted.

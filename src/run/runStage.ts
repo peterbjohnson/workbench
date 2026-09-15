@@ -312,6 +312,11 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
           summary: threw ?? '',
           sessionId,
           limitedUntil: limitedUntil.toISOString(),
+          // The message names no model, so the limit is attributed to the one this run
+          // was using. If it really is on the whole account, the first stage on another
+          // model gets the same message and parks itself: one run to find that out, and
+          // the board keeps working in the meantime rather than stopping on a guess.
+          limitedModel: agent.model,
           costUsd,
         });
       }
