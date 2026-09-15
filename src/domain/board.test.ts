@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  boardOrder,
+  byNumber,
   changesStand,
   chatTurns,
   COLUMNS,
@@ -15,6 +17,7 @@ import {
   kindsInDone,
   madeInto,
   needsYou,
+  neighbours,
   ordered,
   rejectionStands,
   runs,
@@ -197,6 +200,81 @@ test('the whole of Done is what nobody choosing anything gets', () => {
     FINISHED.map((t) => t.id),
     ['t1', 't2', 't3', 't4', 't5'],
   );
+});
+
+/**
+ * Three columns with something in them and a number out of order, which is what
+ * makes the two sequences different boards to walk.
+ */
+const BROWSING = [
+  card('t2', 'backlog'),
+  card('t10', 'backlog'),
+  card('t1', 'implementing'),
+  card('t9', 'done'),
+  card('t3', 'done'),
+];
+
+test('the board reads column by column, in the order each one is drawn', () => {
+  assert.deepEqual(
+    boardOrder(BROWSING, WHOLE_OF_DONE).map((t) => t.id),
+    ['t2', 't10', 't1', 't3', 't9'],
+    'Backlog, then Building, then Done newest first',
+  );
+  // Whatever Done is sorted by is what browsing it follows — otherwise the pager
+  // walks an order nobody can see.
+  assert.deepEqual(
+    boardOrder(BROWSING, { ...WHOLE_OF_DONE, sort: 'oldest' }).map((t) => t.id),
+    ['t2', 't10', 't1', 't9', 't3'],
+  );
+  assert.deepEqual(boardOrder([], WHOLE_OF_DONE), []);
+});
+
+test('by number is by the number, not by the text of the id', () => {
+  assert.deepEqual(
+    byNumber(BROWSING).map((t) => t.id),
+    ['t1', 't2', 't3', 't9', 't10'],
+  );
+  // An id with no number in it goes last rather than wherever reading one out of
+  // it happens to land, and the board itself is left alone.
+  assert.deepEqual(
+    byNumber([card('tx', 'backlog'), ...BROWSING]).map((t) => t.id),
+    ['t1', 't2', 't3', 't9', 't10', 'tx'],
+  );
+  assert.deepEqual(
+    BROWSING.map((t) => t.id),
+    ['t2', 't10', 't1', 't9', 't3'],
+  );
+});
+
+test('the ticket next to one is the next one drawn, column boundaries and all', () => {
+  const step = (id: string, browse: Parameters<typeof neighbours>[2] = 'column') => {
+    const { previous, next } = neighbours(BROWSING, id, browse, WHOLE_OF_DONE);
+    return [previous?.id ?? null, next?.id ?? null];
+  };
+
+  assert.deepEqual(step('t10'), ['t2', 't1'], 'the end of Backlog carries on into Building');
+  assert.deepEqual(step('t1'), ['t10', 't3'], 'and Building into Done');
+  assert.deepEqual(step('t2'), [null, 't10'], 'nothing before the first card on the board');
+  assert.deepEqual(step('t9'), ['t3', null], 'nor after the last');
+
+  assert.deepEqual(step('t9', 'number'), ['t3', 't10'], 'a different sequence entirely');
+  assert.deepEqual(step('t1', 'number'), [null, 't2']);
+  assert.deepEqual(step('t10', 'number'), ['t9', null]);
+});
+
+test('a ticket the filters leave out is browsed as part of the whole board', () => {
+  // Done cut down to what was cancelled draws neither t3 nor t9, and t9 is open
+  // from a link. The pager is the whole board's rather than nothing at all.
+  const { previous, next } = neighbours(BROWSING, 't9', 'column', {
+    ...WHOLE_OF_DONE,
+    outcome: 'cancelled',
+  });
+  assert.deepEqual([previous?.id ?? null, next?.id ?? null], ['t3', null]);
+});
+
+test('a ticket that is not on the board has nothing either side of it', () => {
+  const { previous, next } = neighbours(BROWSING, 't99', 'column', WHOLE_OF_DONE);
+  assert.deepEqual([previous, next], [null, null]);
 });
 
 test('needing you is the gate and being stuck, and nothing else', () => {

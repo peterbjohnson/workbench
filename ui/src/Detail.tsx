@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 
 import {
   changesStand,
+  columnFor,
   details,
   gateAhead,
   grouped,
   headline,
   madeInto,
+  neighbours,
   rejectionStands,
   runs,
   salvageable,
@@ -15,6 +17,8 @@ import {
   suggestion,
   toneOf,
   tweakable,
+  type Browse,
+  type DoneView,
   type LogItem,
   type Run,
 } from '../../src/domain/board.ts';
@@ -23,6 +27,7 @@ import type { Event } from '../../src/domain/events.ts';
 import { heldBy, waitingOutLimit } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Chat } from './Chat.tsx';
+import { useBrowse } from './order.ts';
 import { Pick } from './Pick.tsx';
 import { TicketForm } from './TicketForm.tsx';
 import { wb } from './wb.ts';
@@ -34,10 +39,12 @@ export function Detail(props: {
   tickets: Ticket[];
   /** What the form offers in front of a title, for when this one's is rewritten. */
   prefixes: string[];
+  /** How Done is read, so stepping through the board follows what is drawn. */
+  view: DoneView;
   onAct: (work: Promise<unknown>) => Promise<void>;
   onClose: () => void;
 }) {
-  const { id, version, tickets, prefixes, onAct, onClose } = props;
+  const { id, version, tickets, prefixes, view, onAct, onClose } = props;
   const [state, setState] = useState<{ ticket: Ticket; events: Event[] } | null>(null);
   const [editing, setEditing] = useState(false);
   /**
@@ -269,6 +276,11 @@ export function Detail(props: {
             )}
           </div>
         </details>
+
+        {/* On to the next ticket, at the bottom: the top of the panel is busy, and
+            moving on is what you want when you have finished reading rather than
+            before you start. */}
+        <Pager ticket={t} tickets={tickets} view={view} />
       </aside>
 
       {/* Thinking about the ticket out loud, with something that has already read it.
@@ -570,6 +582,85 @@ function Git({ ticket: t }: { ticket: Ticket }) {
             it is. This is where the work is, for going and looking at it. */}
       </dl>
     </details>
+  );
+}
+
+/**
+ * The ticket either side of this one, and which sequence "either side" means. The
+ * board's drawn order to begin with — the rest of this column and then on into the
+ * next one, because that is what you were reading when you opened a card — or by
+ * ticket number, for going through everything once.
+ *
+ * Links rather than buttons: the panel is the address, so the next ticket is
+ * nothing more than another address, the same as the ones in the meta line.
+ */
+function Pager({
+  ticket: t,
+  tickets,
+  view,
+}: {
+  ticket: Ticket;
+  tickets: Ticket[];
+  view: DoneView;
+}) {
+  const [browse, chooseBrowse] = useBrowse();
+  const { previous, next } = neighbours(tickets, t.id, browse, view);
+
+  return (
+    <div className="pager">
+      <Step to={previous} browse={browse} here={columnFor(t)} way="previous" />
+      <select
+        aria-label="browse order"
+        value={browse}
+        onChange={(e) => chooseBrowse(e.target.value as Browse)}
+      >
+        <option value="column">In column</option>
+        <option value="number">By number</option>
+      </select>
+      <Step to={next} browse={browse} here={columnFor(t)} way="next" />
+    </div>
+  );
+}
+
+/**
+ * One side of the pager, saying where it goes rather than only which way: which
+ * column, when the step leaves this one, so a jump across the board is not a
+ * surprise. At the end of the sequence it is still drawn, quiet and inert — a row
+ * that loses half of itself at the edges moves the other half under the pointer.
+ */
+function Step({
+  to,
+  browse,
+  here,
+  way,
+}: {
+  to: Ticket | null;
+  browse: Browse;
+  here: string;
+  way: 'previous' | 'next';
+}) {
+  const word = way === 'previous' ? 'Previous' : 'Next';
+
+  if (to === null) {
+    return (
+      <span className="quiet">{way === 'previous' ? '← Nothing before' : 'Nothing after →'}</span>
+    );
+  }
+
+  const label =
+    browse === 'number'
+      ? `${word} ticket`
+      : columnFor(to) === here
+        ? `${word} in column`
+        : `${word} · ${columnFor(to)}`;
+
+  return (
+    <a href={`#${to.id}`}>
+      {way === 'previous' && '← '}
+      {`${label} · `}
+      <span className="mono">{to.id}</span>
+      {way === 'next' && ' →'}
+    </a>
   );
 }
 

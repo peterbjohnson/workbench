@@ -593,6 +593,42 @@ aside .meta {
   margin-bottom: 1rem;
 }
 
+/* On to the next ticket, at the bottom of the panel: previous on the left, next on
+   the right, and which sequence between them. Quiet, and ruled off above, because it
+   is about the reading rather than about the work. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 1.2rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+
+/* The end of the sequence: still drawn, so the row does not move under the pointer
+   at the edges of the board. */
+.pager .quiet {
+  color: var(--dim);
+}
+
+.pager select {
+  font: inherit;
+  font-size: 0.7rem;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.1rem 0.2rem;
+  cursor: pointer;
+}
+
+.pager select:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
 .box {
   background: var(--bg);
   border: 1px solid var(--line);

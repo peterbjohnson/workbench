@@ -130,6 +130,15 @@ cost — and the prose opens when you want it.
 more behind it opens: what an agent said in full, the arguments a tool was really given,
 what a stage cost.
 
+**The bottom of the panel moves on to another ticket.** *← Previous in column* and *Next in
+column →*, each with the id it goes to, so a column can be read through without going back
+to the board between cards. The sequence is the board's own: the rest of that column, then
+on into the next one — and a step that leaves the column says which one it lands in, *Next ·
+Building · t9*. The menu between the two changes the sequence to ticket number instead,
+*Next ticket · t14*, for going through everything once; the choice stays in your browser. At
+the two ends of the board the control is still there and does nothing, rather than vanishing
+and moving the other one under your pointer.
+
 **A stage that failed can be restarted.** A crash — the model service hanging up, a push
 that could not reach the remote — parks the ticket with nothing to answer, so the panel
 offers **Restart this stage** rather than a question box. It runs again from the top, and

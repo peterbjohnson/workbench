@@ -448,6 +448,9 @@ export function App() {
           // which one rather than offering to make it again.
           tickets={tickets}
           prefixes={prefixes}
+          // What Done is sorted and filtered by, so the panel's pager steps through
+          // the board in the order the board is actually drawn in.
+          view={doneView}
           onAct={act}
           onClose={() => open(null)}
         />
