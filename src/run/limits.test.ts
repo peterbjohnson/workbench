@@ -49,7 +49,13 @@ test('the instant is never one that has already gone', () => {
   // the past is carried on by the tick that parked it, and parked again, for as long as
   // the service keeps refusing. Every message this reads at all, read from every side of
   // the grace, must name a moment still to come.
-  const messages = [MESSAGE, 'session limit · resets 22:30 (Europe/London)'];
+  const messages = [
+    MESSAGE,
+    'session limit · resets 22:30 (Europe/London)',
+    // The zoneless form too: it is read against this machine's clock, so where in the
+    // grace it falls depends on where the test runs — and the invariant must not.
+    "You've hit your session limit · resets 3pm",
+  ];
   for (const message of messages) {
     for (const minute of [-5, -1, 0, 1, 2, 3, 30, 60]) {
       for (const second of [0, 12, 59]) {
@@ -70,7 +76,11 @@ test('a reset that has already gone today is tomorrow', () => {
 });
 
 test('no zone means this machine', () => {
-  const now = new Date('2026-09-14T12:00:00Z');
+  // Read against whatever clock the machine keeps, so the instant must be the next local
+  // 3pm wherever this runs. :20 past the hour, because every zone's offset is a whole
+  // number of quarter-hours: the local clock here reads :20, :35, :05 or :50, never near
+  // enough to 15:00 for the grace — which would answer 15:03 — to be in play at all.
+  const now = new Date('2026-09-14T12:20:00Z');
   const at = readSessionLimit("You've hit your session limit · resets 3pm", now);
 
   assert.ok(at !== undefined && at > now);
