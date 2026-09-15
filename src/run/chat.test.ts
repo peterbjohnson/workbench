@@ -209,6 +209,19 @@ test('the chat reads only where it was pointed', async () => {
   await chat.close();
 });
 
+test('the chat is started without the skills Claude Code ships', async () => {
+  // `doctor` and `design` outlive CLAUDE_CODE_DISABLE_BUNDLED_SKILLS on purpose, so
+  // the env alone left them in every session.
+  const chat = chatting([{ text: 'had a look' }]);
+  await chat.say();
+  const options = spoken(chat.calls)[0]?.options ?? {};
+
+  assert.equal(options.env?.['CLAUDE_CODE_DISABLE_BUNDLED_SKILLS'], '1');
+  assert.deepEqual(options.settings, { skillOverrides: { design: 'off', doctor: 'off' } });
+
+  await chat.close();
+});
+
 test('a turn that could not pick its session up starts the conversation again', async () => {
   // The session lives in ~/.claude/projects under the path it was started from, so
   // queueing a ticket loses it: the cwd moves to the worktree. Throwing here would

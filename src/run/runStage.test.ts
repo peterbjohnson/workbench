@@ -27,6 +27,8 @@ type Script = {
   throws?: string;
   /** What the SDK hangs on that error — a status code, a type — as a real one does. */
   throwsWith?: Record<string, unknown>;
+  /** The skills the session reports holding when it starts. No init message when absent. */
+  reports?: string[];
 };
 
 /** A model service that never leaves the machine. One script per call, in order. */
@@ -47,6 +49,16 @@ function service(scripts: Script[]): {
     prompts.push(typeof prompt === 'string' ? prompt : '');
 
     async function* messages(): AsyncGenerator<SDKMessage, void> {
+      if (script.reports !== undefined) {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          apiKeySource: 'none',
+          skills: script.reports,
+          plugins: [{ name: 'workbench', path: '' }],
+          session_id: 'session-1',
+        } as unknown as SDKMessage;
+      }
       if (script.asks === true) {
         const hook = options?.hooks?.PreToolUse?.[0]?.hooks?.[0];
         assert.ok(hook, 'a run is watching its tool calls');
@@ -128,6 +140,8 @@ async function runStage(
     since?: string;
     /** What the last implement run said it did, as the orchestrator hands it over. */
     didBefore?: string;
+    /** The board's skills, by canonical name. */
+    skills?: string[];
   } = {},
 ): Promise<{
   result: RunResult;
@@ -148,7 +162,7 @@ async function runStage(
       protectedPaths: [],
       about: '',
       pluginRoot: worktree,
-      skills: () => [],
+      skills: () => (opts.skills ?? []).map((name) => ({ name, description: name })),
       diff: async (_ticket, _worktree, from) => {
         diffs.push(from);
         if (from === undefined) return '+ the whole change';
@@ -242,6 +256,43 @@ test('the conversation is recorded while the run is going, not when it ends', as
     said.filter((e) => e.type === 'session_started'),
     [{ type: 'session_started', runId: 'r1', sessionId: 'session-1' }],
     'once, the moment the conversation had a name',
+  );
+});
+
+test('a stage is started with the board’s skills and without the ones Claude Code ships', async () => {
+  // `doctor` and `design` outlive CLAUDE_CODE_DISABLE_BUNDLED_SKILLS on purpose, so
+  // the env alone left them in every stage's session.
+  const { calls } = await runStage([{ costs: [0.1] }], { skills: ['workbench:naming-a-ticket'] });
+
+  assert.equal(calls[0]?.env?.['CLAUDE_CODE_DISABLE_BUNDLED_SKILLS'], '1');
+  assert.deepEqual(calls[0]?.settings, { skillOverrides: { design: 'off', doctor: 'off' } });
+  assert.deepEqual(calls[0]?.skills, ['workbench:naming-a-ticket']);
+});
+
+test('skills the session lists but the board does not hold are recorded as not offered', async () => {
+  // The session's list is every skill a user could type. `doctor` sat in it on every
+  // run, recorded as held, while the model was never offered it and could not call it.
+  const { said } = await runStage(
+    [{ reports: ['workbench:naming-a-ticket', 'design', 'doctor'], costs: [0.1] }],
+    { skills: ['workbench:naming-a-ticket', 'workbench:writing-code-here'] },
+  );
+
+  assert.deepEqual(
+    said.flatMap((e) => (e.type === 'agent_said' ? [e.text] : [])),
+    [
+      '[implement] credential: none · skills: workbench:naming-a-ticket · missing: workbench:writing-code-here · not offered: design, doctor · plugins: workbench',
+    ],
+  );
+});
+
+test('a session holding exactly the board’s skills says only that', async () => {
+  const { said } = await runStage([{ reports: ['workbench:naming-a-ticket'], costs: [0.1] }], {
+    skills: ['workbench:naming-a-ticket'],
+  });
+
+  assert.deepEqual(
+    said.flatMap((e) => (e.type === 'agent_said' ? [e.text] : [])),
+    ['[implement] credential: none · skills: workbench:naming-a-ticket · plugins: workbench'],
   );
 });
 

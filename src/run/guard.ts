@@ -1,6 +1,20 @@
 import path from 'node:path';
 
+import type { Options } from '@anthropic-ai/claude-agent-sdk';
+
 import { WB_WRITE_TOOLS } from '../tools/names.ts';
+
+/**
+ * The skills Claude Code ships that `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` leaves in
+ * place. The CLI marks a few as outliving that switch on purpose — `doctor` in 2.1.245,
+ * `design` as well from 2.1.272 — so every session reported them however the env was
+ * set. Neither could be called: both are reserved for a user typing them, and the guard
+ * refuses anything the workbench does not hold. Off, they are not in the session at all.
+ * A later CLI that brings in another shows up in a stage's init line as not offered.
+ */
+export const MACHINE_SKILLS_OFF = {
+  skillOverrides: { design: 'off', doctor: 'off' },
+} satisfies Options['settings'];
 
 export type GuardResult = { allow: true } | { allow: false; reason: string };
 

@@ -10,7 +10,7 @@ import type { Ticket } from '../domain/ticket.ts';
 import { chatTurns, runs, statusOf } from '../domain/board.ts';
 import type { ChatAgentDef } from '../agents/load.ts';
 import { wbServer } from '../tools/server.ts';
-import { guard, type GuardContext } from './guard.ts';
+import { guard, MACHINE_SKILLS_OFF, type GuardContext } from './guard.ts';
 import { createLiveChats } from './liveChat.ts';
 import { readProposals } from './protocol.ts';
 
@@ -260,6 +260,7 @@ function chatOptions(
     ),
     strictMcpConfig: true,
     env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
+    settings: MACHINE_SKILLS_OFF,
     hooks: {
       PreToolUse: [
         {
