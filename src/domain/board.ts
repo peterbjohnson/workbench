@@ -151,6 +151,58 @@ export function keepsBoardOrder(sort: DoneSort): boolean {
   return sort === 'newest' || sort === 'oldest';
 }
 
+/** Which sequence one ticket's neighbours are read from. */
+export type Browse = 'column' | 'number';
+
+/**
+ * Every ticket in the order the board draws it: the columns in their order, each
+ * one's cards as that column reads them, and Done under whatever the reader has it
+ * sorted and filtered by. Stepping from one ticket to the next along this is
+ * stepping along what is on screen, rather than along some other order of the same
+ * cards.
+ */
+export function boardOrder(tickets: readonly Ticket[], view: DoneView): Ticket[] {
+  return COLUMNS.flatMap((c) =>
+    c.name === DONE ? sortedDone(tickets, view) : inColumn(tickets, c.name),
+  );
+}
+
+/**
+ * Every ticket by the number in its id — the order they were written in, and the
+ * one order that says nothing about where any of the work has got to. The number is
+ * read out rather than the ids compared as text, so t9 comes before t10; an id that
+ * holds no number sorts last, by id, rather than wherever reading one out of it
+ * happens to land.
+ */
+export function byNumber(tickets: readonly Ticket[]): Ticket[] {
+  const number = (t: Ticket) => {
+    const found = Number(t.id.replace(/^t/, ''));
+    return Number.isFinite(found) ? found : Infinity;
+  };
+  return [...tickets].sort((a, b) => number(a) - number(b) || (a.id < b.id ? -1 : 1));
+}
+
+/**
+ * The tickets either side of one in the sequence being browsed. `null` at the two
+ * ends: the board has ends, and a pager that comes round again hides that.
+ *
+ * A ticket the sequence does not hold — a finished one that the Done filters leave
+ * out, opened from a link somewhere else — falls back to the whole board, so the
+ * two controls are never both dead on a ticket that is perfectly readable.
+ */
+export function neighbours(
+  tickets: readonly Ticket[],
+  id: string,
+  browse: Browse,
+  view: DoneView,
+): { previous: Ticket | null; next: Ticket | null } {
+  const drawn = browse === 'number' ? byNumber(tickets) : boardOrder(tickets, view);
+  const held = drawn.some((t) => t.id === id) ? drawn : boardOrder(tickets, WHOLE_OF_DONE);
+  const at = held.findIndex((t) => t.id === id);
+  if (at === -1) return { previous: null, next: null };
+  return { previous: held[at - 1] ?? null, next: held[at + 1] ?? null };
+}
+
 /**
  * A blocked ticket keeps the stage it stopped in, so it stays in that stage's
  * column rather than moving to one of its own. That is what has happened: the work

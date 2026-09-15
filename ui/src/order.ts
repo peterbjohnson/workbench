@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 
-import { WHOLE_OF_DONE, type DoneView } from '../../src/domain/board.ts';
+import { WHOLE_OF_DONE, type Browse, type DoneView } from '../../src/domain/board.ts';
 
 /**
  * Where the choice is kept. It is about this browser rather than about the
@@ -69,4 +69,35 @@ export function useDoneView(): [DoneView, (change: Partial<DoneView>) => void] {
   }, []);
 
   return [view, choose];
+}
+
+/** Where the other choice about reading is kept, and for the same reason. */
+const BROWSE = 'workbench.browse';
+
+/**
+ * Which sequence the ticket panel steps through, or the board's drawn order if
+ * nothing was chosen: opening a card is reading the column it is in, so carrying on
+ * down that column is what the controls are for before they are anything else.
+ */
+export function useBrowse(): [Browse, (browse: Browse) => void] {
+  const [browse, setBrowse] = useState<Browse>(storedBrowse);
+
+  const choose = useCallback((next: Browse) => {
+    setBrowse(next);
+    try {
+      localStorage.setItem(BROWSE, next);
+    } catch {
+      // As above: it applies for this session and is forgotten by the next.
+    }
+  }, []);
+
+  return [browse, choose];
+}
+
+function storedBrowse(): Browse {
+  try {
+    return localStorage.getItem(BROWSE) === 'number' ? 'number' : 'column';
+  } catch {
+    return 'column';
+  }
 }
