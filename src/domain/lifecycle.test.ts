@@ -1444,8 +1444,66 @@ test('the round a later review is given is the last one review itself asked for'
   j.add({ type: 'changes_requested', changes: '- and rename that' });
   assert.deepEqual(lastReviewChanges(j.events), { changes: '- name the units', at: 'aaa111' });
 
+  // A review that asks for nothing has settled its own list: it read the work done
+  // about it and accepted it.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r5' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r5',
+    outcome: 'completed',
+    summary: 'fixed',
+    commit: 'ccc333',
+  });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r6' });
+  j.add({ type: 'stage_finished', runId: 'r6', outcome: 'completed', summary: 'good' });
+  assert.equal(lastReviewChanges(j.events), null);
+
+  // So a ticket sent back round by verify reaches review with nothing before it. The
+  // list it would otherwise be handed is one an earlier review passed, and the commit
+  // it would be measured from is one that review had read.
+  j.add({ type: 'stage_started', stage: 'verify', runId: 'r7' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r7',
+    outcome: 'completed',
+    summary: 'no',
+    changes: '- an untested branch',
+  });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r8' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r8',
+    outcome: 'completed',
+    summary: 'fixed',
+    commit: 'ddd444',
+  });
+  assert.equal(lastReviewChanges(j.events), null);
+
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r9' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r9',
+    outcome: 'completed',
+    summary: 'not quite',
+    changes: '- the branch is still untested',
+  });
+
+  // Being stopped is not answering: the finish `reconcile` writes for a run nobody is
+  // left to answer carries no verdict, and leaves a live list alone.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r10' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+  });
+  assert.deepEqual(lastReviewChanges(j.events), {
+    changes: '- the branch is still untested',
+    at: 'ddd444',
+  });
+
   // And a new plan is a new approach: the objections are about code that is gone.
-  j.add({ type: 'stage_started', stage: 'plan', runId: 'r5' });
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r11' });
   assert.equal(lastReviewChanges(j.events), null);
 });
 
