@@ -143,6 +143,18 @@ board asks about them in one box the next time you open it: everything checked, 
 for all of it. Nothing carries on by itself. `wb continue <id>` does one from the command
 line, and **Start this stage again** is there when carrying on is the wrong answer.
 
+**A stage stopped by a session limit carries on without being asked.** When a run ends on
+*You've hit your session limit · resets 10:30pm*, the model service is saying come back
+later rather than that anything went wrong. The ticket parks holding its conversation, its
+card says **carries on at 10:30 pm** instead of asking for you, and at that time it picks
+the stage up where it stopped. Nothing else that runs on the same model starts in the
+meantime — those stages would only spend a run finding out the same thing — but anything on
+another model carries on, so a plan waiting out a limit does not stop work being built.
+Several tickets can be waiting at once, on different models, and each carries on at its own
+time. Those tickets are not in the box that asks you about stopped stages — there is
+nothing to decide — but both buttons are still on the panel if you want it sooner, or
+differently. A limit message that does not say when it resets fails like any other crash.
+
 ## Holding a ticket behind others
 
 `wb wait t43 t37,t40`, `wb new --after`, or the **Start after** box on the panel and the

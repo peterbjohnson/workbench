@@ -20,7 +20,7 @@ import {
 } from '../../src/domain/board.ts';
 import { conflictBrief, conflictHeading } from '../../src/domain/conflicts.ts';
 import type { Event } from '../../src/domain/events.ts';
-import { heldBy } from '../../src/domain/rules.ts';
+import { heldBy, waitingOutLimit } from '../../src/domain/rules.ts';
 import { ended, type Ticket } from '../../src/domain/ticket.ts';
 import { Chat } from './Chat.tsx';
 import { Pick } from './Pick.tsx';
@@ -611,6 +611,19 @@ function Actions({
 
       {t.status === 'blocked' && (
         <>
+          {/* Nothing is asked of you here: the run carries on by itself at the time
+              the service gave. Said anyway, because a ticket sitting in `blocked`
+              with buttons under it otherwise reads as one waiting to be pressed. */}
+          {waitingOutLimit(t, Date.now()) && t.limitedUntil !== null && (
+            <p className="quiet">
+              The model service’s session limit stopped this run. It carries on where it stopped at{' '}
+              {new Date(t.limitedUntil).toLocaleTimeString([], {
+                hour: 'numeric',
+                minute: '2-digit',
+              })}
+              , with nothing to do in the meantime.
+            </p>
+          )}
           {/* Stopped rather than broken, so the run it was in the middle of is
               still there. Restarting stays beside it, unstyled: carrying on is
               the cheap answer and usually the right one, but sometimes it is not,

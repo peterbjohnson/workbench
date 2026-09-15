@@ -62,6 +62,20 @@ export function released(t: Ticket): boolean {
 }
 
 /**
+ * Whether this ticket is parked on the model service's session limit, and the limit
+ * has not lifted yet.
+ *
+ * One rule, read by the orchestrator and by the board: the one decides what may
+ * start, the other says so on the card, and a ticket that says it is carrying on at
+ * half past ten while the board has already started it would be worse than either.
+ *
+ * @param now the clock, in milliseconds. Handed in, because nothing in here has one.
+ */
+export function waitingOutLimit(t: Ticket, now: number): boolean {
+  return t.limitedUntil !== null && Date.parse(t.limitedUntil) > now;
+}
+
+/**
  * The tickets this one is still waiting on. Empty when it waits on nothing, or
  * when everything it waits on has let go — it takes all of them, so the last one
  * to release is the one that starts the work.
