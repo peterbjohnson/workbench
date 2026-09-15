@@ -68,7 +68,7 @@ the agent still calls it and still loses the turn.
 
 | stage | model | effort | turns | budget | tools |
 |---|---|---|---|---|---|
-| **plan** | claude-opus-5 | high | 40 | $5 | `Read`, `Grep`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Write`~~, ~~`Edit`~~, ~~`Bash`~~, ~~`Glob`~~ |
+| **plan** | claude-fable-5-1 | high | 40 | $5 | `Read`, `Grep`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Write`~~, ~~`Edit`~~, ~~`Bash`~~, ~~`Glob`~~ |
 | **implement** | claude-opus-5 | xhigh | 200 | $20 | `Read`, `Write`, `Edit`, `Grep`, `Bash`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Glob`~~ |
 | **review** | claude-opus-5 | xhigh | 60 | $10 | `Read`, `Grep`, `mcp__wb__map`, `mcp__wb__where`, `AskUserQuestion`, ~~`Write`~~, ~~`Edit`~~, ~~`Bash`~~, ~~`Glob`~~ |
 | **verify** | claude-opus-5 | high | 80 | $10 | `Read`, `Write`, `Grep`, `Bash`, `AskUserQuestion`, ~~`Edit`~~, ~~`Glob`~~ |

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
 import { lastChecks, type Ticket } from '../domain/ticket.ts';
-import { carriedWork, heldBy, nextAction, type Action } from '../domain/rules.ts';
+import { carriedWork, heldBy, nextAction, waitingOutLimit, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
 import { readStep } from '../run/protocol.ts';
@@ -16,8 +16,10 @@ type Doable = Exclude<Action, { kind: 'wait' }>;
 /**
  * What a stage run reports back. The orchestrator turns this into events.
  *
- * A runner never reports `interrupted`; the orchestrator writes it over whatever
- * the run said, for a run it stopped underneath. See `interrupt`.
+ * A runner reports `interrupted` for one ending only: the model service's session
+ * limit, which comes with the time it lifts and so is waited out rather than failed.
+ * Otherwise it is the orchestrator that writes it, over whatever the run said, for a
+ * run it stopped underneath. See `readSessionLimit` and `interrupt`.
  */
 export type RunResult = {
   outcome: RunOutcome;
@@ -43,6 +45,13 @@ export type RunResult = {
    * survives the workbench being killed under it.
    */
   sessionId?: string;
+  /**
+   * When the model service said this run may carry on, for a run that stopped on a
+   * session limit. Set only by that one ending; see `readSessionLimit`.
+   */
+  limitedUntil?: string;
+  /** Which model that run was using, so the wait holds only the stages that share it. */
+  limitedModel?: string;
   /** What the run cost, as the model service reported it. */
   costUsd?: number;
 };
@@ -177,8 +186,19 @@ export type Deps = {
    * stage starts, because being logged out is a kind of having no capacity.
    */
   credentials: () => Promise<Credentials>;
+  /**
+   * Which model a stage runs on. Asked per tick rather than held, for the reason
+   * `runStage` asks for its agents per run: the board edits those files, and a model
+   * read once at startup would hold a stage against a limit it no longer shares.
+   */
+  modelFor: (stage: Stage) => string;
   /** Says something to whoever is watching. The CLI prints it; tests collect it. */
   announce: (message: string) => void;
+  /**
+   * The clock a session limit is measured against, in milliseconds. The real one
+   * unless a test wants to stand on the far side of a reset without waiting for it.
+   */
+  now?: () => number;
 };
 
 export type Orchestrator = {
@@ -244,6 +264,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   let listening = false;
   /** So the credential state is announced when it changes, not on every tick. */
   let wasOk = true;
+  /** The same, for a session limit: the models last said to be waiting one out. */
+  let wasLimited = new Set<string>();
   /**
    * Set when the model service refuses the credential we have. Sticky on purpose:
    * checking that a credential is *present* cannot tell you it is *accepted*, and
@@ -296,6 +318,66 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
   }
 
   /**
+   * Which models are out of service on a session limit, and until when. Empty when
+   * none is. Whatever has come out the far side of one is carried on here, which is
+   * all the resuming there is: `stage_continued` is the very event the board's own
+   * button appends, and the stage picks up its conversation. Each parked ticket is
+   * carried on at its own recorded time — several can be waiting at once, on
+   * different models and different resets, and none of them is a reason to hold
+   * the others.
+   *
+   * Worked out from the tickets rather than remembered, because the reset time is on
+   * the ticket that hit it — so a workbench restarted inside a limit waits out the
+   * rest of it instead of buying a stage to be told the same thing again.
+   *
+   * Said once when a model takes a limit and once when it lifts, like `canRunAgents`.
+   */
+  function sessionLimits(tickets: readonly Ticket[]): Map<string, number> {
+    const now = deps.now?.() ?? Date.now();
+    /** Model to the latest instant anything parked on it is waiting for. */
+    const until = new Map<string, number>();
+
+    for (const ticket of tickets) {
+      if (ticket.limitedUntil === null) continue;
+      if (!waitingOutLimit(ticket, now)) {
+        if (ticket.status === 'blocked' && ticket.interrupted) {
+          store.append(ticket.id, { type: 'stage_continued' });
+        }
+        // Anything else with a passed time has already been moved on by hand —
+        // answered, restarted, cancelled — and the reducer would refuse
+        // `stage_continued` for it. Refused, the append still wakes this loop through
+        // the store and still leaves `limitedUntil` set, so it would be tried again on
+        // every tick for ever. A limit nobody is waiting out is simply over.
+        continue;
+      }
+      // A limit recorded before the model was. It still carries its own ticket on at
+      // its own time; what it cannot do is say whose capacity ran out, and holding
+      // everything on a guess is the thing this stopped doing.
+      if (ticket.limitedModel === null) continue;
+      const at = Date.parse(ticket.limitedUntil);
+      until.set(ticket.limitedModel, Math.max(until.get(ticket.limitedModel) ?? 0, at));
+    }
+
+    for (const [model, at] of until) {
+      if (wasLimited.has(model)) continue;
+      deps.announce(
+        `⚠️  work on ${model} is paused: the model service's session limit is in force. ` +
+          `The stage that hit it carries on at ${new Date(at).toLocaleTimeString()}, ` +
+          'and nothing else on that model starts until then.\n\n' +
+          'Stages on another model carry on, and so does the rest of the workbench — ' +
+          'write tickets, approve, cancel.',
+      );
+    }
+    for (const model of wasLimited) {
+      if (!until.has(model))
+        deps.announce(`the session limit on ${model} has lifted — carrying on`);
+    }
+    wasLimited = new Set(until.keys());
+
+    return until;
+  }
+
+  /**
    * @param poll whether to ask the code host for verdicts. Only the timer does:
    *   a pull request has no event to wait for, and polling on every appended
    *   event would mean asking GitHub continuously and never settling.
@@ -318,6 +400,10 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
     const tickets = store.tickets();
     const policy = store.policy();
     const mayRunAgents = await canRunAgents();
+    // A limit holds the stages that would meet it — those on the same model — and
+    // nothing else. The stages do not share a model, so a plan waiting out a limit is
+    // no reason for an implement on another model to sit still.
+    const limited = sessionLimits(tickets);
 
     // A ticket occupies one slot whether the store already shows it running or it
     // is only just starting. Counting both would charge it twice and jam the limit.
@@ -337,8 +423,12 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
       if (action.kind === 'wait') continue;
       if (action.kind === 'poll_verdict' && !poll) continue;
       // Only running a stage needs the model service. Opening a pull request, reading
-      // a verdict and giving up are the workbench's own work and carry on regardless.
+      // a verdict and giving up are the workbench's own work and carry on regardless
+      // — of being logged out, and of a session limit, which is the same kind of thing:
+      // no capacity rather than anything wrong. A limit is per model, so it is this
+      // stage's agent that decides whether this stage waits.
       if (action.kind === 'run_stage' && !mayRunAgents) continue;
+      if (action.kind === 'run_stage' && limited.has(deps.modelFor(action.stage))) continue;
       // Queued, not refused: the wait is recorded and `mergeRequested` still stands,
       // so the tick after the gate frees is the one that merges it — in this process
       // or in the one that replaces it, since the request is a durable event and the
@@ -769,6 +859,8 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
         completionCriteria: result.completionCriteria,
         later: result.later,
         sessionId: result.sessionId,
+        limitedUntil: result.limitedUntil,
+        limitedModel: result.limitedModel,
         // Which the report is routed on, rather than on the ticket still being
         // offered: it may well not be by now. See `settling` in events.ts.
         settling: settling || undefined,
