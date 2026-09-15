@@ -88,7 +88,11 @@ export type Ticket = {
   rejection: string | null;
   /**
    * What review or verify asked to be put right, when the approach was sound.
-   * Fed into the implement stage that addresses it, and cleared when it starts.
+   * Fed into the implement stage that addresses it, and cleared when a run of that
+   * stage completes — not when one starts. A run that blocks, fails or is stopped
+   * has put nothing right, and whatever runs implement again from the top has to be
+   * handed the list again: t19 lost review's two items to a restart this way, and
+   * bought a review to be told neither had been touched.
    */
   changes: string | null;
   /**
@@ -365,7 +369,9 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
     case 'shipped':
       return t.running || t.commits.length === 0 || t.status === 'done' || t.offered
         ? t
-        : { ...t, status: 'ready_for_pr', question: null, ...movedOn };
+        : // Offered as it stands, so nothing is still asked of implement: a settle over
+          // this branch runs that stage, and must not be handed a list to act on.
+          { ...t, status: 'ready_for_pr', question: null, changes: null, ...movedOn };
 
     // Put a stuck ticket back into the stage it stopped in, with nothing carried
     // over: a run that died has no conversation worth resuming and no answer to
@@ -452,8 +458,11 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         completionCriteria: e.stage === 'plan' ? [] : t.completionCriteria,
         // A new plan is a new approach, so the rounds of comments start again.
         revisions: e.stage === 'plan' ? 0 : t.revisions,
-        // Read into the brief by the stage now starting; it must not be read twice.
-        changes: null,
+        // Read into the brief by an implement run, and kept while one is going: it
+        // is spent when a run completes, in `stage_finished`. Any other stage starting
+        // means nothing is asked of implement — a plan above all, which is a new
+        // approach and makes the last one's list about code that no longer exists.
+        changes: e.stage === 'implement' ? t.changes : null,
         // Progress belongs to a run, not to the ticket. A stage starting has made none.
         step: null,
         // A clash with the base is a fact about the branch as it was. Work is being
@@ -597,6 +606,14 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         // Set only by a run that stopped with something left to say; anything else
         // clears it, so nothing ever resumes a conversation that has finished.
         session: e.sessionId ?? null,
+        // An implement run that completed has answered the list, and a new one, if
+        // this run earned one, is set by `afterStage` below. One that blocked, failed
+        // or was stopped has answered nothing, so the list stands for whatever runs
+        // implement next — a resume, an answer, a restart from the top. Nor has a
+        // settle, which runs on offered work and was handed no list: one here arrived
+        // while it ran, from an answer to the pull request, and is the next run's.
+        changes:
+          t.stage === 'implement' && e.outcome === 'completed' && !e.settling ? null : t.changes,
       };
       return afterStage(recorded, e);
     }
@@ -616,6 +633,9 @@ export function applyEvent(t: Ticket, e: Event): Ticket {
         offered: false,
         mergeRequested: false,
         rejection: e.reason,
+        // The approach is what is being objected to now, so a list of details to
+        // put right in it is not still asked for.
+        changes: null,
         ...movedOn,
       };
 
@@ -854,7 +874,7 @@ export function lastChecks(events: Event[]): CheckRun[] {
  * Read by the next review of the same plan, so a later round checks the round
  * before it rather than starting again — see `lastRoundFor` in `agents/brief.ts`.
  *
- * Not `ticket.changes`: that is cleared the moment implement starts, and is long
+ * Not `ticket.changes`: that is cleared the moment implement completes, and is long
  * gone by the time review runs again. Not a field of its own either, for the same
  * reason as `lastChecks` — it is asked for once, by the run that needs it.
  *

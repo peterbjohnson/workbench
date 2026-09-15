@@ -1,11 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 
-import { reconcile } from './loop.ts';
+import { reconcile, type RunResult } from './loop.ts';
 import { create, during, harness, MODELS, ok, waitFor, type Harness } from './harness.ts';
 import { openStore } from '../store/store.ts';
-import type { Stage } from '../domain/events.ts';
+import type { EventBody, Stage } from '../domain/events.ts';
 import { DEFAULT_POLICY } from '../domain/rules.ts';
+import { buildBrief } from '../agents/brief.ts';
+import { loadAgents } from '../agents/load.ts';
+
+const agents = loadAgents([fileURLToPath(new URL('../../agents', import.meta.url))]);
 
 test('the loop drives a ticket to the plan gate and then waits', async () => {
   const h = harness();
@@ -1153,6 +1158,85 @@ test('restarting an interrupted stage runs it from the top instead', async () =>
     assert.deepEqual(resumedWith, [undefined], 'nothing carried over');
   } finally {
     await h.close();
+  }
+});
+
+test('changes review asked for reach implement again however a stuck run is picked up', async () => {
+  // t19: review asked for two things, the implement run answering them stopped to ask a
+  // question, and the manager restarted it. The restart's brief had no list in it, the
+  // run found nothing to do, and a second review was bought to say neither was touched.
+  const question = { question: 'Edit is refused — how?', reasoning: 'no tool to write with' };
+  const cases: { how: string; stuck: RunResult; move: EventBody; resume?: string }[] = [
+    {
+      how: 'restarted',
+      stuck: { outcome: 'blocked', summary: 'waiting on the manager', question },
+      move: { type: 'stage_restarted' },
+    },
+    {
+      how: 'answered, with no conversation to resume',
+      stuck: { outcome: 'blocked', summary: 'waiting on the manager', question },
+      move: { type: 'question_answered', answer: 'use the one in etc/' },
+    },
+    {
+      // A resumed run is sent no brief, but one that cannot be picked back up falls
+      // back to the top and builds it from this same ticket.
+      how: 'answered, resuming its conversation',
+      stuck: { outcome: 'blocked', summary: 'waiting on the manager', question, sessionId: 's-1' },
+      move: { type: 'question_answered', answer: 'use the one in etc/' },
+      resume: 's-1',
+    },
+    {
+      how: 'continued, with no conversation to resume',
+      stuck: { outcome: 'interrupted', summary: 'the workbench stopped' },
+      move: { type: 'stage_continued' },
+    },
+  ];
+
+  for (const { how, stuck, move, resume } of cases) {
+    const briefs: string[] = [];
+    const resumedWith: (string | undefined)[] = [];
+    const runs = new Map<Stage, number>();
+    const h = harness({
+      runStage: async (args) => {
+        const n = (runs.get(args.stage) ?? 0) + 1;
+        runs.set(args.stage, n);
+        if (args.stage === 'review' && n === 1) {
+          return {
+            outcome: 'completed',
+            summary: 'two things',
+            changes: '- retry.ts:14 the backoff is unbounded',
+          };
+        }
+        if (args.stage !== 'implement' || n === 1) return ok(`${args.stage} done`);
+        briefs.push(buildBrief({ ticket: args.ticket, agent: agents.implement, worktree: '/w' }));
+        resumedWith.push(args.resume);
+        return n === 2 ? stuck : ok('both fixed');
+      },
+    });
+
+    try {
+      create(h.store);
+      await h.orch.idle();
+      h.store.append('t1', { type: 'plan_approved' });
+      await h.orch.idle();
+      assert.equal(h.store.ticket('t1').status, 'blocked', `${how}: parked mid-round`);
+      assert.match(briefs[0] ?? '', /the backoff is unbounded/, `${how}: the first run had it`);
+
+      h.store.append('t1', move);
+      await h.orch.idle();
+
+      assert.equal(briefs.length, 2, `${how}: implement ran again`);
+      assert.equal(resumedWith[1], resume, `${how}: on the conversation it should have`);
+      assert.match(briefs[1] ?? '', /## Changes to make/, `${how}: and was told what to change`);
+      assert.match(briefs[1] ?? '', /the backoff is unbounded/, how);
+      assert.deepEqual(
+        h.ran,
+        ['plan', 'implement', 'review', 'implement', 'implement', 'review', 'verify'],
+        `${how}: and one review of the fix was enough`,
+      );
+    } finally {
+      await h.close();
+    }
   }
 });
 
