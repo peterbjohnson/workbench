@@ -47,8 +47,10 @@ export type BriefInput = {
    * The standing checks the workbench has already run, and their output. Given to
    * review and verify, from the implement run that produced the change in front of
    * them: a failure would have sent that run back for another round, so what reaches
-   * a stage here has passed. Empty means nothing was run at all, which the brief says
-   * rather than leaving an agent to assume a suite it cannot see.
+   * a stage here has passed. Empty means there is no observed output about the tree
+   * this stage is looking at — nothing configured, or results withheld because the
+   * stage's own refresh merged a base in (see `loop.ts`) — which the brief says rather
+   * than leaving an agent to assume a suite it cannot see.
    */
   checks?: readonly CheckRun[];
   /**
@@ -416,8 +418,8 @@ function checksRun(checks: readonly CheckRun[] | undefined): string | undefined 
   // passed — and goes looking for output nobody produced.
   if (checks.length === 0) {
     return [
-      '**No standing checks were run for this change.** Nothing has been checked for you:',
-      'do not assume a suite has passed.',
+      '**Nothing has been run against the tree in front of you.** There is no observed',
+      'output about this change: do not assume a suite has passed.',
     ].join('\n');
   }
 

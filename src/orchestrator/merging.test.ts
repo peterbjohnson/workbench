@@ -1358,8 +1358,10 @@ test('work the new base breaks is not offered either', async () => {
       ++refreshes === 3
         ? { kind: 'merged', base: 'newbase', commit: 'merge01', merged: ['newbase'] }
         : { kind: 'up-to-date' },
-    // Passing for the verify stage, failing once the base has been merged in: the
-    // clash a merge resolves silently is the one worth finding.
+    // The first call is the implement run's end-of-run check, which passes; verify's
+    // own refresh is up-to-date, so verify runs none. The failing call is the one after
+    // the offer-time merge: the clash a merge resolves silently is the one worth
+    // finding.
     checks: () => [
       asked++ === 0
         ? { command: 'yarn test', ok: true, output: '' }

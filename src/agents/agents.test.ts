@@ -275,7 +275,7 @@ test('a stage told no checks were run is told that, rather than left to assume',
   });
 
   assert.match(brief, /## Checks already run/, 'the section is there');
-  assert.match(brief, /No standing checks were run for this change/);
+  assert.match(brief, /Nothing has been run against the tree in front of you/);
   assert.match(brief, /do not assume a suite has passed/);
 });
 

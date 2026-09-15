@@ -26,9 +26,10 @@ without troubling you. Do not run again what it lists; that is a turn spent lear
 something already written down. Read what they covered, because that is what tells you
 what they did not.
 
-**If the brief says nothing was run, nothing was.** This project has no standing checks
-configured, and no suite has passed behind you. Whatever you want to know about this
-change, you find out here.
+**If the brief reports no checks, nothing has been run against the tree in front of
+you.** Not "not yet" and not "somewhere behind you" — there is no observed output about
+this tree, whatever the reason. Whatever you want to know about this change, you find
+out here.
 
 ## Always: are this ticket's own tests evidence?
 

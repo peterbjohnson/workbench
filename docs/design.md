@@ -88,9 +88,11 @@ agents are done runs after a merge — a settled clash, and a base that moved un
 — because a merge is the only other thing that changes what is on the branch.
 
 Review and verify are told what ran and what it said, so neither spends turns finding out
-again. A project with no checks configured is a project where nothing was run, and the
-brief says exactly that: the alternative is a stage assuming a suite passed somewhere
-behind it.
+again. What they are told is only what was run against the tree they are looking at, so a
+base merged in at the start of their own stage empties the section as surely as an
+unconfigured project does — the results describe a tree that has moved. The brief says
+that plainly in both cases rather than naming a cause it cannot tell apart, because the
+alternative is a stage assuming a suite passed somewhere behind it.
 
 ## You can always ship
 
