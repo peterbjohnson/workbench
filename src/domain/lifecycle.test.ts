@@ -120,8 +120,16 @@ test('comments send the work back to implement, not back to the drawing board', 
   assert.equal(commented.cycles, 1, 'and it costs no cycle');
   assert.deepEqual(j.next(), { kind: 'run_stage', stage: 'implement' });
 
-  // Read into the brief once, by the stage that has to act on it.
-  assert.equal(j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' }).changes, null);
+  // Read into the brief by the stage that has to act on it, and spent once a run of it
+  // has done so.
+  assert.equal(
+    j.add({ type: 'stage_started', stage: 'implement', runId: 'r2' }).changes,
+    '- the headline claim contradicts table 2',
+  );
+  assert.equal(
+    j.add({ type: 'stage_finished', runId: 'r2', outcome: 'completed', summary: 'fixed' }).changes,
+    null,
+  );
 });
 
 test('an objection that survives being addressed twice is about the approach', () => {
@@ -151,6 +159,79 @@ test('an objection that survives being addressed twice is about the approach', (
 
   // A new plan is a new approach, so the count starts again.
   assert.equal(j.add({ type: 'stage_started', stage: 'plan', runId: 'r4' }).revisions, 0);
+});
+
+test('changes asked for stand until an implement run completes, however it is run again', () => {
+  // t19: the implement run answering review's list stopped to ask a question, and the
+  // manager restarted it. The list had gone with the first run's `stage_started`, so
+  // the restart was handed none, found nothing to do, and bought a review to be told so.
+  const asked = (): Journal => {
+    const j = newTicket();
+    runStage(j, 'plan');
+    j.add({ type: 'plan_approved' });
+    j.add({ type: 'stage_started', stage: 'implement', runId: 'r-implement' });
+    j.add({
+      type: 'stage_finished',
+      runId: 'r-implement',
+      outcome: 'completed',
+      summary: 'built it',
+      commit: 'aaa111',
+    });
+    j.add({ type: 'stage_started', stage: 'review', runId: 'r-review' });
+    j.add({
+      type: 'stage_finished',
+      runId: 'r-review',
+      outcome: 'completed',
+      summary: 'two things',
+      changes: '- name the units',
+    });
+    return j;
+  };
+  const stuck = (outcome: 'blocked' | 'failed' | 'interrupted'): Journal => {
+    const j = asked();
+    const started = j.add({ type: 'stage_started', stage: 'implement', runId: 'r-stuck' });
+    assert.equal(started.changes, '- name the units', 'the run in flight still has it');
+    j.add({ type: 'stage_finished', runId: 'r-stuck', outcome, summary: 'stopped' });
+    return j;
+  };
+
+  for (const outcome of ['blocked', 'failed', 'interrupted'] as const) {
+    assert.equal(
+      stuck(outcome).ticket().changes,
+      '- name the units',
+      `${outcome} put nothing right`,
+    );
+  }
+
+  // Every way back into the stage finds it there, and so does the run that starts.
+  const back: [string, Journal, EventBody][] = [
+    ['restarted', stuck('blocked'), { type: 'stage_restarted' }],
+    ['answered', stuck('blocked'), { type: 'question_answered', answer: 'the one in etc/' }],
+    ['continued', stuck('interrupted'), { type: 'stage_continued' }],
+  ];
+  for (const [how, j, move] of back) {
+    const moved = j.add(move);
+    assert.equal(moved.status, 'implementing', how);
+    assert.equal(moved.changes, '- name the units', how);
+    const again = j.add({ type: 'stage_started', stage: 'implement', runId: 'r-again' });
+    assert.equal(again.changes, '- name the units', `${how}, and started`);
+  }
+
+  // What does end it: a run that put it right, and every move that asks for no more.
+  const completed = stuck('blocked');
+  completed.add({ type: 'stage_restarted' });
+  assert.equal(runStage(completed, 'implement').changes, null, 'a completed run answered it');
+  assert.equal(stuck('blocked').add({ type: 'shipped' }).changes, null, 'offered as it stands');
+  assert.equal(
+    stuck('blocked').add({ type: 'plan_rejected', reason: 'wrong approach' }).changes,
+    null,
+    'the approach is what is objected to now',
+  );
+  assert.equal(
+    stuck('blocked').add({ type: 'stage_started', stage: 'plan', runId: 'r-plan' }).changes,
+    null,
+    'a new plan is a new approach',
+  );
 });
 
 test('the manager can ship what a ticket has, whatever the agents made of it', () => {
