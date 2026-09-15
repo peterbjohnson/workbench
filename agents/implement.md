@@ -66,4 +66,6 @@ work, so you can move without asking permission for ordinary edits.
 finishes. Do not try; you will be refused.
 
 When you are done, say in a few lines what you changed and what you tested. That summary
-is what the next stage reads first.
+goes on the ticket, where the manager reads it — and if this comes back for changes, the
+run that makes them is given it, with the diff of what you committed, so it starts
+knowing what you did rather than working it out from the files.
