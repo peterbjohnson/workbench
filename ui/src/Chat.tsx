@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { chatTurns, withoutProposals, type Offered } from '../../src/domain/board.ts';
 import type { Event } from '../../src/domain/events.ts';
-import { wb } from './wb.ts';
+import { describe, wb } from './wb.ts';
 
 /**
  * The conversation about one ticket, and the things it has offered to do about it.
@@ -28,6 +28,14 @@ export function Chat({
   /** Whether a reply is in flight. One turn at a time, so Send waits for it. */
   const [thinking, setThinking] = useState(false);
   /**
+   * What the workbench said when the last turn failed, if it did. The pane holds this
+   * itself rather than handing the turn to `onAct`: the banner that would otherwise
+   * carry it sits under the page header, unlabelled as to which action produced it,
+   * and a turn that failed looks from here exactly like one that was answered with
+   * nothing. Said once, where the reply would have been.
+   */
+  const [failed, setFailed] = useState<string | null>(null);
+  /**
    * Whether the pane is open, once you have said. Held here rather than read off the
    * DOM because the panel re-renders on every event, and anything uncontrolled would
    * fold itself back up mid-conversation.
@@ -50,14 +58,21 @@ export function Chat({
   useEffect(() => {
     const list = turnList.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [turns.length, thinking, showing]);
+  }, [turns.length, thinking, showing, failed]);
 
   const say = () => {
     const message = text.trim();
     if (message === '' || thinking) return;
     setThinking(true);
+    setFailed(null);
     setText('');
-    void onAct(wb.chat(id, message)).finally(() => setThinking(false));
+    void wb
+      .chat(id, message)
+      .then(
+        () => setFailed(null),
+        (e: unknown) => setFailed(describe(e)),
+      )
+      .finally(() => setThinking(false));
   };
 
   /* Collapsed, the whole column is the way back in: the icon says what it is and
@@ -106,6 +121,15 @@ export function Chat({
             ))}
           </div>
         ))}
+
+        {/* Where the reply would have been, so the conversation says what became of the
+            turn rather than losing it between the Thinking strip and nothing. */}
+        {failed !== null && (
+          <div className="turn failed" role="alert">
+            <div className="who">Chat</div>
+            {failed}
+          </div>
+        )}
       </div>
 
       {/* Above the composer rather than at the end of the turns: what says the reply is

@@ -25,7 +25,7 @@ import { SORTS, useDoneView } from './order.ts';
 import { Settings } from './Settings.tsx';
 import { Theme } from './Theme.tsx';
 import { TicketForm } from './TicketForm.tsx';
-import { wb } from './wb.ts';
+import { describe, wb } from './wb.ts';
 
 /** The two columns you move a card between by hand. Everywhere else it moves itself. */
 const BACKLOG = 'Backlog';
@@ -658,8 +658,4 @@ function folder(dir: string): string {
 
 function idInHash(): string | null {
   return location.hash.slice(1) || null;
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
