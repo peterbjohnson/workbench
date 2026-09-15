@@ -23,7 +23,7 @@ import { indexTree } from '../code/symbols.ts';
 import { fileMap } from '../code/report.ts';
 import { wbServer } from '../tools/server.ts';
 import type { RunResult, StageRunner } from '../orchestrator/loop.ts';
-import { guard } from './guard.ts';
+import { guard, MACHINE_SKILLS_OFF } from './guard.ts';
 import { looksLikeSessionLimit, readSessionLimit } from './limits.ts';
 
 export type StageRunnerDeps = {
@@ -246,9 +246,11 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         // Nothing from this machine, for the same reason `settingSources` is empty.
         strictMcpConfig: true,
         env: { ...process.env, CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1' },
+        // And the few it ships that outlive that switch by design.
+        settings: MACHINE_SKILLS_OFF,
         // Named one by one, because this option is a context filter and `[]` does not
-        // mean "none" — it means "no filter", which is how every stage came to be
-        // offered `doctor` from the machine it happened to be running on. It is also
+        // mean "none" — it means "no filter", which would offer a stage whatever the
+        // machine it happened to be running on has installed. It is also
         // what puts `Skill(<name>)` in the granted tools, so a stage can read what it
         // is told it has. The guard is the wall; this is only what gets advertised.
         skills: skillNames,
@@ -311,13 +313,26 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
             // What the run is actually working with. Worth one line in the record: it is
             // the only place that says which credential was used and whether the skills
             // this stage asked for were really there.
-            const held = message.skills.length > 0 ? message.skills.join(', ') : 'none';
+            //
+            // The session's list is every skill a user could type, not what the model is
+            // offered: `doctor` sat in it on every run while the filter kept it from the
+            // model and the guard refused it. So it is read against the board's. Anything
+            // else is named as not offered, rather than passed off as held.
+            const reported = message.skills;
+            const held = skillNames.filter((name) => reported.includes(name));
+            const missing = skillNames.filter((name) => !reported.includes(name));
+            const extra = reported.filter((name) => !skillNames.includes(name));
+            const skillsLine = [
+              `skills: ${held.length > 0 ? held.join(', ') : 'none'}`,
+              ...(missing.length > 0 ? [`missing: ${missing.join(', ')}`] : []),
+              ...(extra.length > 0 ? [`not offered: ${extra.join(', ')}`] : []),
+            ].join(' · ');
             const plugins =
               message.plugins.length > 0 ? message.plugins.map((p) => p.name).join(', ') : 'none';
             emit({
               type: 'agent_said',
               runId,
-              text: `[${stage}] credential: ${message.apiKeySource} · skills: ${held} · plugins: ${plugins}`,
+              text: `[${stage}] credential: ${message.apiKeySource} · ${skillsLine} · plugins: ${plugins}`,
             });
           } else if (message.type === 'assistant') {
             const text = textOf(message.message.content);
