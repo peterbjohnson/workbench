@@ -55,7 +55,8 @@ export type Config = {
    * Loaded as a local plugin, which is what puts skills in front of an agent without
    * loading anything from the project's own Claude configuration. The home, so the
    * skills are the project's — how a repository says what good looks like for work of
-   * a kind is not something the workbench can ship.
+   * a kind is not something the workbench can ship. A stage loads a copy of it rather
+   * than the directory, because the worktrees are inside it (see `pluginCopy`).
    */
   pluginRoot: string;
   /** How often to ask the code host whether a pull request has a verdict. */

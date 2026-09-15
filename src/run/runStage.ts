@@ -4,6 +4,9 @@ import {
   type Options,
   type PermissionResult,
 } from '@anthropic-ai/claude-agent-sdk';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import type { EventBody, Scale, Stage } from '../domain/events.ts';
 import type { Ticket } from '../domain/ticket.ts';
@@ -40,7 +43,8 @@ export type StageRunnerDeps = {
   /**
    * Where skills are loaded from, as a local plugin: the workbench's own root.
    * Skills belong to the workbench, never to the project being worked on, which
-   * is why `settingSources` stays empty and discovery happens here instead.
+   * is why `settingSources` stays empty and discovery happens here instead. A run
+   * is handed a copy of it, never this directory itself: see `pluginCopy`.
    */
   pluginRoot: string;
   /**
@@ -164,31 +168,38 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     /** What every attempt at this stage has cost between them. */
     let spent = 0;
 
-    // Resuming is worth a try but must never be worth a stuck ticket. The session
-    // lives in ~/.claude/projects on one machine and can simply be gone.
-    if (resume !== undefined) {
-      const before = spent;
-      // Two reasons a conversation is waiting, and they are told apart by whether
-      // there is an answer to deliver. Nothing else distinguishes them, and the
-      // agent needs to be told which happened: one is a reply to its question,
-      // the other is nothing it did.
-      const resumed = await runOnce(
-        ticket.answer === null ? pickUpAgain() : carryOnFrom(ticket.answer),
-        resume,
-      );
-      // Only fall back if the attempt got nowhere. One that spent money before
-      // failing has done some of the work, and re-running it would pay twice —
-      // which is the very thing this whole feature exists to stop. Anything that
-      // ran and ended, however badly, is this stage's answer.
-      if (!resumed.crashed || spent > before) return resumed.result;
-      emit({
-        type: 'agent_said',
-        runId,
-        text: `could not pick the ${stage} run back up (${resumed.result.summary}) — starting this stage again from the top`,
-      });
-    }
+    // One copy for the whole stage — a resume that falls back to the top uses the same
+    // one — and gone however the stage ends.
+    const plugin = pluginCopy(deps.pluginRoot);
+    try {
+      // Resuming is worth a try but must never be worth a stuck ticket. The session
+      // lives in ~/.claude/projects on one machine and can simply be gone.
+      if (resume !== undefined) {
+        const before = spent;
+        // Two reasons a conversation is waiting, and they are told apart by whether
+        // there is an answer to deliver. Nothing else distinguishes them, and the
+        // agent needs to be told which happened: one is a reply to its question,
+        // the other is nothing it did.
+        const resumed = await runOnce(
+          ticket.answer === null ? pickUpAgain() : carryOnFrom(ticket.answer),
+          resume,
+        );
+        // Only fall back if the attempt got nowhere. One that spent money before
+        // failing has done some of the work, and re-running it would pay twice —
+        // which is the very thing this whole feature exists to stop. Anything that
+        // ran and ended, however badly, is this stage's answer.
+        if (!resumed.crashed || spent > before) return resumed.result;
+        emit({
+          type: 'agent_said',
+          runId,
+          text: `could not pick the ${stage} run back up (${resumed.result.summary}) — starting this stage again from the top`,
+        });
+      }
 
-    return (await runOnce(await fullBrief())).result;
+      return (await runOnce(await fullBrief())).result;
+    } finally {
+      fs.rmSync(plugin, { recursive: true, force: true });
+    }
 
     async function runOnce(prompt: string, resumeFrom?: string): Promise<Attempt> {
       /** Set when the agent asks the manager something. Ends the run. */
@@ -220,9 +231,9 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         maxBudgetUsd: agent.maxBudgetUsd,
         abortController,
         // Skills come from the workbench, not from the project being worked on: no
-        // filesystem settings, and a plugin rooted where the workbench keeps its own.
+        // filesystem settings, and the workbench's own plugin, from this stage's copy of it.
         settingSources: [],
-        plugins: [{ type: 'local', path: deps.pluginRoot, skipMcpDiscovery: true }],
+        plugins: [{ type: 'local', path: plugin, skipMcpDiscovery: true }],
         // The workbench's own tools, and only the ones this stage was granted:
         // `allowedTools` auto-approves rather than restricts, so a server built once
         // for everyone would offer `where` to a stage that cannot call it, and the
@@ -451,6 +462,31 @@ function pickUpAgain(): string {
     'Carry on from where you got to. You already have the ticket, everything you',
     'had read and the work you had done — do not start again.',
   ].join('\n');
+}
+
+/**
+ * The plugin as a run is given it: the home's manifest and skills, copied somewhere
+ * no worktree is.
+ *
+ * Not the home itself, because the worktrees are inside the home. In Claude Code 2.1.272
+ * (Agent SDK 0.3.272), though not yet in 2.1.258, every file under a loaded plugin's
+ * directory is a "sensitive file", and editing one asks for a permission that
+ * `allowedTools` does not give — so the edit reaches `canUseTool`, which refuses it. Rooted at the home, that
+ * was every Write and Edit implement made: fourteen of fourteen on in2lambda's t19,
+ * while the guard had allowed each one.
+ *
+ * Copying, rather than moving the worktrees out or the skills down a level, leaves
+ * the home laid out as `wb init` writes it and documents, and a ticket already
+ * running keeps its checkout where git has it. Read fresh per stage, so a skill
+ * edited on the board reaches the next stage as it did when the home was read directly.
+ */
+function pluginCopy(pluginRoot: string): string {
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-plugin-'));
+  for (const part of ['.claude-plugin', 'skills']) {
+    const from = path.join(pluginRoot, part);
+    if (fs.existsSync(from)) fs.cpSync(from, path.join(copy, part), { recursive: true });
+  }
+  return copy;
 }
 
 function describe(error: unknown): string {

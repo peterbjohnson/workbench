@@ -433,3 +433,71 @@ test('a resumed run that failed without throwing is that stage answer', async ()
   assert.equal(result.outcome, 'blocked');
   assert.equal(result.costUsd, 0.2);
 });
+
+test('a run loads its skills from a copy, never from the home its worktree is inside', async () => {
+  // From Claude Code 2.1.272 every file under a loaded plugin's directory is a
+  // "sensitive file", and an edit to one is refused whatever `allowedTools` says. The
+  // worktrees are inside the home, so a plugin rooted at the home refused every Write
+  // and Edit implement made.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-home-'));
+  const worktree = path.join(home, '.worktrees', 't1');
+  fs.mkdirSync(path.join(home, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'skills', 'writing-code-here'), { recursive: true });
+  fs.mkdirSync(worktree, { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude-plugin', 'plugin.json'), '{"name":"workbench"}');
+  fs.writeFileSync(path.join(home, 'skills', 'writing-code-here', 'SKILL.md'), 'the skill');
+
+  const model = service([{ costs: [0.1] }]);
+  /** What the plugin directory held while the run was going, since it is gone after. */
+  let held: { manifest: string; skill: string } | undefined;
+  const query: NonNullable<StageRunnerDeps['query']> = (args) => {
+    const plugin = args.options?.plugins?.[0];
+    assert.ok(plugin?.type === 'local', 'the run is given a local plugin');
+    held = {
+      manifest: fs.readFileSync(path.join(plugin.path, '.claude-plugin', 'plugin.json'), 'utf8'),
+      skill: fs.readFileSync(
+        path.join(plugin.path, 'skills', 'writing-code-here', 'SKILL.md'),
+        'utf8',
+      ),
+    };
+    return model.query(args);
+  };
+
+  try {
+    const result = await createStageRunner({
+      agents: () => AGENTS,
+      protectedPaths: [],
+      about: '',
+      pluginRoot: home,
+      skills: () => [],
+      diff: async () => '',
+      continued: () => '',
+      query,
+    })({
+      ticket: aTicket(),
+      stage: 'implement',
+      runId: 'r1',
+      worktree,
+      scratch: path.join(home, '.worktrees', 't1.scratch'),
+      emit: () => {},
+      signal: new AbortController().signal,
+    });
+
+    assert.equal(result.outcome, 'completed');
+    const plugin = model.calls[0]?.plugins?.[0];
+    assert.ok(plugin?.type === 'local');
+    const fromPlugin = path.relative(plugin.path, worktree);
+    assert.ok(
+      fromPlugin.startsWith('..') || path.isAbsolute(fromPlugin),
+      `the worktree is outside the plugin the run loads (${plugin.path})`,
+    );
+    assert.deepEqual(
+      held,
+      { manifest: '{"name":"workbench"}', skill: 'the skill' },
+      'and what it loads is what the home holds',
+    );
+    assert.ok(!fs.existsSync(plugin.path), 'the copy is gone once the stage has ended');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
