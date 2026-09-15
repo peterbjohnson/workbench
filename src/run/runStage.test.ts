@@ -119,6 +119,8 @@ async function runStage(
     stage?: Stage;
     /** What review last asked for, exactly as the orchestrator hands one over. */
     previously?: { changes: string; at: string | null };
+    /** What the diff since that review comes back as. Empty means nothing was committed. */
+    since?: string;
   } = {},
 ): Promise<{
   result: RunResult;
@@ -142,7 +144,8 @@ async function runStage(
       skills: () => [],
       diff: async (_ticket, _worktree, from) => {
         diffs.push(from);
-        return from === undefined ? '+ the whole change' : '+ since you looked';
+        if (from === undefined) return '+ the whole change';
+        return opts.since ?? '+ since you looked';
       },
       continued: () => '',
       query: model.query,
@@ -282,6 +285,22 @@ test('a review with no commit standing under it is not shown the same diff twice
 
   assert.deepEqual(diffs, [undefined], 'nothing had been committed, so there is nothing since');
   assert.match(prompts[0] ?? '', /Nothing had been committed when you looked/);
+});
+
+test('a later review with nothing committed since is told that, not told nothing ever was', async () => {
+  // The implement run between two reviews can end without committing anything, and
+  // then the diff since comes back empty. That is a different fact from there having
+  // been no commit at all when review looked, and a more useful one: it says nothing
+  // has been done about the list.
+  const { prompts, diffs } = await runStage([{ costs: [0.5] }], {
+    stage: 'review',
+    previously: { changes: '- retry.ts:14 the backoff is unbounded', at: 'c0ffee2' },
+    since: '',
+  });
+
+  assert.deepEqual(diffs, [undefined, 'c0ffee2'], 'there was a commit to measure from');
+  assert.match(prompts[0] ?? '', /Nothing has been committed since you looked/);
+  assert.doesNotMatch(prompts[0] ?? '', /Nothing had been committed when you looked/);
 });
 
 test('a resumed run that failed without throwing is that stage answer', async () => {

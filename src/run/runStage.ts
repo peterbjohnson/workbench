@@ -135,7 +135,11 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
      *
      * No commit at all when it looked means everything since is the change itself,
      * which the brief already carries whole. Asking for it twice would be two copies
-     * of the same diff in one brief.
+     * of the same diff in one brief, so `since` is left absent.
+     *
+     * A commit with an empty diff back is a third case, not that one: the run between
+     * the two reviews ended without committing. It comes back as the empty string it
+     * is, and the brief says so in its own words.
      */
     async function roundBefore(round: {
       changes: string;

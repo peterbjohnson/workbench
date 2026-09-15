@@ -46,9 +46,13 @@ export type BriefInput = {
   /**
    * The last round of review on this plan: what it asked for, and the change made
    * since it looked. Given to review alone and only from its second round on, so a
-   * later round checks that round rather than reviewing from nothing. `since` is
-   * absent when nothing had been committed when it looked — and then `diff` above is
-   * the whole of what has happened since, so there is nothing else to show.
+   * later round checks that round rather than reviewing from nothing.
+   *
+   * `since` is absent when nothing had been committed when it looked — and then `diff`
+   * above is the whole of what has happened since, so there is nothing else to show.
+   * It is present but empty when there was a commit and nothing has been added to it:
+   * the run in between ended without committing. Those are different facts and the
+   * brief tells them apart.
    */
   previousReview?: { changes: string; since?: string };
   /**
@@ -354,14 +358,28 @@ function lastRoundFor({ agent, previousReview }: BriefInput): string | undefined
 
   const since = fenced(previousReview.since, 'diff');
 
+  /**
+   * Three things the change since that review can be, and they say different things.
+   * The middle one is the most useful of the three and the easiest to get wrong: there
+   * was a commit under that review and nothing has been added to it, so nothing at all
+   * has been done about the list above — which is the answer to the first question.
+   */
+  const sinceThen =
+    previousReview.since === undefined
+      ? ['Nothing had been committed when you looked, so the change below is all of it.']
+      : since === undefined
+        ? [
+            'Nothing has been committed since you looked: the change below is the one you',
+            'reviewed, unchanged.',
+          ]
+        : ['What has been done to it since you looked:', '', since];
+
   return [
     'You have reviewed this before, and asked for these:',
     '',
     previousReview.changes,
     '',
-    ...(since === undefined
-      ? ['Nothing had been committed when you looked, so the change below is all of it.']
-      : ['What has been done to it since you looked:', '', since]),
+    ...sinceThen,
     '',
     'Two questions about that, before anything else: was each of those items addressed,',
     'and did addressing it break anything?',
