@@ -6,3 +6,8 @@ import { createClient } from '../../src/api/client.ts';
  * there is only one file to add anything to.
  */
 export const wb = createClient('');
+
+/** What a rejected call from it reads as. Here because that is where the rejections come from. */
+export function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

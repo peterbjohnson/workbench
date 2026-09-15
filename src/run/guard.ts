@@ -116,6 +116,14 @@ function skillAsked(ctx: GuardContext, input: unknown): GuardResult {
  * a glob. Unreadable is refused rather than allowed, because the entire point is
  * to know what is about to be deleted.
  *
+ * A variable the command sets itself is readable, and `S=/abs/path; rm -rf $S/old`
+ * is the commonest shape verify writes: the value is right there, so it is
+ * substituted and the resulting path judged exactly as a written-out one. That
+ * widens what can be *read*, not what is allowed — a resolved target outside the
+ * worktree is refused with the same reason as a literal one. A name with no
+ * assignment before the delete, a value that is itself an expansion, a glob or a
+ * substitution, and a name reassigned to any of those in between all stay unreadable.
+ *
  * Best-effort, like everything else here: it splits on whitespace, so a quoted
  * path containing a space is refused, and it only sees `rm` at the head of a
  * segment, so `xargs rm -rf` goes unread. It catches the obvious, not the devious.
@@ -123,14 +131,34 @@ function skillAsked(ctx: GuardContext, input: unknown): GuardResult {
  * @returns the reason to refuse, or undefined to allow.
  */
 function badRecursiveDelete(ctx: GuardContext, command: string): string | undefined {
+  // Names whose literal value this command has set *so far*. Built as the loop
+  // walks, so an assignment only counts for the segments after it.
+  const known = new Map<string, string>();
+
   for (const segment of command.split(/[;|&\n]+/)) {
+    const assigned = assignmentIn(segment);
+    if (assigned !== undefined) {
+      // A value that cannot be read must drop any earlier one, or
+      // `S=/safe; rm -rf $S; S=$(cat f); rm -rf $S` would resolve the second delete
+      // to a path that is no longer what `S` holds.
+      if (UNREADABLE.test(assigned.value) || /\s/.test(assigned.value)) {
+        known.delete(assigned.name);
+      } else known.set(assigned.name, unquote(assigned.value));
+    }
+
     const words = segment
       .trim()
       .split(/\s+/)
       .filter((w) => w !== '');
-    if (words[0] !== 'rm') continue;
+    // `VAR=value rm -rf …` sets the variable for that one command only, and the
+    // shell expands `$VAR` before the assignment takes effect — so the prefix is
+    // stepped over to find the `rm`, and is deliberately not among the values
+    // recorded above. What such a delete names stays unreadable, and is refused.
+    let head = 0;
+    while (head < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[head] ?? '')) head++;
+    if (words[head] !== 'rm') continue;
 
-    const args = words.slice(1);
+    const args = words.slice(head + 1);
     // -rf, -fr, -R, or -f -r: a recursive flag however it is written or split.
     if (!args.some((a) => /^-[a-zA-Z]*[rR]/.test(a))) continue;
 
@@ -140,18 +168,45 @@ function badRecursiveDelete(ctx: GuardContext, command: string): string | undefi
     }
 
     for (const target of targets) {
+      const resolved = resolve(known, target);
+      // The refusal names the target as written, because that is what the agent has
+      // to fix; the ones below name where it actually pointed, for the same reason.
       // `~` is not here: it is perfectly readable — it means the home directory,
       // which `locate` already knows is outside, and saying so is the truer answer.
-      if (/[$`*?]/.test(target)) {
+      if (UNREADABLE.test(resolved)) {
         return `${target} could expand to anything, so this delete cannot be judged; name the directory outright`;
       }
-      if (!reachable(ctx, target)) return outOfBounds(ctx, target);
-      if (isRoot(ctx, target)) {
-        return `${target} is a directory the workbench owns; empty it if you must, but do not remove it`;
+      const named = resolved === target ? resolved : `${resolved} (from ${target})`;
+      if (!reachable(ctx, resolved)) return outOfBounds(ctx, named);
+      if (isRoot(ctx, resolved)) {
+        return `${named} is a directory the workbench owns; empty it if you must, but do not remove it`;
       }
     }
   }
   return undefined;
+}
+
+/** A variable, a substitution or a glob: something whose value is not written down. */
+const UNREADABLE = /[$`*?]/;
+
+/**
+ * The name a segment assigns and the value as written, whatever that value is —
+ * the caller decides whether it can be read. Everything to the end of the segment
+ * is the value, so `S=`cat f`` and the env-prefix `S=/x rm -rf $S` are both seen,
+ * and both unset the name rather than leaving a stale one behind.
+ */
+function assignmentIn(segment: string): { name: string; value: string } | undefined {
+  const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment.trim());
+  if (!match?.[1]) return undefined;
+  return { name: match[1], value: match[2] ?? '' };
+}
+
+/** `$NAME` and `${NAME}` replaced by what the command set them to; the rest left as written. */
+function resolve(known: Map<string, string>, target: string): string {
+  return target.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (whole: string, braced: string, bare: string) => known.get(braced || bare) ?? whole,
+  );
 }
 
 function unquote(word: string): string {
