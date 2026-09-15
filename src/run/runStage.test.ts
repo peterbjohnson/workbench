@@ -126,6 +126,8 @@ async function runStage(
     previously?: { changes: string; at: string | null };
     /** What the diff since that review comes back as. Empty means nothing was committed. */
     since?: string;
+    /** What the last implement run said it did, as the orchestrator hands it over. */
+    didBefore?: string;
   } = {},
 ): Promise<{
   result: RunResult;
@@ -162,6 +164,7 @@ async function runStage(
       worktree,
       scratch: path.join(worktree, '.scratch'),
       previously: opts.previously,
+      didBefore: opts.didBefore,
       resume: opts.resume,
       emit: (body) => said.push(body),
       signal: new AbortController().signal,
@@ -307,6 +310,26 @@ test('a later review with nothing committed since is told that, not told nothing
   assert.deepEqual(diffs, [undefined, 'c0ffee2'], 'there was a commit to measure from');
   assert.match(prompts[0] ?? '', /Nothing has been committed since you looked/);
   assert.doesNotMatch(prompts[0] ?? '', /Nothing had been committed when you looked/);
+});
+
+test('an implement run with commits behind it is briefed with the change so far', async () => {
+  // A round sent back for changes used to be given the plan and the objections and
+  // nothing about the change they are about, and read 4–8 files working out its own work.
+  const { prompts, diffs } = await runStage([{ costs: [0.5] }], {
+    ticket: aTicket({ commits: ['abc1234'] }),
+    didBefore: 'capped the backoff in retry.ts',
+  });
+
+  assert.deepEqual(diffs, [undefined], 'from the base, down the same path review measures');
+  assert.match(prompts[0] ?? '', /\+ the whole change/);
+  assert.match(prompts[0] ?? '', /capped the backoff in retry\.ts/);
+});
+
+test('a first implement run asks for no diff, because there is nothing yet to diff', async () => {
+  const { prompts, diffs } = await runStage([{ costs: [0.5] }]);
+
+  assert.deepEqual(diffs, [], 'nothing committed, so nothing was asked of git');
+  assert.doesNotMatch(prompts[0] ?? '', /## The change so far/);
 });
 
 /** What the service throws when the account has spent its window. */

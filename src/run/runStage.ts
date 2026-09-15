@@ -89,6 +89,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     scratch,
     checks,
     previously,
+    didBefore,
     conflict,
     resume,
     emit,
@@ -101,7 +102,14 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     const skills = deps.skills();
     /** The names an agent types, and the only ones the guard will answer to. */
     const skillNames = skills.map((skill) => skill.name);
-    const needsDiff = stage === 'review' || stage === 'verify';
+    // Implement as well as the two stages that judge it, once there is something to
+    // show: a round sent back for changes is revising a change it was not there for,
+    // and it read the files to find out what it had done. Not a first round, though —
+    // nothing is committed then, so the call could only come back empty.
+    const needsDiff =
+      stage === 'review' ||
+      stage === 'verify' ||
+      (stage === 'implement' && ticket.commits.length > 0);
 
     /**
      * Built only when it is needed. A resumed run already has all of this in its
@@ -122,6 +130,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         map: await worktreeMap(worktree),
         diff: needsDiff ? await deps.diff(ticket, worktree) : undefined,
         previousReview: previously === undefined ? undefined : await roundBefore(previously),
+        didBefore,
         checks,
         conflict,
         answer: ticket.answer ?? undefined,

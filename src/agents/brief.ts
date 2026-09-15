@@ -41,8 +41,17 @@ export type BriefInput = {
    * had the thing all along. A tool nobody knows about is a tool nobody uses.
    */
   skills?: readonly SkillDef[];
-  /** The change so far. Given to review and verify; they do not go looking for it. */
+  /**
+   * The change so far. Given to review and verify; they do not go looking for it, and
+   * nor does an implement run revising a change that is already committed.
+   */
   diff?: string;
+  /**
+   * What the last implement run said it had done, given to the implement run revising
+   * it. Nothing else is shown it: review and verify are judging the change itself, and
+   * an account of it from the stage they are judging is not evidence.
+   */
+  didBefore?: string;
   /**
    * The last round of review on this plan: what it asked for, and the change made
    * since it looked. Given to review alone and only from its second round on, so a
@@ -109,6 +118,7 @@ export function buildBrief(input: BriefInput): string {
     ['Answer to your question', input.answer],
     ['How much this warrants', declaredScale(input)],
     ['The round before this one', lastRoundFor(input)],
+    ['What the last implement run did', whatYouDidBefore(input)],
     ['The change so far', fenced(input.diff, 'diff')],
     ['Checks already run', checksRun(input.checks)],
   ];
@@ -388,6 +398,35 @@ function lastRoundFor({ agent, previousReview }: BriefInput): string | undefined
     'only if it fails one of the completion criteria — name which one. Anything else,',
     'however much better it would be, goes under `LATER:`.',
   ].join('\n');
+}
+
+/**
+ * The last implement run's own account of the work, for the implement run that has to
+ * revise it. A round sent back for changes is a fresh conversation that holds the plan
+ * and the objections and nothing about the change they are about, so it rediscovered
+ * its own commits by reading the files it had written them into.
+ *
+ * Immediately above `The change so far` on purpose: the account says what the run meant
+ * to do and the diff says what it did, and the two are read together.
+ */
+function whatYouDidBefore({ agent, didBefore, diff }: BriefInput): string | undefined {
+  if (agent.stage !== 'implement' || didBefore === undefined || didBefore.trim() === '') {
+    return undefined;
+  }
+
+  const lines = ['What the run before you said it had done:', '', nested(didBefore) ?? ''];
+
+  // Only when there is one. An implement run can complete without committing anything,
+  // and then there is no diff section below for this to be pointing at.
+  if (diff !== undefined && diff.trim() !== '') {
+    lines.push(
+      '',
+      'The change below is what that run produced. Between the two you have the work so',
+      'far: you do not need to read the files to find out what is already done.',
+    );
+  }
+
+  return lines.join('\n');
 }
 
 /**

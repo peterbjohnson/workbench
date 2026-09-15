@@ -900,6 +900,43 @@ export function lastReviewChanges(events: Event[]): { changes: string; at: strin
   return found;
 }
 
+/**
+ * What the last implement run said it had done. Read by the next implement run on the
+ * same plan — a round sent back for changes — which starts a fresh conversation holding
+ * the plan and the objections and nothing about the work it is being asked to revise,
+ * and rediscovers its own commits by reading files.
+ *
+ * Only implement's own account. Review and verify describe the same code from outside,
+ * as a list of what is wrong with it, and the stage already has that as work to do.
+ *
+ * Only a run that completed, too: `blocked` is a question to the manager, `failed` is a
+ * crash or a budget ceiling or the manager stopping the run, and `interrupted` is the
+ * finish `reconcile` writes for a run nobody is left to answer. None of them said
+ * anything about the work, so the last real account has to survive them all.
+ *
+ * Nothing survives the start of a plan: a new plan is a new approach, and the last
+ * one's account is of code that no longer exists.
+ *
+ * Not a field of the ticket, for the same reason as `lastChecks` and
+ * `lastReviewChanges` — it is asked for once, by the run that needs it.
+ */
+export function lastImplementSummary(events: Event[]): string | null {
+  let found: string | null = null;
+  /** The stage now running: a ticket runs one at a time, so this says whose an account is. */
+  let stage: Stage | null = null;
+
+  for (const e of events) {
+    if (e.type === 'stage_started') {
+      stage = e.stage;
+      if (e.stage === 'plan') found = null;
+    } else if (e.type === 'stage_finished' && stage === 'implement' && e.outcome === 'completed') {
+      found = e.summary;
+    }
+  }
+
+  return found;
+}
+
 export function deriveTicket(events: Event[]): Ticket {
   const first = events[0];
   if (first === undefined || first.type !== 'ticket_created') {

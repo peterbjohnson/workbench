@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
-import { lastChecks, lastReviewChanges, type Ticket } from '../domain/ticket.ts';
+import {
+  lastChecks,
+  lastImplementSummary,
+  lastReviewChanges,
+  type Ticket,
+} from '../domain/ticket.ts';
 import { carriedWork, heldBy, nextAction, waitingOutLimit, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
@@ -82,6 +87,13 @@ export type StageRunner = (args: {
    * review from nothing that finds new things at the first round's rate.
    */
   previously?: { changes: string; at: string | null };
+  /**
+   * What the last implement run said it had done, for implement alone and only when
+   * there was one. A round sent back for changes is revising work it was not there
+   * for, and its own account of that work is cheaper than rediscovering it by reading
+   * the files it wrote.
+   */
+  didBefore?: string;
   /**
    * A merge the workbench started and could not finish, left in the worktree for
    * this stage to resolve before it does anything else. The stage may not end with
@@ -661,6 +673,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           ? (lastReviewChanges(store.eventsFor(ticket.id)) ?? undefined)
           : undefined;
 
+      // What the last implement run said it did, for implement alone. It is the stage
+      // that has to revise that work; review and verify are reading the change itself
+      // and have the diff for that. Absent on a first round, which had none before it.
+      const didBefore =
+        stage === 'implement'
+          ? (lastImplementSummary(store.eventsFor(ticket.id)) ?? undefined)
+          : undefined;
+
       let commit: string | null = null;
       let result: RunResult;
       try {
@@ -672,6 +692,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           scratch,
           checks,
           previously,
+          didBefore,
           conflict,
           // Whatever conversation the ticket is holding. It is holding one only if it
           // stopped with something to come back to — a question it asked, or a

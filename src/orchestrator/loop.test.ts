@@ -230,6 +230,40 @@ test('a second review is handed the round before it, and the first is handed non
   }
 });
 
+test('a second implement run is handed what the first said it did, and nobody else is', async () => {
+  // A rework round is revising work it was not there for. Without this it rediscovers
+  // its own commits by reading the files it wrote them into.
+  const seen: [Stage, string | undefined][] = [];
+  let reviews = 0;
+  const h = harness({
+    runStage: async ({ stage, didBefore }) => {
+      seen.push([stage, didBefore]);
+      if (stage !== 'review') return ok(`${stage} done`);
+      return ++reviews === 1
+        ? { outcome: 'completed', summary: 'not yet', changes: '- retry.ts:14 unbounded' }
+        : ok('addressed');
+    },
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(seen, [
+      ['plan', undefined],
+      ['implement', undefined],
+      ['review', undefined],
+      ['implement', 'implement done'],
+      ['review', undefined],
+      ['verify', undefined],
+    ]);
+  } finally {
+    await h.close();
+  }
+});
+
 test('a failing standing check is another round of implement, not a new plan', async () => {
   // It used to be a rejection: a new plan, the gate, and a whole cycle — after a
   // review had already been read. It is an objection like any other now, back to the
