@@ -8,11 +8,12 @@ export type Stage = 'plan' | 'implement' | 'review' | 'verify';
 export type Scale = 'small' | 'standard' | 'large';
 
 /**
- * `interrupted` is not one a runner ever reports: it is written for a run that was
- * stopped rather than answered — by `reconcile`, for one nobody is left to answer
- * for, and by the orchestrator for one the manager stopped the workbench out from
- * under. Being stopped is not failing, and the difference is what lets the stage
- * carry on rather than begin again.
+ * `interrupted` is written for a run that was stopped rather than answered — by
+ * `reconcile`, for one nobody is left to answer for; by the orchestrator, for one the
+ * manager stopped the workbench out from under; and by the run itself for the one
+ * ending that stops it with a time to come back at, the model service's session limit
+ * (see `readSessionLimit`). Being stopped is not failing, and the difference is what
+ * lets the stage carry on rather than begin again.
  */
 export type RunOutcome = 'completed' | 'blocked' | 'failed' | 'interrupted';
 
@@ -245,6 +246,19 @@ export type EventBody =
        * Picking the ticket back up continues that instead of starting again.
        */
       sessionId?: string;
+      /**
+       * The instant the model service says work can resume, set only by a run that
+       * stopped on a session limit. What makes that ending an interruption with a
+       * time on it rather than a failure: the ticket parks with its conversation and
+       * carries on by itself when this passes.
+       */
+      limitedUntil?: string;
+      /**
+       * The model that run was using, set alongside `limitedUntil`. The message names
+       * no model, so this is who the limit is attributed to — and it is what decides
+       * which other stages have to wait and which carry on regardless.
+       */
+      limitedModel?: string;
       /**
        * This run was the workbench settling a clash on a branch that was offered,
        * rather than a stage the board asked for. What routes the report: there is no

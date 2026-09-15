@@ -29,6 +29,19 @@ export type Harness = {
 export const ok = (summary: string): RunResult => ({ outcome: 'completed', summary });
 
 /**
+ * The shape of the real split, which is what makes a session limit worth scoping:
+ * plan on one model, the stages that write code on another. Names of its own rather
+ * than the real ones, so a test says what it is about and not what the agent files
+ * happen to say today.
+ */
+export const MODELS: Record<Stage, string> = {
+  plan: 'the thinking model',
+  implement: 'the coding model',
+  review: 'the coding model',
+  verify: 'the coding model',
+};
+
+/**
  * A whole orchestrator with the outside world faked: no agents, no git, no GitHub.
  * Everything else is the real thing.
  *
@@ -74,6 +87,13 @@ export function harness(
      * ordinary ticket touches its own files and no others.
      */
     removedFromBase?: (ticketId: string, from?: string) => string[];
+    /**
+     * The clock a session limit is measured against. The real one by default; a test
+     * about waiting one out moves it rather than waiting.
+     */
+    now?: () => number;
+    /** Which model a stage runs on, for the stages a test wants to differ from `MODELS`. */
+    models?: Partial<Record<Stage, string>>;
   } = {},
 ): Harness {
   const store = opts.store ?? openStore(':memory:');
@@ -148,7 +168,9 @@ export function harness(
     },
     checks: async () => (typeof opts.checks === 'function' ? opts.checks() : (opts.checks ?? [])),
     credentials: async () => opts.credentials?.() ?? { ok: true, how: 'a test' },
+    modelFor: (stage) => opts.models?.[stage] ?? MODELS[stage],
     announce: (message) => announced.push(message),
+    now: opts.now,
   });
 
   return {

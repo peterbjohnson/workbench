@@ -1,4 +1,5 @@
 import { needsYou, salvageable } from '../../src/domain/board.ts';
+import { waitingOutLimit } from '../../src/domain/rules.ts';
 import type { Ticket } from '../../src/domain/ticket.ts';
 
 /**
@@ -26,14 +27,24 @@ export function Card(props: {
   const t = props.ticket;
   // Done holds everything finished, and "we stopped it" is not "it was accepted".
   const stopped = t.status === 'cancelled' || t.status === 'gave_up';
+  // Parked on the model service's session limit, which is the one park nobody has to
+  // do anything about: it carries on by itself when the limit lifts. Saying when is
+  // the whole of it — a ticket that looks stuck and is not is one somebody restarts.
+  const carriesOn =
+    t.limitedUntil !== null && waitingOutLimit(t, Date.now()) ? new Date(t.limitedUntil) : null;
   const marks = [
     stopped && <span key="stopped">{t.status === 'gave_up' ? 'given up' : 'cancelled'}</span>,
     needsYou(t) && (
-      <span key="needs" className="flag">
-        {/* Both are waiting on you, and they are not the same news. A ticket the
-            workbench was stopped in the middle of is not one that broke: there is
-            a run underneath it, and what it needs is to be told to carry on. */}
-        {t.interrupted ? 'stopped mid-stage' : 'needs you'}
+      <span key="needs" className={carriesOn === null ? 'flag' : 'queued'}>
+        {/* Three parks, and they are not the same news. A ticket the workbench was
+            stopped in the middle of is not one that broke: there is a run underneath
+            it, and what it needs is to be told to carry on. One waiting out a session
+            limit needs nothing at all — it tells itself, at the time it says. */}
+        {carriesOn !== null
+          ? `carries on at ${carriesOn.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+          : t.interrupted
+            ? 'stopped mid-stage'
+            : 'needs you'}
       </span>
     ),
     t.running && (
