@@ -102,6 +102,14 @@ test('a recursive delete inside the workspace is ordinary work', () => {
     'rm -rf ../t1.scratch/clone',
     "rm -rf 'build'",
     'rm -rf -- build',
+    // A variable the command sets itself is readable: this shape was refused 167
+    // times across three projects, each refusal costing a turn to re-issue it.
+    'S=/tmp/wb/t1.scratch; rm -rf $S/old && mkdir -p $S/old',
+    'S=/tmp/wb/t1.scratch; rm -rf ${S}/old',
+    'export S=/tmp/wb/t1.scratch; rm -rf $S/old',
+    "S='/tmp/wb/t1.scratch'; rm -rf $S/old",
+    'S=../t1.scratch; rm -rf $S/old',
+    'S=$(pwd); S=/tmp/wb/t1.scratch; rm -rf $S/old', // the later value is the one that holds
   ]) {
     assert.deepEqual(guard(IMPLEMENT, 'Bash', { command }), { allow: true }, command);
   }
@@ -113,6 +121,9 @@ test('a recursive delete pointing out of the workspace is refused', () => {
     'rm -rf ~/Documents',
     'rm -rf ../t2',
     'cd /tmp && rm -rf /tmp/wb/t2',
+    // A resolved variable is judged exactly as a written-out path is.
+    'S=/etc; rm -rf $S/x',
+    'S=../t2; rm -rf $S',
   ]) {
     const r = guard(IMPLEMENT, 'Bash', { command });
     assert.equal(r.allow, false, command);
@@ -121,7 +132,22 @@ test('a recursive delete pointing out of the workspace is refused', () => {
 });
 
 test('a recursive delete that cannot be read is refused rather than guessed at', () => {
-  for (const command of ['rm -rf $BUILD', 'rm -rf `pwd`/dist', 'rm -rf *', 'rm -rf build/*']) {
+  for (const command of [
+    'rm -rf $BUILD',
+    'rm -rf `pwd`/dist',
+    'rm -rf *',
+    'rm -rf build/*',
+    // A variable the command does not set to a literal it can read is no better
+    // than one it never sets at all.
+    'rm -rf $S/old',
+    'S=$(pwd); rm -rf $S/old',
+    'S=$HOME; rm -rf $S/old',
+    'S=/tmp/wb/*; rm -rf $S/old',
+    'rm -rf $S/old; S=/tmp/wb/t1.scratch', // assigned only afterwards
+    'S=/tmp/wb/t1.scratch rm -rf $S/old', // the shell expands $S before this takes effect
+    'S=/tmp/wb/t1.scratch; rm -rf $S/a; S=`cat f`; rm -rf $S/b', // reassigned unreadably between
+    'S=/tmp/wb/t1.scratch; rm -rf ${S:-/}/old', // a default-value expansion is not read
+  ]) {
     const r = guard(IMPLEMENT, 'Bash', { command });
     assert.equal(r.allow, false, command);
     assert.match(reason(r), /could expand to anything/);
@@ -132,11 +158,21 @@ test('a recursive delete that cannot be read is refused rather than guessed at',
 });
 
 test('the workspace directories themselves may not be removed', () => {
-  for (const command of ['rm -rf /tmp/wb/t1', 'rm -rf .', 'rm -rf /tmp/wb/t1.scratch']) {
+  for (const command of [
+    'rm -rf /tmp/wb/t1',
+    'rm -rf .',
+    'rm -rf /tmp/wb/t1.scratch',
+    'S=/tmp/wb/t1; rm -rf $S',
+    'S=/tmp/wb/t1.scratch; rm -rf ${S}',
+  ]) {
     const r = guard(IMPLEMENT, 'Bash', { command });
     assert.equal(r.allow, false, command);
     assert.match(reason(r), /the workbench owns/);
   }
+
+  // The refusal says where the variable actually pointed, as well as how it was written.
+  const r = guard(IMPLEMENT, 'Bash', { command: 'S=/tmp/wb/t1; rm -rf $S' });
+  assert.match(reason(r), /\/tmp\/wb\/t1 \(from \$S\)/);
 });
 
 test('ordinary shell commands are allowed', () => {

@@ -967,6 +967,18 @@ summary {
   }
 }
 
+/* The turn that did not come back, in the place its reply would have taken. Marked
+   on the same side an agent's turn is unmarked, and in --bad, so it reads as the
+   answer going wrong rather than as another thing said. */
+.chatpane .turn.failed {
+  border-left: 2px solid var(--bad);
+  color: var(--bad);
+}
+
+.chatpane .turn.failed .who {
+  color: var(--bad);
+}
+
 /* Collapsed: a column narrow enough to give the ticket its width back, and all of
    it is the way to open the chat again. */
 .chatrail {
