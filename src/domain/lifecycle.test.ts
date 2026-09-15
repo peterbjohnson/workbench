@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 
 import type { Event, EventBody } from './events.ts';
 import { needsYou } from './board.ts';
-import { deriveTicket, lastChecks, lastReviewChanges, type Ticket } from './ticket.ts';
+import {
+  deriveTicket,
+  lastChecks,
+  lastImplementSummary,
+  lastReviewChanges,
+  type Ticket,
+} from './ticket.ts';
 import { DEFAULT_POLICY, nextAction, waitingOutLimit, type Action } from './rules.ts';
 
 /** Accumulates events for one ticket and re-derives it, the way the store will. */
@@ -1596,6 +1602,77 @@ test('the round a later review is given is the last one review itself asked for'
   // And a new plan is a new approach: the objections are about code that is gone.
   j.add({ type: 'stage_started', stage: 'plan', runId: 'r13' });
   assert.equal(lastReviewChanges(j.events), null);
+});
+
+test('the account a rework round is given is implement own last finished run', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  // Nothing has implemented yet, so there is nothing anybody said about the work.
+  assert.equal(lastImplementSummary(j.events), null);
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'capped the backoff, and a test for it',
+    commit: 'aaa111',
+  });
+  assert.equal(lastImplementSummary(j.events), 'capped the backoff, and a test for it');
+
+  // Review describes the same code from outside, as a list of what is wrong with it.
+  // That is not an account of the work, and implement already has it as work to do.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r2' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'completed',
+    summary: 'not yet',
+    changes: '- name the units',
+  });
+  assert.equal(lastImplementSummary(j.events), 'capped the backoff, and a test for it');
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r3' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r3',
+    outcome: 'completed',
+    summary: 'named the units',
+    commit: 'bbb222',
+  });
+  assert.equal(lastImplementSummary(j.events), 'named the units', 'the last one that finished');
+
+  // A run that did not finish said nothing about the work: asking the manager a
+  // question, falling over, and the finish `reconcile` writes for a run nobody is left
+  // to answer all leave the last real account standing.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r4' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r4',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+  });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r5' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r5',
+    outcome: 'failed',
+    summary: 'the run hit its ceiling',
+  });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r6' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+  });
+  assert.equal(lastImplementSummary(j.events), 'named the units');
+
+  // And a new plan is a new approach: that account is of code that is gone.
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r7' });
+  assert.equal(lastImplementSummary(j.events), null);
 });
 
 test('an estimate is the last one guessed, and moves the ticket nowhere', () => {

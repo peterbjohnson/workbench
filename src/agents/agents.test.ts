@@ -574,6 +574,34 @@ test('a later review is given the round before it, and a first review is not', (
   }
 });
 
+test('an implement run revising a change is told what the last one said it did', () => {
+  const ticket = ticketFrom([CREATED]);
+  const didBefore = 'capped the backoff in retry.ts, and a test that would have caught it';
+
+  const again = buildBrief({
+    ticket,
+    agent: agents.implement,
+    worktree: '/tmp/wb/t1',
+    diff: '+ cap = 5',
+    didBefore,
+  });
+
+  assert.match(again, /## What the last implement run did/);
+  assert.match(again, /capped the backoff in retry\.ts/);
+  // The account and the change it produced, read together.
+  assert.match(again, /The change below is what that run produced/);
+
+  const first = buildBrief({ ticket, agent: agents.implement, worktree: '/tmp/wb/t1' });
+  assert.doesNotMatch(first, /What the last implement run did/, 'a first round did nothing before');
+
+  // Nobody else is revising it. Review and verify are judging the change itself, and
+  // an account of it from the stage they are judging is not evidence.
+  for (const stage of STAGES.filter((s) => s !== 'implement')) {
+    const brief = buildBrief({ ticket, agent: agents[stage], worktree: '/tmp/wb/t1', didBefore });
+    assert.doesNotMatch(brief, /What the last implement run did/, `${stage} is not revising it`);
+  }
+});
+
 test('a ticket carrying on from another is told what it is carrying on from', () => {
   const events: EventBody[] = [
     { type: 'ticket_created', title: 'the first attempt', body: 'write the report' },
