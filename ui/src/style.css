@@ -270,12 +270,16 @@ header .stopper.go {
 
 /* Board ------------------------------------------------------------------- */
 
+/* The column is the drop target, so its height is the drop zone. Columns stretch
+   to the tallest one rather than shrinking to their cards — otherwise a short
+   Committed only takes a drop over its few cards — and the floor keeps some zone
+   when every column is short. */
 .board {
   display: flex;
   gap: 1rem;
   padding: 1.2rem;
   overflow-x: auto;
-  align-items: start;
+  min-height: 60vh;
 }
 
 .col {
