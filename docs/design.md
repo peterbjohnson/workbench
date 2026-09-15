@@ -41,6 +41,28 @@ This is not a way of silencing agents. It is a way of separating *this work is w
 *something else would also be good*, which are different claims that were arriving in the
 same sentence and being paid for at the same price.
 
+## A later review checks the last one's list
+
+Review did not converge. Across three projects since 8 August it asked for `CHANGES` on
+35–56% of first rounds and on 39–50% of third-and-later rounds — the third round finding new
+things at the rate the first did. Review rounds after the first cost about $340 between them,
+plus the implement runs they bought, and repeat runs of a stage are 31–48% of everything the
+workbench spends. Of 523 `CHANGES` items, 91 were about docs, comments or wording: a table
+caption, an abstract a little over its limit, a paragraph wrapped too wide.
+
+The cause is that a later review was told nothing about the round before it. `changesFor` in
+`src/agents/brief.ts` showed the list to implement alone, on the argument that a reviewer
+handed its own last objections would read them back as instructions instead of judging the
+diff. Those figures reverse that reasoning: what keeping review blind bought was a stage
+that re-reviewed from nothing every round, at first-round prices.
+
+So from the second round on, review is given what it itself last asked for and the change
+made since it looked, and asked two questions — were those items addressed, and did
+addressing them break anything. The list is put in front of it as the round before, never as
+work to do: making the change is still implement's job. A *new* objection in a later round
+belongs in the verdict only if it fails a completion criterion, which is the section above
+applied to the one stage that was getting a fresh start every round.
+
 ## A ticket edits the user docs only when it changes what a user does
 
 `README.md` and `docs/using-it.md` are what a user sees, and a ticket may edit them when it

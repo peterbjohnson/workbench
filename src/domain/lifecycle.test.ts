@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { Event, EventBody } from './events.ts';
 import { needsYou } from './board.ts';
-import { deriveTicket, lastChecks, type Ticket } from './ticket.ts';
+import { deriveTicket, lastChecks, lastReviewChanges, type Ticket } from './ticket.ts';
 import { DEFAULT_POLICY, nextAction, type Action } from './rules.ts';
 
 /** Accumulates events for one ticket and re-derives it, the way the store will. */
@@ -1392,6 +1392,61 @@ test('the checks a stage is told about are the ones run since the work was last 
   // the code they were run against.
   j.add({ type: 'stage_started', stage: 'implement', runId: 'r3' });
   assert.deepEqual(lastChecks(j.events), [], 'nothing has been checked about this round yet');
+});
+
+test('the round a later review is given is the last one review itself asked for', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  // Nothing has reviewed yet, so there is no round before this one.
+  assert.equal(lastReviewChanges(j.events), null);
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'aaa111',
+  });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r2' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'completed',
+    summary: 'not yet',
+    changes: '- name the units',
+  });
+
+  // The list, and where the branch stood when it was written: that commit is what
+  // the next round's "what has changed since you looked" is measured from.
+  assert.deepEqual(lastReviewChanges(j.events), { changes: '- name the units', at: 'aaa111' });
+
+  // Somebody else's objection is not review's round. A reviewer asked whether those
+  // were addressed would be checking work against a standard it never set.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r3' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r3',
+    outcome: 'completed',
+    summary: 'fixed',
+    commit: 'bbb222',
+  });
+  j.add({ type: 'stage_started', stage: 'verify', runId: 'r4' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r4',
+    outcome: 'completed',
+    summary: 'no',
+    changes: '- a test that cannot fail',
+  });
+  j.add({ type: 'changes_requested', changes: '- and rename that' });
+  assert.deepEqual(lastReviewChanges(j.events), { changes: '- name the units', at: 'aaa111' });
+
+  // And a new plan is a new approach: the objections are about code that is gone.
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r5' });
+  assert.equal(lastReviewChanges(j.events), null);
 });
 
 test('an estimate is the last one guessed, and moves the ticket nowhere', () => {

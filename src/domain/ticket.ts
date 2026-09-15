@@ -802,6 +802,45 @@ export function lastChecks(events: Event[]): CheckRun[] {
   return [];
 }
 
+/**
+ * What review last asked for, and the commit the branch stood at when it asked.
+ * Read by the next review of the same plan, so a later round checks the round
+ * before it rather than starting again — see `lastRoundFor` in `agents/brief.ts`.
+ *
+ * Not `ticket.changes`: that is cleared the moment implement starts, and is long
+ * gone by the time review runs again. Not a field of its own either, for the same
+ * reason as `lastChecks` — it is asked for once, by the run that needs it.
+ *
+ * Only review's own list. A verify objection and a manager's `changes_requested`
+ * are somebody else's words, and a reviewer asked whether they were addressed
+ * would be checking work against a standard it never set.
+ *
+ * Nothing survives the start of a plan: a new plan is a new approach, and the last
+ * one's objections are about code that no longer exists. `revisions` resets there
+ * too, so this is the same round the cap counts.
+ */
+export function lastReviewChanges(events: Event[]): { changes: string; at: string | null } | null {
+  let found: { changes: string; at: string | null } | null = null;
+  /** The stage now running: a ticket runs one at a time, so this says whose a verdict is. */
+  let stage: Stage | null = null;
+  /** HEAD as of here, which for the review below is what its diff was measured from. */
+  let head: string | null = null;
+
+  for (const e of events) {
+    if (e.type === 'stage_started') {
+      stage = e.stage;
+      if (e.stage === 'plan') found = null;
+    } else if (e.type === 'stage_finished') {
+      if (e.changes !== undefined && stage === 'review') found = { changes: e.changes, at: head };
+      if (e.commit !== undefined) head = e.commit;
+    } else if (e.type === 'refreshed') {
+      head = e.commit;
+    }
+  }
+
+  return found;
+}
+
 export function deriveTicket(events: Event[]): Ticket {
   const first = events[0];
   if (first === undefined || first.type !== 'ticket_created') {
