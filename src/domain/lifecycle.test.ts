@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { Event, EventBody } from './events.ts';
 import { needsYou } from './board.ts';
-import { deriveTicket, lastChecks, type Ticket } from './ticket.ts';
+import { deriveTicket, lastChecks, lastReviewChanges, type Ticket } from './ticket.ts';
 import { DEFAULT_POLICY, nextAction, waitingOutLimit, type Action } from './rules.ts';
 
 /** Accumulates events for one ticket and re-derives it, the way the store will. */
@@ -1455,6 +1455,147 @@ test('the checks a stage is told about are the ones run since the work was last 
   // the code they were run against.
   j.add({ type: 'stage_started', stage: 'implement', runId: 'r3' });
   assert.deepEqual(lastChecks(j.events), [], 'nothing has been checked about this round yet');
+});
+
+test('the round a later review is given is the last one review itself asked for', () => {
+  const j = newTicket();
+  runStage(j, 'plan');
+  j.add({ type: 'plan_approved' });
+
+  // Nothing has reviewed yet, so there is no round before this one.
+  assert.equal(lastReviewChanges(j.events), null);
+
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r1' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r1',
+    outcome: 'completed',
+    summary: 'wrote it',
+    commit: 'aaa111',
+  });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r2' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r2',
+    outcome: 'completed',
+    summary: 'not yet',
+    changes: '- name the units',
+  });
+
+  // The list, and where the branch stood when it was written: that commit is what
+  // the next round's "what has changed since you looked" is measured from.
+  assert.deepEqual(lastReviewChanges(j.events), { changes: '- name the units', at: 'aaa111' });
+
+  // Somebody else's objection is not review's round. A reviewer asked whether those
+  // were addressed would be checking work against a standard it never set.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r3' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r3',
+    outcome: 'completed',
+    summary: 'fixed',
+    commit: 'bbb222',
+  });
+  j.add({ type: 'stage_started', stage: 'verify', runId: 'r4' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r4',
+    outcome: 'completed',
+    summary: 'no',
+    changes: '- a test that cannot fail',
+  });
+  j.add({ type: 'changes_requested', changes: '- and rename that' });
+  assert.deepEqual(lastReviewChanges(j.events), { changes: '- name the units', at: 'aaa111' });
+
+  // A review that asks for nothing has settled its own list: it read the work done
+  // about it and accepted it.
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r5' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r5',
+    outcome: 'completed',
+    summary: 'fixed',
+    commit: 'ccc333',
+  });
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r6' });
+  j.add({ type: 'stage_finished', runId: 'r6', outcome: 'completed', summary: 'good' });
+  assert.equal(lastReviewChanges(j.events), null);
+
+  // So a ticket sent back round by verify reaches review with nothing before it. The
+  // list it would otherwise be handed is one an earlier review passed, and the commit
+  // it would be measured from is one that review had read.
+  j.add({ type: 'stage_started', stage: 'verify', runId: 'r7' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r7',
+    outcome: 'completed',
+    summary: 'no',
+    changes: '- an untested branch',
+  });
+  j.add({ type: 'stage_started', stage: 'implement', runId: 'r8' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r8',
+    outcome: 'completed',
+    summary: 'fixed',
+    commit: 'ddd444',
+  });
+  assert.equal(lastReviewChanges(j.events), null);
+
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r9' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r9',
+    outcome: 'completed',
+    summary: 'not quite',
+    changes: '- the branch is still untested',
+  });
+
+  // Asking the manager a question is not answering either: the run ended without a
+  // verdict, and the round it was given is still the round to check.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r10' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r10',
+    outcome: 'blocked',
+    summary: 'waiting on the manager',
+  });
+  assert.deepEqual(lastReviewChanges(j.events), {
+    changes: '- the branch is still untested',
+    at: 'ddd444',
+  });
+
+  // Nor is falling over: a crash, a budget ceiling or the manager stopping the run all
+  // end it with nothing said about the list.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r11' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'r11',
+    outcome: 'failed',
+    summary: 'the run hit its ceiling',
+  });
+  assert.deepEqual(lastReviewChanges(j.events), {
+    changes: '- the branch is still untested',
+    at: 'ddd444',
+  });
+
+  // Being stopped is not answering: the finish `reconcile` writes for a run nobody is
+  // left to answer carries no verdict, and leaves a live list alone.
+  j.add({ type: 'stage_started', stage: 'review', runId: 'r12' });
+  j.add({
+    type: 'stage_finished',
+    runId: 'interrupted',
+    outcome: 'interrupted',
+    summary: 'the workbench stopped while this stage was running',
+  });
+  assert.deepEqual(lastReviewChanges(j.events), {
+    changes: '- the branch is still untested',
+    at: 'ddd444',
+  });
+
+  // And a new plan is a new approach: the objections are about code that is gone.
+  j.add({ type: 'stage_started', stage: 'plan', runId: 'r13' });
+  assert.equal(lastReviewChanges(j.events), null);
 });
 
 test('an estimate is the last one guessed, and moves the ticket nowhere', () => {

@@ -83,8 +83,20 @@ would demonstrate it.
 
 The brief carries `Completion criteria` — the conditions the manager agreed when approving
 the plan.
-Those, and defects, are what you may object to. If every condition is met and you have
-found nothing wrong, the verdict is `APPROVED`, however much better you can see it being.
+
+**For each thing you found, name the completion criterion it fails.** If you can, it
+belongs in your verdict. If you cannot, it belongs there only if it is a defect — a wrong
+result, a case that breaks it, a test that would pass either way — or scope nobody asked
+for, which is point 4 above. **Anything else is `LATER`, not `CHANGES`**, however sure you
+are that it should be done.
+
+Wording you would improve is where this goes wrong most: of 523 changes this workbench has
+asked for, 91 were about docs, comments or wording — a table caption, an abstract a little
+over its limit, a paragraph wrapped too wide. Each of those bought another round of
+implement and another round of review, and none of them was what the ticket was for.
+
+If every condition is met and you have found nothing wrong, the verdict is `APPROVED`,
+however much better you can see it being.
 
 **Anything you would like, would have done differently, or think would be better is a
 later ticket.** Put a `LATER:` block after your verdict and list them there, one per line.

@@ -49,8 +49,13 @@ export type StageRunnerDeps = {
    * machine is, and given to the guard so nothing else can be read.
    */
   skills: () => readonly SkillDef[];
-  /** The change so far, shown to review and verify so they do not go looking. */
-  diff: (ticket: Ticket, worktree: string) => Promise<string>;
+  /**
+   * The change so far, shown to review and verify so they do not go looking. `from`
+   * measures it against somewhere other than the ticket's base — a review's own last
+   * look, so a later round sees what has happened since rather than the whole change
+   * again.
+   */
+  diff: (ticket: Ticket, worktree: string, from?: string) => Promise<string>;
   /** What became of the ticket this one carries on from, when it carries on from one. */
   continued: (ticketId: string) => string;
   /**
@@ -83,6 +88,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
     worktree,
     scratch,
     checks,
+    previously,
     conflict,
     resume,
     emit,
@@ -115,6 +121,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         absent: deps.protectedPaths,
         map: await worktreeMap(worktree),
         diff: needsDiff ? await deps.diff(ticket, worktree) : undefined,
+        previousReview: previously === undefined ? undefined : await roundBefore(previously),
         checks,
         conflict,
         answer: ticket.answer ?? undefined,
@@ -122,6 +129,28 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
       });
       return assembled;
     };
+
+    /**
+     * The round before this one, as review is shown it. The diff is measured from
+     * where the branch stood when that review looked, so what comes back is what has
+     * been done since — and, because `diff` measures against everything the branch
+     * stands on, without a base merged in between reading as part of it.
+     *
+     * No commit at all when it looked means everything since is the change itself,
+     * which the brief already carries whole. Asking for it twice would be two copies
+     * of the same diff in one brief, so `since` is left absent.
+     *
+     * A commit with an empty diff back is a third case, not that one: the run between
+     * the two reviews ended without committing. It comes back as the empty string it
+     * is, and the brief says so in its own words.
+     */
+    async function roundBefore(round: {
+      changes: string;
+      at: string | null;
+    }): Promise<{ changes: string; since?: string }> {
+      if (round.at === null) return { changes: round.changes };
+      return { changes: round.changes, since: await deps.diff(ticket, worktree, round.at) };
+    }
 
     /** What every attempt at this stage has cost between them. */
     let spent = 0;
