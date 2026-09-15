@@ -21,7 +21,7 @@ import { fileMap } from '../code/report.ts';
 import { wbServer } from '../tools/server.ts';
 import type { RunResult, StageRunner } from '../orchestrator/loop.ts';
 import { guard } from './guard.ts';
-import { readSessionLimit } from './limits.ts';
+import { looksLikeSessionLimit, readSessionLimit } from './limits.ts';
 
 export type StageRunnerDeps = {
   /**
@@ -240,6 +240,12 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
       let stopped: string | undefined;
       /** How the run went wrong, when it went wrong by throwing. */
       let threw: string | undefined;
+      /**
+       * And the thing that was thrown, kept beside its message. `describe` reduces a
+       * throw to prose the service is free to reword; the status code and the type it
+       * came with are not, and the limit check reads both.
+       */
+      let thrown: unknown;
 
       session = (deps.query ?? query)({ prompt, options });
 
@@ -278,7 +284,10 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
         // escape loses `asked` — the question is captured, the run stops, and the
         // manager is never told, which is the whole mechanism failing at the last
         // inch. A throw only means something went wrong if nobody asked anything.
-        if (!asked) threw = describe(error);
+        if (!asked) {
+          threw = describe(error);
+          thrown = error;
+        }
       }
 
       // Whatever happened, every attempt at this stage cost what it cost.
@@ -305,7 +314,7 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
       // carries on at the reset instead of being bought again from the top. Not
       // `crashed`, and that is the whole of it: a crashed result on the resume path
       // above starts the stage afresh, which is the cost this exists to avoid.
-      const limitedUntil = readSessionLimit(threw ?? '', deps.now?.() ?? new Date());
+      const limitedUntil = readSessionLimit(threw ?? '', deps.now?.() ?? new Date(), thrown);
       if (limitedUntil !== undefined) {
         return ended({
           outcome: 'interrupted',
@@ -326,6 +335,18 @@ export function createStageRunner(deps: StageRunnerDeps): StageRunner {
       // out of here means the orchestrator only has the error, and the money the run
       // burned before hitting it is charged to nobody.
       if (threw !== undefined) {
+        // A limit we knew for a limit and could read no time out of. It fails, as it
+        // always did — waiting for a time nobody named would hold the board for ever —
+        // but it says so, because this is what a reworded message looks like from here,
+        // and unannounced it is indistinguishable from any other crash for as many
+        // nights as it takes somebody to notice the sessions going missing.
+        if (looksLikeSessionLimit(threw, thrown)) {
+          emit({
+            type: 'agent_said',
+            runId,
+            text: `[${stage}] this looked like a session limit but named no reset time, so the run failed rather than parking: ${threw}`,
+          });
+        }
         return { result: { outcome: 'failed', summary: threw, costUsd }, crashed: true };
       }
       if (stopped !== undefined) {

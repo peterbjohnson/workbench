@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { readSessionLimit } from './limits.ts';
+import { looksLikeSessionLimit, readSessionLimit } from './limits.ts';
 
 const MESSAGE = "You've hit your session limit · resets 10:30pm (Europe/London)";
 
@@ -98,4 +98,43 @@ test('nothing readable is nothing to wait for', () => {
   assert.equal(readSessionLimit("You've hit your session limit", now), undefined);
   // A zone this machine has never heard of.
   assert.equal(readSessionLimit('session limit · resets 10:30pm (Mars/Olympus)', now), undefined);
+});
+
+/** The same ending, worded as the service is free to reword it at any time. */
+const REWORDED = 'Your usage cap is reached · resets 10:30pm (Europe/London)';
+
+test('a reworded limit is still a limit when the throw says 429', () => {
+  const now = new Date('2026-09-14T20:00:00Z');
+
+  const at = readSessionLimit(REWORDED, now, { status: 429 });
+  assert.equal(at?.toISOString(), '2026-09-14T21:30:00.000Z');
+
+  // Words alone, and they are not words this knows: the old behaviour, unchanged.
+  assert.equal(readSessionLimit(REWORDED, now), undefined);
+});
+
+test('the shape widens what is a limit, never what says when', () => {
+  const now = new Date('2026-09-14T20:00:00Z');
+
+  // No status code carries a reset time, so a limit-shaped throw whose message names
+  // no time is still nothing to wait for.
+  assert.equal(readSessionLimit('Your usage cap is reached', now, { status: 429 }), undefined);
+});
+
+test('what counts as limit-shaped', () => {
+  assert.equal(looksLikeSessionLimit("You've hit your session limit"), true, 'the words alone');
+  assert.equal(looksLikeSessionLimit('Request failed', { status: 429 }), true);
+  assert.equal(looksLikeSessionLimit('Request failed', { statusCode: 429 }), true);
+  assert.equal(looksLikeSessionLimit('Request failed', { response: { status: 429 } }), true);
+  assert.equal(looksLikeSessionLimit('Request failed', { type: 'rate_limit_error' }), true);
+  assert.equal(looksLikeSessionLimit('Request failed', { error: { type: 'usage-limit' } }), true);
+
+  assert.equal(looksLikeSessionLimit('Error: fetch failed'), false, 'neither half');
+  assert.equal(looksLikeSessionLimit('Error: fetch failed', new Error('fetch failed')), false);
+  assert.equal(looksLikeSessionLimit('Request failed', { status: 500 }), false);
+  // Nothing here is trusted to be the shape it looks like.
+  assert.equal(looksLikeSessionLimit('Request failed', { status: '429' }), false);
+  assert.equal(looksLikeSessionLimit('Request failed', null), false);
+  assert.equal(looksLikeSessionLimit('Request failed', 'a thrown string'), false);
+  assert.equal(looksLikeSessionLimit('Request failed', { response: null, error: 7 }), false);
 });

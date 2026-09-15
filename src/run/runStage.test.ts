@@ -25,6 +25,8 @@ type Script = {
   asks?: boolean;
   /** The error the call ends with. Ends cleanly when absent. */
   throws?: string;
+  /** What the SDK hangs on that error — a status code, a type — as a real one does. */
+  throwsWith?: Record<string, unknown>;
 };
 
 /** A model service that never leaves the machine. One script per call, in order. */
@@ -67,7 +69,9 @@ function service(scripts: Script[]): {
           session_id: 'session-1',
         } as unknown as SDKMessage;
       }
-      if (script.throws !== undefined) throw new Error(script.throws);
+      if (script.throws !== undefined) {
+        throw Object.assign(new Error(script.throws), script.throwsWith ?? {});
+      }
     }
 
     const session = messages() as ReturnType<NonNullable<StageRunnerDeps['query']>>;
@@ -285,6 +289,51 @@ test('a session limit that does not say when still fails', async () => {
 
   assert.equal(result.outcome, 'failed');
   assert.equal(result.limitedUntil, undefined);
+});
+
+test('a reworded limit is parked on what the throw carried, not on its wording', async () => {
+  // The failure this guards: the service rewords the message, the text stops matching,
+  // and every night's runs fail and drop their sessions without a word. The 429 is the
+  // half of the throw the service does not get to reword.
+  const { result } = await runStage(
+    [
+      {
+        costs: [0.8],
+        throws: 'Your usage cap is reached · resets 10:30pm (Europe/London)',
+        throwsWith: { status: 429 },
+      },
+    ],
+    { now: BEFORE_THE_RESET },
+  );
+
+  assert.equal(result.outcome, 'interrupted');
+  assert.equal(result.limitedUntil, '2026-09-14T21:30:00.000Z', 'read from the text, as ever');
+  assert.equal(result.sessionId, 'session-1');
+});
+
+test('a limit that named no time is said out loud, and still fails', async () => {
+  // Failing is right — there is nothing to wait for. Failing silently is not: this is
+  // exactly what a reworded message looks like from in here, and it should be visible
+  // the first night rather than after a week of sessions going missing.
+  const { result, said } = await runStage([
+    { costs: [0.8], throws: 'Your usage cap is reached', throwsWith: { status: 429 } },
+  ]);
+
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.summary, 'Your usage cap is reached', 'the same summary as before');
+  assert.equal(result.costUsd, 0.8, 'and the same cost');
+  assert.equal(result.limitedUntil, undefined);
+  assert.ok(
+    said.some((e) => e.type === 'agent_said' && /no reset time/.test(e.text)),
+    'the record says a limit went unread',
+  );
+});
+
+test('an ordinary crash says nothing about limits', async () => {
+  const { result, said } = await runStage([{ throws: 'the model service is down' }]);
+
+  assert.equal(result.outcome, 'failed');
+  assert.ok(!said.some((e) => e.type === 'agent_said' && /no reset time/.test(e.text)));
 });
 
 test('a resumed run that failed without throwing is that stage answer', async () => {

@@ -7,12 +7,18 @@
  * that follows — parking the run with its conversation, starting nothing until
  * then, carrying on at that moment — is the ordinary interruption machinery.
  *
- * Recognised by its text, like `isCredentialRejection`, because that is all a
- * thrown ending gives us.
+ * Recognised by its text, like `isCredentialRejection`, and also by what the SDK
+ * hung on the throw — a 429, a rate-limit type — because the prose is the service's
+ * to reword and the shape is not. The *time*, though, is text and only text: no
+ * status code says when to come back, so a widened gate buys a wider recognition
+ * of the ending, never a wider reading of it.
  */
 
-/** The ending this reads, and nothing else. */
+/** The ending this reads in the prose. */
 const IS_LIMIT = /session limit/i;
+
+/** And in the shape: what the SDK calls a throttle, whatever words came with it. */
+const LIMIT_TYPE = /rate.?limit|usage.?limit|session.?limit/i;
 
 /** When it says work resumes: `resets 10:30pm`, `resets 3pm`, `resets 22:30`. */
 const RESETS = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
@@ -38,12 +44,39 @@ const ZONE = /\(([A-Za-z]+\/[A-Za-z0-9_+\-/]+)\)/;
 const GRACE = 2;
 
 /**
- * When the service says this run may carry on, or undefined when the text is not
- * a session limit or does not say. Undefined is the old behaviour — the run fails
- * — so anything unreadable costs nothing new.
+ * Whether a thrown object is one the service throttled, by its structure rather than
+ * its words. Everything here is optional and nothing is trusted: a thrown string, a
+ * null, a `status` that is the string '429' rather than the number, all say no.
  */
-export function readSessionLimit(text: string, now: Date): Date | undefined {
-  if (!IS_LIMIT.test(text)) return undefined;
+function limitShaped(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const it = error as Record<string, unknown>;
+  const response = typeof it.response === 'object' && it.response !== null ? it.response : {};
+  const status = [it.status, it.statusCode, (response as Record<string, unknown>).status];
+  if (status.includes(429)) return true;
+
+  const nested = typeof it.error === 'object' && it.error !== null ? it.error : {};
+  const named = [it.type, it.code, (nested as Record<string, unknown>).type];
+  return named.some((name) => typeof name === 'string' && LIMIT_TYPE.test(name));
+}
+
+/**
+ * Whether this ending is the service saying come back later — read from both halves
+ * of what a throw carries, so a reworded message with a 429 on it is still known.
+ * Exported because the caller announces the ones it could name no time from, and must
+ * ask the same question this does to know which those are.
+ */
+export function looksLikeSessionLimit(text: string, error?: unknown): boolean {
+  return IS_LIMIT.test(text) || limitShaped(error);
+}
+
+/**
+ * When the service says this run may carry on, or undefined when the ending is not
+ * a session limit or the text does not say when. Undefined is the old behaviour — the
+ * run fails — so anything unreadable costs nothing new.
+ */
+export function readSessionLimit(text: string, now: Date, error?: unknown): Date | undefined {
+  if (!looksLikeSessionLimit(text, error)) return undefined;
 
   const at = RESETS.exec(text);
   if (at === null) return undefined;
