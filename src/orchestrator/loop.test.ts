@@ -199,6 +199,37 @@ test('the checks run between implement and review, not after a review is bought'
   }
 });
 
+test('a second review is handed the round before it, and the first is handed none', async () => {
+  // Without this every round reviews from nothing and finds new things at the first
+  // round's rate, however many rounds have gone.
+  const seen: unknown[] = [];
+  let reviews = 0;
+  const h = harness({
+    runStage: async ({ stage, previously }) => {
+      if (stage !== 'review') return ok(`${stage} done`);
+      seen.push(previously);
+      return ++reviews === 1
+        ? { outcome: 'completed', summary: 'not yet', changes: '- retry.ts:14 unbounded' }
+        : ok('addressed');
+    },
+  });
+
+  try {
+    create(h.store);
+    await h.orch.idle();
+    h.store.append('t1', { type: 'plan_approved' });
+    await h.orch.idle();
+
+    assert.deepEqual(h.ran, ['plan', 'implement', 'review', 'implement', 'review', 'verify']);
+    assert.equal(seen[0], undefined, 'the first round has nothing before it to check');
+    // The commit the branch stood at when that review looked, not the one the review
+    // run itself left behind: what it read was the implement run's work.
+    assert.deepEqual(seen[1], { changes: '- retry.ts:14 unbounded', at: 'c0ffee2' });
+  } finally {
+    await h.close();
+  }
+});
+
 test('a failing standing check is another round of implement, not a new plan', async () => {
   // It used to be a rejection: a new plan, the gate, and a whole cycle — after a
   // review had already been read. It is an objection like any other now, back to the

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { CheckRun, EventBody, Refreshed, RunOutcome, Scale, Stage } from '../domain/events.ts';
-import { lastChecks, type Ticket } from '../domain/ticket.ts';
+import { lastChecks, lastReviewChanges, type Ticket } from '../domain/ticket.ts';
 import { carriedWork, heldBy, nextAction, waitingOutLimit, type Action } from '../domain/rules.ts';
 import type { Store } from '../store/store.ts';
 import { isCredentialRejection, refused, type Credentials } from '../run/credentials.ts';
@@ -75,6 +75,13 @@ export type StageRunner = (args: {
    * Empty means nothing was run, which is a fact worth having too.
    */
   checks?: CheckRun[];
+  /**
+   * What review itself last asked for on this plan, and the commit the branch stood
+   * at when it asked. Given to review alone and only from its second round on: it is
+   * what turns a later round into a check of the round before it, rather than another
+   * review from nothing that finds new things at the first round's rate.
+   */
+  previously?: { changes: string; at: string | null };
   /**
    * A merge the workbench started and could not finish, left in the worktree for
    * this stage to resolve before it does anything else. The stage may not end with
@@ -646,6 +653,14 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
             ? []
             : lastChecks(store.eventsFor(ticket.id));
 
+      // What review last said, for review alone. Implement is already given the list
+      // as work to do; verify never wrote it. Absent on the first round of a plan,
+      // which is the round that has nothing before it to check.
+      const previously =
+        stage === 'review'
+          ? (lastReviewChanges(store.eventsFor(ticket.id)) ?? undefined)
+          : undefined;
+
       let commit: string | null = null;
       let result: RunResult;
       try {
@@ -656,6 +671,7 @@ export function createOrchestrator(deps: Deps, opts: { pollMs?: number } = {}): 
           worktree,
           scratch,
           checks,
+          previously,
           conflict,
           // Whatever conversation the ticket is holding. It is holding one only if it
           // stopped with something to come back to — a question it asked, or a

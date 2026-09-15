@@ -44,6 +44,18 @@ export type BriefInput = {
   /** The change so far. Given to review and verify; they do not go looking for it. */
   diff?: string;
   /**
+   * The last round of review on this plan: what it asked for, and the change made
+   * since it looked. Given to review alone and only from its second round on, so a
+   * later round checks that round rather than reviewing from nothing.
+   *
+   * `since` is absent when nothing had been committed when it looked — and then `diff`
+   * above is the whole of what has happened since, so there is nothing else to show.
+   * It is present but empty when there was a commit and nothing has been added to it:
+   * the run in between ended without committing. Those are different facts and the
+   * brief tells them apart.
+   */
+  previousReview?: { changes: string; since?: string };
+  /**
    * The standing checks the workbench has already run, and their output. Given to
    * review and verify, from the implement run that produced the change in front of
    * them: a failure would have sent that run back for another round, so what reaches
@@ -96,6 +108,7 @@ export function buildBrief(input: BriefInput): string {
     ['Completion criteria', completionCriteriaFor(agent, ticket)],
     ['Answer to your question', input.answer],
     ['How much this warrants', declaredScale(input)],
+    ['The round before this one', lastRoundFor(input)],
     ['The change so far', fenced(input.diff, 'diff')],
     ['Checks already run', checksRun(input.checks)],
   ];
@@ -307,10 +320,15 @@ function declaredScale({ agent, scale }: BriefInput): string | undefined {
 }
 
 /**
- * What review or verify asked to be put right. Only the stage that has to put it
- * right is told: a reviewer handed the last round's objections would be reading
- * its own words back as though they were instructions, and the diff in front of it
- * is the only honest account of whether they were addressed.
+ * What review or verify asked to be put right, given to the stage that has to put
+ * it right.
+ *
+ * Review is told its own last list too, but as `lastRoundFor` below — the round
+ * before this one, with the change made since, rather than as work to do. It used
+ * to be kept from review entirely, on the argument that a reviewer reading its own
+ * words back would read them as instructions. What that bought was a stage that
+ * re-reviewed from nothing every round; see "A later review checks the last one's
+ * list" in `docs/design.md`.
  */
 function changesFor(agent: AgentDef, ticket: Ticket): string | undefined {
   if (agent.stage !== 'implement' || ticket.changes === null) return undefined;
@@ -321,6 +339,54 @@ function changesFor(agent: AgentDef, ticket: Ticket): string | undefined {
     'rewrite of it.',
     '',
     ticket.changes,
+  ].join('\n');
+}
+
+/**
+ * The round before this one: review's own last list, the change made since it looked,
+ * and what to do with each. Review alone, and only when there was a round before.
+ *
+ * A review told nothing about the round before it reviews from nothing, and finds new
+ * things at the first round's rate however many rounds have gone: across three projects
+ * since August, review asked for changes on 39–50% of third-and-later rounds, and 91 of
+ * 523 items were about docs, comments or wording. Two questions and a rule, then: the
+ * questions are the ones only a reviewer that has seen this before can answer, and the
+ * rule is what stops the answer being a third list as long as the first.
+ */
+function lastRoundFor({ agent, previousReview }: BriefInput): string | undefined {
+  if (agent.stage !== 'review' || previousReview === undefined) return undefined;
+
+  const since = fenced(previousReview.since, 'diff');
+
+  /**
+   * Three things the change since that review can be, and they say different things.
+   * The middle one is the most useful of the three and the easiest to get wrong: there
+   * was a commit under that review and nothing has been added to it, so nothing at all
+   * has been done about the list above — which is the answer to the first question.
+   */
+  const sinceThen =
+    previousReview.since === undefined
+      ? ['Nothing had been committed when you looked, so the change below is all of it.']
+      : since === undefined
+        ? [
+            'Nothing has been committed since you looked: the change below is the one you',
+            'reviewed, unchanged.',
+          ]
+        : ['What has been done to it since you looked:', '', since];
+
+  return [
+    'You have reviewed this before, and asked for these:',
+    '',
+    previousReview.changes,
+    '',
+    ...sinceThen,
+    '',
+    'Two questions about that, before anything else: was each of those items addressed,',
+    'and did addressing it break anything?',
+    '',
+    'You have already reviewed the rest of this. A *new* objection belongs in your verdict',
+    'only if it fails one of the completion criteria — name which one. Anything else,',
+    'however much better it would be, goes under `LATER:`.',
   ].join('\n');
 }
 

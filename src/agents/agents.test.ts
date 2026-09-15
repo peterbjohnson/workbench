@@ -526,10 +526,52 @@ test('the stage told to fix something is told exactly what, and no other stage i
   // arrives without anybody having read the work. What is true of both is the plan.
   assert.match(brief, /revision of work already done to an approved plan/);
 
-  // The reviewer must judge the diff, not read its own last words back as though
-  // they were instructions.
+  // Review sees the same list, but as the round before this one and never as work
+  // to do — that section is for the stage that has to make the change.
   const review = buildBrief({ ticket, agent: agents.review, worktree: '/tmp/wb/t1' });
   assert.doesNotMatch(review, /Changes to make/);
+});
+
+test('a later review is given the round before it, and a first review is not', () => {
+  const ticket = ticketFrom([CREATED]);
+  const round = { changes: '- retry.ts:14 the backoff is unbounded', since: '+ cap = 5' };
+
+  const later = buildBrief({
+    ticket,
+    agent: agents.review,
+    worktree: '/tmp/wb/t1',
+    diff: '+ retry(3)\n+ cap = 5',
+    previousReview: round,
+  });
+
+  assert.match(later, /## The round before this one/);
+  assert.match(later, /the backoff is unbounded/);
+  assert.match(later, /```diff\n\+ cap = 5\n```/, 'and what has been done since it looked');
+  // The two questions only a reviewer that has seen this before can answer.
+  assert.match(later, /was each of those items addressed/);
+  assert.match(later, /did addressing it break anything/);
+  // And the rule that stops a later round being another first round.
+  assert.match(later, /only if it fails one of the completion criteria/);
+  assert.match(later, /goes under `LATER:`/);
+
+  const first = buildBrief({
+    ticket,
+    agent: agents.review,
+    worktree: '/tmp/wb/t1',
+    diff: '+ retry(3)',
+  });
+  assert.doesNotMatch(first, /The round before this one/, 'there is no round before the first');
+
+  // Nobody else re-reviews, so nobody else is told what review last said.
+  for (const stage of STAGES.filter((s) => s !== 'review')) {
+    const brief = buildBrief({
+      ticket,
+      agent: agents[stage],
+      worktree: '/tmp/wb/t1',
+      previousReview: round,
+    });
+    assert.doesNotMatch(brief, /The round before this one/, `${stage} is not reviewing again`);
+  }
 });
 
 test('a ticket carrying on from another is told what it is carrying on from', () => {

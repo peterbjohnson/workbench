@@ -117,11 +117,28 @@ function aTicket(over: Partial<Ticket> = {}): Ticket {
  */
 async function runStage(
   scripts: Script[],
-  opts: { resume?: string; ticket?: Ticket; now?: Date } = {},
-): Promise<{ result: RunResult; calls: Options[]; prompts: string[]; said: EventBody[] }> {
+  opts: {
+    resume?: string;
+    ticket?: Ticket;
+    stage?: Stage;
+    now?: Date;
+    /** What review last asked for, exactly as the orchestrator hands one over. */
+    previously?: { changes: string; at: string | null };
+    /** What the diff since that review comes back as. Empty means nothing was committed. */
+    since?: string;
+  } = {},
+): Promise<{
+  result: RunResult;
+  calls: Options[];
+  prompts: string[];
+  said: EventBody[];
+  /** What each diff was measured from, in order. Undefined is the ticket's base. */
+  diffs: (string | undefined)[];
+}> {
   const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-run-'));
   const model = service(scripts);
   const said: EventBody[] = [];
+  const diffs: (string | undefined)[] = [];
 
   try {
     const result = await createStageRunner({
@@ -130,21 +147,26 @@ async function runStage(
       about: '',
       pluginRoot: worktree,
       skills: () => [],
-      diff: async () => '',
+      diff: async (_ticket, _worktree, from) => {
+        diffs.push(from);
+        if (from === undefined) return '+ the whole change';
+        return opts.since ?? '+ since you looked';
+      },
       continued: () => '',
       query: model.query,
       now: () => opts.now ?? new Date(),
     })({
       ticket: opts.ticket ?? aTicket(),
-      stage: 'implement',
+      stage: opts.stage ?? 'implement',
       runId: 'r1',
       worktree,
       scratch: path.join(worktree, '.scratch'),
+      previously: opts.previously,
       resume: opts.resume,
       emit: (body) => said.push(body),
       signal: new AbortController().signal,
     });
-    return { result, calls: model.calls, prompts: model.prompts, said };
+    return { result, calls: model.calls, prompts: model.prompts, said, diffs };
   } finally {
     fs.rmSync(worktree, { recursive: true, force: true });
   }
@@ -245,6 +267,46 @@ test('a picked-up run whose conversation is gone still runs the stage, from the 
   assert.equal(calls[1]?.resume, undefined, 'as a fresh conversation');
   assert.match(prompts[1] ?? '', /## Ticket/, 'briefed in full, because it knows nothing');
   assert.equal(result.outcome, 'completed');
+});
+
+test('a later review is briefed with the change made since it last looked', async () => {
+  // Measured from where the branch stood at that review rather than from the base,
+  // so the second round reads what was done about its list and not the whole change
+  // over again.
+  const { prompts, diffs } = await runStage([{ costs: [0.5] }], {
+    stage: 'review',
+    previously: { changes: '- retry.ts:14 the backoff is unbounded', at: 'c0ffee2' },
+  });
+
+  assert.deepEqual(diffs, [undefined, 'c0ffee2'], 'the whole change, and the part since');
+  assert.match(prompts[0] ?? '', /## The round before this one/);
+  assert.match(prompts[0] ?? '', /\+ since you looked/);
+});
+
+test('a review with no commit standing under it is not shown the same diff twice', async () => {
+  const { prompts, diffs } = await runStage([{ costs: [0.5] }], {
+    stage: 'review',
+    previously: { changes: '- retry.ts:14 the backoff is unbounded', at: null },
+  });
+
+  assert.deepEqual(diffs, [undefined], 'nothing had been committed, so there is nothing since');
+  assert.match(prompts[0] ?? '', /Nothing had been committed when you looked/);
+});
+
+test('a later review with nothing committed since is told that, not told nothing ever was', async () => {
+  // The implement run between two reviews can end without committing anything, and
+  // then the diff since comes back empty. That is a different fact from there having
+  // been no commit at all when review looked, and a more useful one: it says nothing
+  // has been done about the list.
+  const { prompts, diffs } = await runStage([{ costs: [0.5] }], {
+    stage: 'review',
+    previously: { changes: '- retry.ts:14 the backoff is unbounded', at: 'c0ffee2' },
+    since: '',
+  });
+
+  assert.deepEqual(diffs, [undefined, 'c0ffee2'], 'there was a commit to measure from');
+  assert.match(prompts[0] ?? '', /Nothing has been committed since you looked/);
+  assert.doesNotMatch(prompts[0] ?? '', /Nothing had been committed when you looked/);
 });
 
 /** What the service throws when the account has spent its window. */
