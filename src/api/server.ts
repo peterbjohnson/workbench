@@ -15,6 +15,7 @@ import { createDoc, deleteDoc, listDocs, writeDoc, type DocKind } from './docume
 import { applySettings, settings } from './settings.ts';
 import type { NameChecker } from '../run/nameCheck.ts';
 import type { Orchestrator } from '../orchestrator/loop.ts';
+import { isBranchName } from '../git/worktree.ts';
 
 /** The built board. `npm run build` puts it here; `npm run ui` serves it itself instead. */
 export const UI_DIST = fileURLToPath(new URL('../../ui/dist', import.meta.url));
@@ -61,6 +62,13 @@ export type ApiDeps = {
    * stopping is still a stop — it just has nothing in flight to interrupt.
    */
   orchestrator?: Pick<Orchestrator, 'tick' | 'interrupt'>;
+  /**
+   * Turns what a ticket was written `on` — a branch, `#123`, a pull request's URL —
+   * into the branch it means, or says why it cannot be worked on: a fork's branch, a
+   * pull request that is no longer open, a branch the remote has not got. Absent in a
+   * test that only drives the routes, and then what was given is taken as the branch.
+   */
+  resolveOn?: (ref: string) => Promise<{ branch: string } | { error: string }>;
 };
 
 /**
@@ -264,7 +272,14 @@ async function handle(
   if (route === '/tickets') {
     if (method === 'GET') return send(res, 200, { tickets: store.tickets() });
     if (method === 'POST') {
-      const { title, body, from, requiresApproval, waitsFor: after } = await readJson(req);
+      const {
+        title,
+        body,
+        from,
+        on: onRef,
+        requiresApproval,
+        waitsFor: after,
+      } = await readJson(req);
       if (typeof title !== 'string' || title.trim() === '') {
         return send(res, 400, { error: 'a ticket needs a title' });
       }
@@ -294,12 +309,37 @@ async function handle(
         }
       }
 
+      // Working on somebody else's branch, and pushing back to it. Resolved and
+      // checked here, like `continues`, rather than failing later in git — and last,
+      // because it is the one check that asks the network.
+      let on: string | undefined;
+      const onSaid = onRef === undefined || onRef === null ? '' : String(onRef).trim();
+      if (onSaid !== '') {
+        if (continues !== undefined) {
+          return send(res, 400, {
+            error: 'a ticket starts from another ticket’s work or on a branch, not both',
+          });
+        }
+        const resolved =
+          deps.resolveOn === undefined ? { branch: onSaid } : await deps.resolveOn(onSaid);
+        if ('error' in resolved) return send(res, 400, { error: resolved.error });
+        // Whatever resolved it, what is recorded is fetched, cut from and pushed to by
+        // name for the rest of the ticket's life, so it has to be a branch's name and
+        // not something git would read as an option. `resolveOn` asks the same before
+        // its own git runs; this is the gate for everything after.
+        if (!(await isBranchName(resolved.branch))) {
+          return send(res, 400, { error: `${resolved.branch} is not a branch name` });
+        }
+        on = resolved.branch;
+      }
+
       const id = nextId(store);
       store.append(id, {
         type: 'ticket_created',
         title,
         body: String(body ?? ''),
         continues,
+        ...(on === undefined ? {} : { on }),
         // Recorded only when the gate is being skipped. Anything else — true, or
         // nothing said — is the default, and writing it down would say nothing.
         ...(requiresApproval === false ? { requiresApproval: false } : {}),

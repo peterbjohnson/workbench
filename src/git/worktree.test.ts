@@ -8,15 +8,21 @@ import path from 'node:path';
 
 import {
   abandonMerge,
+  branchOnRemote,
   commitAll,
   create,
   diff,
+  inHistoryOf,
+  isBranchName,
+  push,
   refresh,
   remove,
   removedFromBase,
   unresolved,
   type GitConfig,
 } from './worktree.ts';
+import { resolveOn } from '../github/pr.ts';
+import { RemoteMoved } from '../orchestrator/describe.ts';
 
 const run = promisify(execFile);
 
@@ -212,6 +218,201 @@ test('a ticket branches from the remote, not from a stale local base', async () 
     assert.equal(local.stdout.trim(), 'first', "and the manager's own main was left alone");
   } finally {
     await cleanUp(cfg);
+  }
+});
+
+/**
+ * A remote with a branch on it that somebody else owns, and a clone of theirs to move
+ * it — or main — from, the way their pushes would.
+ */
+async function theirBranch(cfg: GitConfig) {
+  const remote = path.join(path.dirname(cfg.repoRoot), 'remote.git');
+  await run('git', ['init', '--bare', '-b', 'main', remote]);
+  await run('git', ['remote', 'add', 'origin', remote], { cwd: cfg.repoRoot });
+  await run('git', ['push', '-q', '-u', 'origin', 'main'], { cwd: cfg.repoRoot });
+
+  const elsewhere = path.join(path.dirname(cfg.repoRoot), 'elsewhere');
+  await run('git', ['clone', '-q', remote, elsewhere]);
+  const theirs = (...args: string[]) => run('git', args, { cwd: elsewhere });
+  await theirs('config', 'user.email', 'other@example.com');
+  await theirs('config', 'user.name', 'Other');
+
+  /** Commits a file to `branch` over there and pushes it, cutting the branch from main if new. */
+  const push = async (branch: string, file: string) => {
+    await theirs('fetch', '-q', 'origin');
+    const known = await theirs('ls-remote', '--heads', 'origin', branch);
+    await theirs(
+      'checkout',
+      '-q',
+      '-B',
+      branch,
+      known.stdout.trim() ? `origin/${branch}` : 'origin/main',
+    );
+    await fs.writeFile(path.join(elsewhere, file), `${file} from them\n`);
+    await theirs('add', '-A');
+    await theirs('commit', '-q', '-m', `${file} on ${branch}`);
+    await theirs('push', '-q', 'origin', branch);
+    return (await theirs('rev-parse', 'HEAD')).stdout.trim();
+  };
+  const remoteHead = async (branch: string) =>
+    (await run('git', ['rev-parse', branch], { cwd: remote })).stdout.trim();
+
+  return { push, remoteHead, git: theirs };
+}
+
+test('a branch to work on is one the remote has', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const them = await theirBranch(cfg);
+    await them.push('their-feature', 'theirs.txt');
+
+    assert.equal(await branchOnRemote(cfg, 'their-feature'), true);
+    assert.equal(await branchOnRemote(cfg, 'no-such'), false);
+
+    // A name that git would take as an option runs nothing, whichever way it arrives.
+    const pwned = path.join(path.dirname(cfg.repoRoot), 'PWNED');
+    const evil = `--upload-pack=touch ${pwned};git-upload-pack`;
+    assert.equal(await isBranchName(evil), false);
+    assert.equal(await isBranchName('-x'), false);
+    assert.equal(await isBranchName('feature/ok'), true);
+    assert.deepEqual(await resolveOn(cfg, evil), { error: `${evil} is not a branch name` });
+    assert.equal(await branchOnRemote(cfg, evil), false);
+    await assert.rejects(() => inHistoryOf(cfg, 'HEAD', evil));
+    await create(cfg, 't9', undefined, evil).catch(() => {});
+    assert.equal(await present(pwned), false, 'no fetch ran it as a command');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('pushed work merged into main is in its history, and squashed onto it is not', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const them = await theirBranch(cfg);
+    const merged = await them.push('their-feature', 'theirs.txt');
+    const squashed = await them.push('other-feature', 'other.txt');
+    // Here as well, as a commit the workbench pushed from a worktree would be.
+    await run('git', ['fetch', '-q', 'origin'], { cwd: cfg.repoRoot });
+
+    await them.git('checkout', '-q', '-B', 'main', 'origin/main');
+    await them.git('merge', '-q', '--no-ff', '-m', 'merge their-feature', 'origin/their-feature');
+    await them.git('merge', '-q', '--squash', 'origin/other-feature');
+    await them.git('commit', '-q', '-m', 'other-feature, squashed');
+    await them.git('push', '-q', 'origin', 'main');
+
+    assert.equal(await inHistoryOf(cfg, merged, 'main'), true, 'a merge commit keeps it');
+    assert.equal(await inHistoryOf(cfg, squashed, 'main'), false, 'a squash does not');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a ticket on somebody else’s branch is cut from it and kept current with it', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const them = await theirBranch(cfg);
+    const tip = await them.push('their-feature', 'theirs.txt');
+
+    const wt = await create(cfg, 't1', undefined, 'their-feature');
+    assert.equal(wt.base, tip, 'measured from their branch as the remote has it');
+    assert.equal(await present(path.join(wt.path, 'theirs.txt')), true);
+
+    // Both move. Only their branch is what this ticket stands on.
+    await them.push('their-feature', 'more.txt');
+    await them.push('main', 'main-only.txt');
+
+    const result = await refresh(cfg, 't1', [], false, 'their-feature');
+    assert.equal(result.kind, 'merged');
+    assert.equal(await present(path.join(wt.path, 'more.txt')), true, 'their new work came in');
+    assert.equal(await present(path.join(wt.path, 'main-only.txt')), false, 'and main did not');
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('a branch it does not own is taken from the remote or not at all', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const them = await theirBranch(cfg);
+    await them.push('their-feature', 'theirs.txt');
+    const wt = await create(cfg, 't1', undefined, 'their-feature');
+    const cut = (await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path })).stdout.trim();
+
+    // A local branch of the same name, carrying a commit nobody else has, and a remote
+    // that cannot be reached to say so.
+    const here = (...args: string[]) => run('git', args, { cwd: cfg.repoRoot });
+    await fs.writeFile(path.join(cfg.repoRoot, 'local-only.txt'), 'never pushed\n');
+    await here('add', '-A');
+    await here('commit', '-q', '-m', 'local only');
+    const local = (await here('rev-parse', 'HEAD')).stdout.trim();
+    await here('update-ref', 'refs/heads/their-feature', local);
+    await here('remote', 'set-url', 'origin', path.join(path.dirname(cfg.repoRoot), 'gone.git'));
+
+    await assert.rejects(() => refresh(cfg, 't1', [], false, 'their-feature'));
+    assert.equal(
+      await present(path.join(wt.path, 'local-only.txt')),
+      false,
+      'nothing unpushed came in',
+    );
+    assert.equal(
+      (await run('git', ['rev-parse', 'HEAD'], { cwd: wt.path })).stdout.trim(),
+      cut,
+      'and the branch is where it was',
+    );
+    await assert.rejects(() => create(cfg, 't2', undefined, 'their-feature'), 'nor at cut time');
+
+    // The base keeps its fallback: a repository with no reachable remote still works.
+    assert.ok(await refresh(cfg, 't1'));
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('work on somebody else’s branch goes back to it as a fast-forward, or not at all', async () => {
+  const cfg = await scratchRepo();
+  try {
+    const them = await theirBranch(cfg);
+    await them.push('their-feature', 'theirs.txt');
+    const wt = await create(cfg, 't1', undefined, 'their-feature');
+
+    await fs.writeFile(path.join(wt.path, 'fix.txt'), 'the fix\n');
+    const mine = await commitAll(wt, 'the fix');
+    assert.equal(await push(cfg, 't1', 'their-feature'), mine);
+    assert.equal(await them.remoteHead('their-feature'), mine, 'their branch has it');
+
+    // They push again before the next one goes.
+    const theirs = await them.push('their-feature', 'theirs-again.txt');
+    await fs.writeFile(path.join(wt.path, 'fix.txt'), 'the fix, again\n');
+    await commitAll(wt, 'more of the fix');
+    await assert.rejects(() => push(cfg, 't1', 'their-feature'), RemoteMoved);
+    assert.equal(
+      await them.remoteHead('their-feature'),
+      theirs,
+      'nothing of theirs was overwritten',
+    );
+
+    // Taken in, it goes.
+    assert.equal((await refresh(cfg, 't1', [], false, 'their-feature')).kind, 'merged');
+    const merged = await push(cfg, 't1', 'their-feature');
+    assert.equal(await them.remoteHead('their-feature'), merged);
+  } finally {
+    await cleanUp(cfg);
+  }
+});
+
+test('nothing the workbench runs can force a push', async () => {
+  // Read off the source rather than trusted to review: the one force in here is
+  // `worktree remove`, which deletes a directory and pushes nothing.
+  for (const file of ['./worktree.ts', '../github/pr.ts']) {
+    const source = await fs.readFile(new URL(file, import.meta.url), 'utf8');
+    const lines = source.split('\n');
+    for (const line of lines.filter((l) => /'(--force[\w-]*|-f)'/.test(l))) {
+      assert.match(line, /'remove'/, `${file} forces something: ${line.trim()}`);
+    }
+    // And no refspec that starts with a `+`, which forces without saying so.
+    for (const line of lines.filter((l) => /'push'/.test(l))) {
+      assert.doesNotMatch(line, /['`]\+/, `${file} forces a push: ${line.trim()}`);
+    }
   }
 });
 

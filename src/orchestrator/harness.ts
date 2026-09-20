@@ -11,8 +11,15 @@ export type Harness = {
   /** Every stage run that happened, in order. */
   ran: Stage[];
   prsOpened: string[];
-  /** Every branch-bringing-in that was asked for, in order. */
-  refreshed: { id: string; alsoMerge: readonly string[]; keepConflict: boolean }[];
+  /** Every worktree asked for, in order, with the branch it was to be cut from when it was given one. */
+  prepared: { id: string; on?: string }[];
+  /** Every push to a branch the workbench does not own that landed, as `<ticket> -> <branch>`. */
+  pushes: string[];
+  /**
+   * Every branch-bringing-in that was asked for, in order. `on` only for a ticket on a
+   * branch it does not own, so a test about any other ticket reads as it always did.
+   */
+  refreshed: { id: string; alsoMerge: readonly string[]; keepConflict: boolean; on?: string }[];
   /** The pull requests the loop merged, in order. */
   prsMerged: string[];
   /** Tickets whose worktree was cleaned up. */
@@ -58,6 +65,14 @@ export function harness(
     openPr?: () => Promise<string>;
     merge?: (ticketId: string) => Promise<void>;
     /**
+     * What pushing to a branch the workbench does not own does, on the nth attempt for
+     * that ticket. May throw — `RemoteMoved` is what a branch that moved on throws. A
+     * fresh commit and no pull request is the default.
+     */
+    push?: (ticketId: string, attempt: number) => { commit: string; url?: string };
+    /** What became of the pull request a push went to. Nobody deciding is the default. */
+    landed?: (ticketId: string) => 'pending' | 'merged' | 'squashed' | 'closed';
+    /**
      * What tidying up does. Somewhere to watch an acceptance from: it is the first
      * thing that follows one, whether the merge was asked for here or found on the
      * host, and the pass over the other branches comes straight after it.
@@ -102,7 +117,10 @@ export function harness(
   const branched = new Set<string>();
   const ran: Stage[] = [];
   const prsOpened: string[] = [];
-  const refreshed: { id: string; alsoMerge: readonly string[]; keepConflict: boolean }[] = [];
+  const prepared: Harness['prepared'] = [];
+  const pushes: string[] = [];
+  const pushAttempts = new Map<string, number>();
+  const refreshed: Harness['refreshed'] = [];
   const prsMerged: string[] = [];
   const tidied: string[] = [];
   const abandoned: string[] = [];
@@ -113,7 +131,8 @@ export function harness(
   const orch = createOrchestrator({
     store,
     workspace: {
-      prepare: async (id) => {
+      prepare: async (id, _from, on) => {
+        prepared.push({ id, ...(on === undefined ? {} : { on }) });
         const first = !branched.has(id);
         branched.add(id);
         return {
@@ -122,8 +141,8 @@ export function harness(
           base: first ? 'abc1234' : null,
         };
       },
-      refresh: async (id, alsoMerge = [], keepConflict = false) => {
-        refreshed.push({ id, alsoMerge, keepConflict });
+      refresh: async (id, alsoMerge = [], keepConflict = false, on) => {
+        refreshed.push({ id, alsoMerge, keepConflict, ...(on === undefined ? {} : { on }) });
         return opts.refresh?.(id, keepConflict) ?? { kind: 'up-to-date' };
       },
       unresolved: async (_id, paths) => opts.unresolved?.(paths) ?? [],
@@ -156,6 +175,14 @@ export function harness(
         await opts.merge?.(t.id);
         prsMerged.push(t.prUrl ?? '');
       },
+      push: async (t) => {
+        const attempt = (pushAttempts.get(t.id) ?? 0) + 1;
+        pushAttempts.set(t.id, attempt);
+        const pushed = opts.push?.(t.id, attempt) ?? { commit: `feed${attempt}` };
+        pushes.push(`${t.id} -> ${t.on}`);
+        return pushed;
+      },
+      landed: async (t) => opts.landed?.(t.id) ?? 'pending',
     },
     runStage: async (args) => {
       ran.push(args.stage);
@@ -178,6 +205,8 @@ export function harness(
     orch,
     ran,
     prsOpened,
+    prepared,
+    pushes,
     refreshed,
     prsMerged,
     tidied,
