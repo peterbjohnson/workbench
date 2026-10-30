@@ -15,8 +15,14 @@ cannot collide and your own working tree is never touched.
 - **Node 26+** — it uses Node's built-in SQLite and its TypeScript support, so there is
   no database to install.
 - **git**, and **[`gh`](https://cli.github.com)** authenticated, for pull requests.
-- A **Claude** credential. `claude setup-token` gives a long-lived one from a
-  subscription; `ANTHROPIC_API_KEY` uses a Console key, billed per token.
+- A **model service**. The stages run on whichever you point them at, under the same
+  guardrails; `wb auth` proves it works and `wb serve` says which one is live.
+  - **Claude** — `claude setup-token` gives a long-lived credential from a subscription;
+    `ANTHROPIC_API_KEY` uses a Console key, billed per token.
+  - Alternatively, any **OpenAI-compatible service** — Codex on OpenAI's API, or Ollama,
+    LM Studio, llama.cpp and vLLM serving a model on your own machine: set
+    `WB_PROVIDER=openai` with `WB_BASE_URL`, `WB_API_KEY` and `WB_MODEL`. Local servers
+    need no key. More in [Other models](docs/other-models.md).
 
 ## Getting started
 
@@ -74,6 +80,7 @@ sends it back, and what you write becomes what the next attempt is briefed with.
 ## Documentation
 
 - [Using it](docs/using-it.md) — the board, the ticket panel, and how work moves
+- [Other models](docs/other-models.md) — Codex, a model on your own machine, and what each one costs you
 - [Reference](docs/reference.md) — commands, configuration, limits, the HTTP API, tools
 - [Design](docs/design.md) — why four stages, and why they are allowed to say what they
   say
